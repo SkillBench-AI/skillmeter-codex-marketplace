@@ -1,0 +1,40 @@
+{
+  "name": "skillmeter",
+  "version": "0.1.0",
+  "description": "SkillBench workflows for collecting and reviewing sanitized Codex session exports.",
+  "author": {
+    "name": "SkillBench",
+    "url": "https://github.com/SkillBench-AI"
+  },
+  "homepage": "https://skillbench.com",
+  "repository": "https://github.com/SkillBench-AI/skillmeter-codex-marketplace",
+  "license": "MIT",
+  "keywords": [
+    "skillbench",
+    "skillmeter",
+    "codex",
+    "telemetry",
+    "analytics"
+  ],
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "SkillMeter",
+    "shortDescription": "Collect and review sanitized SkillBench exports.",
+    "longDescription": "Use SkillMeter to collect local Codex session history into a sanitized export, check repo scope, and review the export before upload.",
+    "developerName": "SkillBench",
+    "category": "Productivity",
+    "capabilities": [
+      "Read",
+      "Write"
+    ],
+    "websiteURL": "https://skillbench.com",
+    "privacyPolicyURL": "https://skillbench.com/privacy",
+    "termsOfServiceURL": "https://skillbench.com/terms",
+    "defaultPrompt": [
+      "Use SkillMeter to collect a sanitized export of my recent Codex sessions.",
+      "Use SkillMeter to check whether this repo matches my allowed GitHub org scope.",
+      "Use SkillMeter to review this sanitized export before I upload it."
+    ],
+    "brandColor": "#2563EB"
+  }
+}
