@@ -1,7 +1,7 @@
 {
   "name": "skillmeter",
-  "version": "0.1.0",
-  "description": "SkillBench workflows for collecting and reviewing sanitized Codex session exports.",
+  "version": "0.2.0",
+  "description": "SkillBench workflows and lifecycle hooks for collecting Codex session telemetry.",
   "author": {
     "name": "SkillBench",
     "url": "https://github.com/SkillBench-AI"
@@ -14,9 +14,11 @@
     "skillmeter",
     "codex",
     "telemetry",
-    "analytics"
+    "analytics",
+    "hooks"
   ],
   "skills": "./skills/",
+  "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "SkillMeter",
     "shortDescription": "Collect and review sanitized SkillBench exports.",
