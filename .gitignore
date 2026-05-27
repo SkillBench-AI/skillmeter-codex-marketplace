@@ -1,0 +1,34 @@
+# General
+.DS_Store
+__MACOSX/
+.AppleDouble
+.LSOverride
+Icon[
+]
+
+# Thumbnails
+._*
+
+# Spotlight / filesystem cruft
+.DocumentRevisions-V100
+.fseventsd
+.Spotlight-V100
+.TemporaryItems
+.Trashes
+.VolumeIcon.icns
+.com.apple.timemachine.donotpresent
+
+# Apple network share leftovers
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Plugin runtime artifacts
+plugins/skillmeter/logs/
+plugins/skillmeter/tracking/
+
+# Local developer notes
+CLAUDE.md
+AGENTS.md
