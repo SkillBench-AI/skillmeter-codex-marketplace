@@ -294,12 +294,29 @@ function getTimestamp() {
 // Transfer configuration
 // ---------------------------------------------------------------------------
 
+// The published SkillMeter Codex plugin ships pointing at the prod collector.
+// Local development overrides this per-project (e.g. to the dev tenant
+// collector) without changing the shipped default — resolution order is:
+//   1. SKILLMETER_BACKEND_URL env var
+//   2. `skillmeter.backendUrl` in <cwd>/.codex/settings.local.json
+//   3. DEFAULT_BACKEND_URL (prod)
 // The Codex ingest path mirrors /logs/claude but on a sibling /logs/codex
-// route. The collector lambda treats `${BACKEND_URL}/transcript` as the
+// route. The collector lambda treats `${backendUrl}/transcript` as the
 // transcript handler.
-const BACKEND_URL =
-  process.env.SKILLMETER_BACKEND_URL ||
-  "https://api.meter.skillbench.com/logs/codex";
+const DEFAULT_BACKEND_URL = "https://api.meter.skillbench.com/logs/codex";
+
+function getBackendUrl(cwd) {
+  const override = process.env.SKILLMETER_BACKEND_URL;
+  if (override) return override;
+
+  const fromSettings = readSettingsFile(cwd)?.skillmeter?.backendUrl;
+  if (typeof fromSettings === "string" && fromSettings.trim()) {
+    return fromSettings.trim();
+  }
+
+  return DEFAULT_BACKEND_URL;
+}
+
 const EVENT_TIMEOUT =
   parseInt(process.env.SKILLMETER_TIMEOUT || "10", 10) * 1000;
 const TRANSCRIPT_TIMEOUT = 30_000;
@@ -317,7 +334,7 @@ function commonHeaders(extra = {}) {
   return headers;
 }
 
-function transferEventLog(logFile) {
+function transferEventLog(logFile, backendUrl = getBackendUrl()) {
   if (!logFile || !fs.existsSync(logFile)) return Promise.resolve();
 
   const fileContent = fs.readFileSync(logFile);
@@ -327,7 +344,7 @@ function transferEventLog(logFile) {
     `[skillmeter] Transferring event log: ${path.basename(logFile)} (${compressed.length} bytes gzipped)`
   );
 
-  return fetch(BACKEND_URL, {
+  return fetch(backendUrl, {
     method: "POST",
     headers: commonHeaders(),
     body: compressed,
@@ -352,7 +369,7 @@ function transferEventLog(logFile) {
     });
 }
 
-function transferTranscript(transcriptPath, deviceId) {
+function transferTranscript(transcriptPath, deviceId, backendUrl = getBackendUrl()) {
   if (!transcriptPath || !fs.existsSync(transcriptPath)) return;
 
   const hashSalt = getOrCreateHashSalt();
@@ -371,7 +388,7 @@ function transferTranscript(transcriptPath, deviceId) {
     `[skillmeter] Transferring transcript: ${transcriptId} (${compressed.length} bytes gzipped)`
   );
 
-  fetch(`${BACKEND_URL}/transcript`, {
+  fetch(`${backendUrl}/transcript`, {
     method: "POST",
     headers,
     body: compressed,
@@ -391,7 +408,7 @@ function transferTranscript(transcriptPath, deviceId) {
     });
 }
 
-function flushEventLog() {
+function flushEventLog(backendUrl = getBackendUrl()) {
   if (fs.existsSync(LOG_FILE)) {
     try {
       const sendingFile = `${LOG_FILE}.${Date.now()}`;
@@ -399,7 +416,7 @@ function flushEventLog() {
       console.error(
         `[skillmeter] Rotated event log: ${path.basename(sendingFile)}`
       );
-      return transferEventLog(sendingFile);
+      return transferEventLog(sendingFile, backendUrl);
     } catch (err) {
       console.error(`[skillmeter] Event log rotation failed: ${err.message}`);
       return Promise.resolve();
@@ -410,12 +427,13 @@ function flushEventLog() {
 }
 
 function flushAndTransfer(input, deviceId) {
-  const eventLogPromise = flushEventLog();
+  const backendUrl = getBackendUrl(input && input.cwd);
+  const eventLogPromise = flushEventLog(backendUrl);
 
   if (input.transcript_path && fs.existsSync(input.transcript_path)) {
-    transferTranscript(input.transcript_path, deviceId);
+    transferTranscript(input.transcript_path, deviceId, backendUrl);
   } else if (input.agent_transcript_path && fs.existsSync(input.agent_transcript_path)) {
-    transferTranscript(input.agent_transcript_path, deviceId);
+    transferTranscript(input.agent_transcript_path, deviceId, backendUrl);
   } else {
     console.error(`[skillmeter] No transcript to transfer`);
   }
@@ -423,7 +441,7 @@ function flushAndTransfer(input, deviceId) {
   return eventLogPromise;
 }
 
-function retryFailedLogs() {
+function retryFailedLogs(backendUrl = getBackendUrl()) {
   if (!fs.existsSync(LOG_DIR)) return;
 
   try {
@@ -435,7 +453,7 @@ function retryFailedLogs() {
       if (!fs.statSync(filePath).isFile()) continue;
       if (/^events\.jsonl\.\d+$/.test(file)) {
         retryCount++;
-        transferEventLog(filePath);
+        transferEventLog(filePath, backendUrl);
       }
     }
 
@@ -682,7 +700,8 @@ module.exports = {
   PLUGIN_VERSION,
   LOG_DIR,
   LOG_FILE,
-  BACKEND_URL,
+  DEFAULT_BACKEND_URL,
+  getBackendUrl,
   AGENT_NAME,
   SETTINGS_RELATIVE,
 };

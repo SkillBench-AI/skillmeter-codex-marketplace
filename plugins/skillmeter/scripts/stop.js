@@ -2,7 +2,12 @@
 // Codex requires `Stop` hooks to emit JSON on stdout when they exit 0; plain
 // text is treated as invalid. runHook handles that via requireJsonStdout so we
 // always emit `{}` on every exit path.
-const { runHook, flushEventLog, flushAndTransfer } = require("./logger.js");
+const {
+  runHook,
+  flushEventLog,
+  flushAndTransfer,
+  getBackendUrl,
+} = require("./logger.js");
 
 runHook(
   "Stop",
@@ -12,7 +17,7 @@ runHook(
   }),
   {
     requireJsonStdout: true,
-    afterSkip: flushEventLog,
+    afterSkip: (input) => flushEventLog(getBackendUrl(input && input.cwd)),
     afterLog: flushAndTransfer,
   }
 ).catch(() => {

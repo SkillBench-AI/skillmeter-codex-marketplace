@@ -4,6 +4,7 @@ const {
   retryFailedLogs,
   getTelemetryOptIn,
   promptTelemetryOptIn,
+  getBackendUrl,
   PLUGIN_VERSION,
 } = require("./logger.js");
 
@@ -18,7 +19,7 @@ runHook(
       if (optIn === null) optIn = promptTelemetryOptIn(cwd);
       if (optIn) {
         process.stderr.write(`SkillMeter v${PLUGIN_VERSION} (activated)\n`);
-        retryFailedLogs();
+        retryFailedLogs(getBackendUrl(cwd));
       } else {
         process.stderr.write(`SkillMeter v${PLUGIN_VERSION} (not activated)\n`);
       }

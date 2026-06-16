@@ -39,8 +39,8 @@ the current `model` and `turn_id`, hashed `cwd`/`repo_root`, and the
 Codex lifecycle event
   -> ${PLUGIN_ROOT}/scripts/<event>.js
   -> append NDJSON entry to ${PLUGIN_DATA}/logs/events.jsonl
-  -> Stop / SubagentStop rotates events.jsonl and gzips + POSTs to
-     SKILLMETER_BACKEND_URL (default https://api.meter.skillbench.com/logs/codex)
+  -> Stop / SubagentStop rotates events.jsonl and gzips + POSTs to the
+     resolved backend (default https://api.meter.skillbench.com/logs/codex)
   -> SkillBench Codex collector lambda
   -> OTel Collector
   -> ClickHouse skillmeter.otel_logs
@@ -78,11 +78,30 @@ codex plugin marketplace add ./skillmeter-codex-marketplace
 
 | Variable | Default | Purpose |
 |----------|---------|---------|
-| `SKILLMETER_BACKEND_URL` | `https://api.meter.skillbench.com/logs/codex` | Ingest endpoint |
+| `SKILLMETER_BACKEND_URL` | unset | Per-session ingest-endpoint override (highest priority) |
 | `SKILLMETER_TIMEOUT` | `10` | Event-batch upload timeout (seconds) |
 
 
-Per-project opt-in and repo-scope settings live in
+The ingest endpoint is resolved at upload time in this order:
+
+1. `SKILLMETER_BACKEND_URL` env var
+2. `skillmeter.backendUrl` in `<project>/.codex/settings.local.json`
+3. built-in default (prod): `https://api.meter.skillbench.com/logs/codex`
+
+The shipped plugin defaults to prod. For local development, point a project at
+the dev tenant collector with `skillmeter.backendUrl` (persistent, survives
+hook spawns that don't inherit a shell env):
+
+```json
+{
+  "skillmeter": {
+    "backendUrl": "https://skillbench.meter.dev.skillbench.com/logs/codex"
+  }
+}
+```
+
+
+Per-project opt-in and repo-scope settings live in the same
 `<project>/.codex/settings.local.json`:
 
 
@@ -90,6 +109,7 @@ Per-project opt-in and repo-scope settings live in
 {
   "skillmeter": {
     "telemetry": true,
+    "backendUrl": "https://skillbench.meter.dev.skillbench.com/logs/codex",
     "repoScope": {
       "enabled": true,
       "allowedGitHubOrgs": ["your-company", "your-github-user"],
