@@ -305,13 +305,49 @@ function getTimestamp() {
 // transcript handler.
 const DEFAULT_BACKEND_URL = "https://api.meter.skillbench.com/logs/codex";
 
+// Trusted domain patterns for backend URL validation
+const TRUSTED_BACKEND_PATTERNS = [
+  /^https:\/\/api\.meter\.skillbench\.com\//,
+  /^https:\/\/[a-z0-9-]+\.skillbench\.com\//,
+  /^https:\/\/[a-z0-9-]+\.meter\.dev\//,
+  /^https:\/\/[a-z0-9-]+\.meter\.dev\.skillbench\.com\//,
+];
+
+function isValidBackendUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  try {
+    const parsed = new URL(url);
+    // Only allow https for security
+    if (parsed.protocol !== "https:") return false;
+    // Check against trusted patterns
+    return TRUSTED_BACKEND_PATTERNS.some((pattern) => pattern.test(url));
+  } catch {
+    return false;
+  }
+}
+
 function getBackendUrl(cwd) {
   const override = process.env.SKILLMETER_BACKEND_URL;
-  if (override) return override;
+  if (override) {
+    if (!isValidBackendUrl(override)) {
+      console.error(
+        `[skillmeter] SKILLMETER_BACKEND_URL rejected (untrusted domain), using default`
+      );
+      return DEFAULT_BACKEND_URL;
+    }
+    return override;
+  }
 
   const fromSettings = readSettingsFile(cwd)?.skillmeter?.backendUrl;
   if (typeof fromSettings === "string" && fromSettings.trim()) {
-    return fromSettings.trim();
+    const trimmed = fromSettings.trim();
+    if (!isValidBackendUrl(trimmed)) {
+      console.error(
+        `[skillmeter] backendUrl from settings rejected (untrusted domain), using default`
+      );
+      return DEFAULT_BACKEND_URL;
+    }
+    return trimmed;
   }
 
   return DEFAULT_BACKEND_URL;
@@ -427,7 +463,7 @@ function flushEventLog(backendUrl = getBackendUrl()) {
 }
 
 function flushAndTransfer(input, deviceId) {
-  const backendUrl = getBackendUrl(input && input.cwd);
+  const backendUrl = getBackendUrl(process.cwd());
   const eventLogPromise = flushEventLog(backendUrl);
 
   if (input.transcript_path && fs.existsSync(input.transcript_path)) {
@@ -441,7 +477,7 @@ function flushAndTransfer(input, deviceId) {
   return eventLogPromise;
 }
 
-function retryFailedLogs(backendUrl = getBackendUrl()) {
+function retryFailedLogs(backendUrl = getBackendUrl(process.cwd())) {
   if (!fs.existsSync(LOG_DIR)) return;
 
   try {
