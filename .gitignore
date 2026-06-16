@@ -29,6 +29,9 @@ Temporary Items
 plugins/skillmeter/logs/
 plugins/skillmeter/tracking/
 
+# Local user settings
+.codex/settings.local.json
+
 # Local developer notes
 CLAUDE.md
 AGENTS.md

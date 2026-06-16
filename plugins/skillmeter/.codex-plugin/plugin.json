@@ -1,6 +1,6 @@
 {
   "name": "skillmeter",
-  "version": "0.2.0",
+  "version": "0.2.0+codex.20260616180825",
   "description": "SkillBench workflows and lifecycle hooks for collecting Codex session telemetry.",
   "author": {
     "name": "SkillBench",
