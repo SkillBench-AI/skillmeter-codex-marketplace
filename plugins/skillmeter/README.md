@@ -1,10 +1,16 @@
 # SkillMeter
 
 
-SkillMeter is the SkillBench plugin for Codex. It collects anonymized lifecycle
-telemetry from your Codex sessions and forwards it to the SkillBench analyzer
-so your weekly skill reports include Codex activity alongside Claude Code and
-GitHub PR data.
+SkillMeter is the SkillBench **live telemetry plugin for Codex**. It records
+anonymized lifecycle telemetry from your Codex sessions and forwards it to the
+SkillBench analyzer so your weekly skill reports include Codex activity
+alongside Claude Code and GitHub PR data.
+
+
+It is the Codex counterpart to the SkillMeter Claude Code plugin: same NDJSON
+envelope, same collector, same privacy model. Codex events are tagged
+`agent: "codex"` so they land in the shared pipeline but stay queryable on their
+own.
 
 
 ## What it does
@@ -48,8 +54,15 @@ Codex lifecycle event
 ```
 
 
-Failed uploads are kept on disk as `events.jsonl.<timestamp>` and retried on
-the next `SessionStart`.
+In ClickHouse, Codex events are attributed to their own
+`ServiceName = skillmeter-codex-collector-<tenant>-<env>` (the collector derives
+the service name from the event's `agent`), so Codex is queryable separately
+from Claude Code while sharing the same `otel_logs` table.
+
+
+Uploads are best-effort: failed uploads are kept on disk as
+`events.jsonl.<timestamp>` and retried on the next `SessionStart`, and hook
+failures never block your Codex session.
 
 
 ## Install
@@ -164,8 +177,8 @@ The plugin still ships the existing workflow skills under `skills/`:
 - `review-export` — summarize a sanitized export before upload
 
 
-These skills remain useful for batch exports and audit; the new hooks add the
-real-time path on top of them.
+The lifecycle hooks are the primary, always-on telemetry path; these skills
+remain useful for one-off batch exports and audits on top of the live feed.
 
 
 ## Repo layout
