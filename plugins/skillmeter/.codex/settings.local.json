@@ -1,6 +1,5 @@
 {
   "skillmeter": {
-    "telemetry": true,
-    "backendUrl": "https://skillbench.meter.dev.skillbench.com/logs/codex"
+    "telemetry": true
   }
 }
