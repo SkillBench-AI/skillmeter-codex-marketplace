@@ -1,20 +1,40 @@
 # SkillMeter for Codex
 
-Codex marketplace package for `skillmeter`, the SkillBench workflow plugin for
-collecting and reviewing sanitized AI session exports.
+SkillMeter is the SkillBench **telemetry plugin for Codex**. It records
+anonymized lifecycle telemetry from your Codex sessions through Codex's plugin
+hooks and forwards it to the SkillBench analyzer, so your skill reports include
+Codex activity alongside Claude Code and GitHub PR data.
+
+This is the Codex counterpart to the SkillMeter Claude Code plugin. It emits the
+same NDJSON envelope to the same collector (tagged `agent: "codex"`), so both
+agents land in one pipeline and are queryable side by side.
+
+## What you get
+
+- **Live telemetry** — every Codex lifecycle hook (session start, prompt
+  submit, tool use, permission requests, compaction, subagents, stop) is
+  captured, sanitized, and uploaded in the background.
+- **Privacy by default** — paths and commands are HMAC-hashed, telemetry is
+  opt-in per project, and repo-scope filtering keeps out-of-scope repos from
+  ever uploading.
+- **Complementary skills** — bundled `@skillmeter` skills still cover batch
+  export, repo-scope checks, and export review for one-off audits.
+
+See [`plugins/skillmeter/README.md`](plugins/skillmeter/README.md) for the full
+event table, data flow, configuration, and privacy details.
 
 ## Install
 
-If you already have the SkillBench session-collector installed, the easiest
-path is:
+If you already have the SkillBench session-collector installed, the easiest path
+is:
 
 ```bash
 skillbench codex plugin-install
 ```
 
 This clones (or refreshes) this marketplace and runs the
-`codex plugin marketplace add` step for you, then prints the next steps.
-Pass `--dry-run` to print the commands without executing them.
+`codex plugin marketplace add` step for you, then prints the next steps. Pass
+`--dry-run` to print the commands without executing them.
 
 To install manually:
 
@@ -23,50 +43,62 @@ codex plugin marketplace add SkillBench-AI/skillmeter-codex-marketplace
 ```
 
 Then open Codex, run `/plugins`, choose the `SkillBench` marketplace, and
-install `SkillMeter`.
-
-After install, start a new thread and invoke the plugin directly with
-`@skillmeter` or one of its bundled skills.
+install `SkillMeter`. Codex lists the plugin's hooks under `/hooks` — they stay
+inactive until you review and trust them, then start a fresh thread.
 
 Codex currently installs plugins through the interactive plugin browser. There
 is not a separate documented `codex plugin install ...` command for installing a
 plugin entry directly by name.
 
-## Local Testing
+## How it works
 
-For local development, add this checkout as a marketplace source:
+```text
+Codex lifecycle event
+  -> bundled hook script (scripts/<event>.js)
+  -> sanitize + append NDJSON to a local queue
+  -> Stop / SubagentStop gzip + POST the batch to the SkillBench Codex collector
+  -> OTel Collector
+  -> ClickHouse (ServiceName = skillmeter-codex-collector-<tenant>-<env>)
+  -> SkillBench analyzer
+```
+
+Uploads are best-effort: failures are kept on disk and retried on the next
+`SessionStart`, and hook failures never block your Codex session.
+
+## Telemetry control
+
+Per-project opt-in and repo-scope settings live in
+`<project>/.codex/settings.local.json` under the `skillmeter` namespace. On
+macOS the first session in a project shows a native consent prompt; elsewhere,
+enable it explicitly:
+
+```bash
+node "$PLUGIN_ROOT/scripts/telemetry.js" enable
+node "$PLUGIN_ROOT/scripts/telemetry.js" status
+node "$PLUGIN_ROOT/scripts/telemetry.js" disable
+```
+
+## Local development
+
+Add this checkout as a marketplace source:
 
 ```bash
 codex plugin marketplace add ./skillmeter-codex-marketplace
 ```
 
-Then open Codex, run `/plugins`, install `SkillMeter`, and start a fresh
-thread. Codex loads local plugins from its plugin cache after installation, so
-reinstall or refresh the marketplace after changing the plugin contents.
+Then `/plugins` → install `SkillMeter` → start a fresh thread. Codex loads local
+plugins from its plugin cache after installation, so reinstall (or refresh the
+marketplace) after changing the plugin contents.
 
-## What This Plugin Does
+The shipped plugin uploads to prod by default. To point a project at a non-prod
+collector (e.g. the dev tenant collector) without changing the default, set
+`skillmeter.backendUrl` in that project's `.codex/settings.local.json` — see
+[`plugins/skillmeter/README.md`](plugins/skillmeter/README.md#configuration).
 
-This Codex plugin bundles SkillBench workflows for:
+## Bundled skills
 
-- collecting sanitized exports from local Codex session logs
-- checking whether a repo is inside your allowed GitHub org scope
-- reviewing a sanitized export before upload
-
-Unlike the Claude Code plugin, this package does not use runtime hooks. Codex
-plugins currently center on skills, apps, and MCP servers, so SkillMeter for
-Codex works by guiding Codex through the existing `session-collector` workflow
-that reads Codex's native session history from `~/.codex/sessions`.
-
-The plugin does not bundle a collector runtime of its own. It is a Codex-native
-control surface for the existing SkillBench collection flow.
-
-## Typical Use
-
-1. Install the plugin from `/plugins`.
-2. Start a new Codex thread.
-3. Ask `@skillmeter` to collect, check repo scope, or review an export.
-
-Example prompts:
+The plugin still ships the original workflow skills, useful for batch exports
+and audits on top of the live feed:
 
 - `@skillmeter collect a sanitized export of my recent Codex sessions`
 - `@skillmeter check whether this repo is in scope for skillbench-ai`
@@ -81,6 +113,8 @@ skillmeter-codex-marketplace/
 └── plugins/skillmeter/
     ├── .codex-plugin/plugin.json
     ├── README.md
+    ├── hooks/hooks.json
+    ├── scripts/            # lifecycle hook handlers + logger/sanitizer/credstore
     └── skills/
         ├── collect-export/SKILL.md
         ├── check-repo-scope/SKILL.md

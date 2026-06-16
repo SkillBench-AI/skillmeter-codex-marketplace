@@ -1,7 +1,7 @@
 {
   "name": "skillmeter",
-  "version": "0.2.0+codex.20260616180825",
-  "description": "SkillBench workflows and lifecycle hooks for collecting Codex session telemetry.",
+  "version": "0.2.0+codex.20260616192913",
+  "description": "Live SkillBench telemetry for Codex \u2014 lifecycle-hook session analytics, plus sanitized export and review skills.",
   "author": {
     "name": "SkillBench",
     "url": "https://github.com/SkillBench-AI"
@@ -21,8 +21,8 @@
   "hooks": "./hooks/hooks.json",
   "interface": {
     "displayName": "SkillMeter",
-    "shortDescription": "Collect and review sanitized SkillBench exports.",
-    "longDescription": "Use SkillMeter to collect local Codex session history into a sanitized export, check repo scope, and review the export before upload.",
+    "shortDescription": "Live SkillBench telemetry for Codex sessions.",
+    "longDescription": "SkillMeter records anonymized Codex lifecycle telemetry (sessions, prompts, tool use, subagents) and forwards it to the SkillBench analyzer alongside Claude Code and GitHub data. Telemetry is opt-in per project with path hashing and repo-scope filtering. Bundled skills also collect, scope-check, and review sanitized exports.",
     "developerName": "SkillBench",
     "category": "Productivity",
     "capabilities": [
@@ -33,7 +33,7 @@
     "privacyPolicyURL": "https://skillbench.com/privacy",
     "termsOfServiceURL": "https://skillbench.com/terms",
     "defaultPrompt": [
-      "Use SkillMeter to collect a sanitized export of my recent Codex sessions.",
+      "Enable SkillMeter telemetry for this project and show the current status.",
       "Use SkillMeter to check whether this repo matches my allowed GitHub org scope.",
       "Use SkillMeter to review this sanitized export before I upload it."
     ],
