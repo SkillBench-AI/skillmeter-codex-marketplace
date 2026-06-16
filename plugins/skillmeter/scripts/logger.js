@@ -320,7 +320,7 @@ function isValidBackendUrl(url) {
     // Only allow https for security
     if (parsed.protocol !== "https:") return false;
     // Check against trusted patterns
-    return TRUSTED_BACKEND_PATTERNS.some((pattern) => pattern.test(url));
+    return TRUSTED_BACKEND_PATTERNS.some((pattern) => pattern.test(parsed.href));
   } catch {
     return false;
   }
