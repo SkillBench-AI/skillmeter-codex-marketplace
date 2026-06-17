@@ -17,6 +17,8 @@ const path = require("path");
 const zlib = require("zlib");
 const { sanitizeTranscript } = require("./sanitizer");
 const credstore = require("./credstore");
+const { getEndpointFromToken, isJwtExpired } = require("./lib/jwt");
+const { trySilentGhActivate, refreshExpiredJwt } = require("./lib/license-activation");
 
 // Codex sets PLUGIN_ROOT for plugin-bundled hooks and also exports
 // CLAUDE_PLUGIN_ROOT for compatibility with existing plugin hook scripts.
@@ -65,6 +67,40 @@ function getOrCreateHashSalt() {
 
 function getLicenseToken() {
   return credstore.getLicenseToken(LOG_DIR);
+}
+
+// ---------------------------------------------------------------------------
+// License refresh
+//
+// Try the Lambda's /refresh endpoint first (no GitHub round-trip, works for
+// users without gh-cli), then fall back to the silent gh /activate path on
+// 410 / 404 / network failure. Called once per SessionStart so the hook
+// architecture itself rate-limits it to at-most-once-per-session. Best effort:
+// every failure returns null and the session continues unauthenticated, leaving
+// the on-disk queue for the next refreshed session to drain.
+// ---------------------------------------------------------------------------
+
+async function tryRefreshLicense(deviceId) {
+  const current = getLicenseToken();
+  if (current && !credstore.isLicenseTokenExpired(current)) {
+    return current;
+  }
+  if (!deviceId) return null;
+  if (credstore.getSignedOut()) return null;
+
+  // /refresh first when we have a token to rotate. refreshExpiredJwt returns
+  // null on 410 (sliding window), 404 (endpoint not deployed), 401 (bad
+  // signature), or any network/parse error — falling through to gh in all cases.
+  if (current) {
+    const fresh = await refreshExpiredJwt(current, deviceId);
+    if (fresh) return fresh;
+  }
+
+  try {
+    return await trySilentGhActivate(deviceId);
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -299,15 +335,24 @@ function getTimestamp() {
 // Transfer configuration
 // ---------------------------------------------------------------------------
 
-// The published SkillMeter Codex plugin ships pointing at the prod collector.
-// Local development overrides this per-project (e.g. to the dev tenant
-// collector) without changing the shipped default — resolution order is:
-//   1. SKILLMETER_BACKEND_URL env var
-//   2. `skillmeter.backendUrl` in <cwd>/.codex/settings.local.json
-//   3. DEFAULT_BACKEND_URL (prod)
 // The Codex ingest path mirrors /logs/claude but on a sibling /logs/codex
 // route. The collector lambda treats `${backendUrl}/transcript` as the
 // transcript handler.
+const INGEST_ROUTE = "/logs/codex";
+
+// The published SkillMeter Codex plugin ships pointing at the prod collector.
+// The ingest endpoint is resolved at upload time in this order:
+//   1. SKILLMETER_BACKEND_URL env var (full ingest URL; dev/test bypass)
+//   2. `skillmeter.backendUrl` in <cwd>/.codex/settings.local.json (full URL)
+//   3. JWT-derived per-tenant endpoint: the `telemetry_endpoint` claim of a
+//      valid license JWT, with the /logs/codex route appended. This is what
+//      routes each tenant's traffic to its own meter host without per-tenant
+//      plugin builds (matching the Claude plugin).
+//   4. DEFAULT_BACKEND_URL (prod) — fallback when unauthenticated or the JWT
+//      carries no endpoint.
+// Env/settings overrides (1, 2) are user-supplied so they're validated against
+// the trusted-domain allow-list; the JWT endpoint (3) is server-minted and
+// trusted as-is (see lib/jwt.js).
 const DEFAULT_BACKEND_URL = "https://api.meter.skillbench.com/logs/codex";
 
 // Trusted domain patterns for backend URL validation
@@ -355,6 +400,13 @@ function getBackendUrl(cwd) {
     return trimmed;
   }
 
+  // Per-tenant routing: a signed-in user's license JWT carries the tenant's
+  // meter host in its `telemetry_endpoint` claim. Resolve it (skips an expired
+  // token) and append the Codex ingest route. Falls through to the prod default
+  // when there's no usable token, preserving the unauthenticated upload path.
+  const endpoint = getEndpointFromToken(getLicenseToken());
+  if (endpoint) return `${endpoint}${INGEST_ROUTE}`;
+
   return DEFAULT_BACKEND_URL;
 }
 
@@ -386,8 +438,10 @@ const RETRY_DAEMON_LOCK_FILE = path.join(LOG_DIR, ".retry-daemon.lock");
 const RETRY_DAEMON_LOCK_STALE_MS =
   parseInt(process.env.SKILLMETER_RETRY_DAEMON_STALE_MS || "", 10) || 5 * 60 * 1000;
 
-function commonHeaders(extra = {}) {
-  const token = getLicenseToken();
+// Build the shared upload headers. The license JWT is passed explicitly (not
+// read here) so callers can decide whether to attach it — they drop an expired
+// token proactively and retry without auth after a 401/403.
+function commonHeaders(token, extra = {}) {
   const headers = {
     "Content-Type": "application/x-ndjson",
     "Content-Encoding": "gzip",
@@ -402,32 +456,58 @@ function commonHeaders(extra = {}) {
 function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVENT_TIMEOUT) {
   if (!logFile || !fs.existsSync(logFile)) return Promise.resolve();
 
-  const fileContent = fs.readFileSync(logFile);
-  const compressed = zlib.gzipSync(fileContent);
+  const storedToken = getLicenseToken();
+  // Proactive: never send a JWT we already know is past its exp. The ingest
+  // endpoint accepts unauthenticated batches, so dropping the token still lets
+  // the upload through and the next session's refresh re-authenticates.
+  const initialToken = storedToken && !isJwtExpired(storedToken) ? storedToken : null;
+  if (storedToken && !initialToken) {
+    console.error(`[skillmeter] Event log: dropping expired license JWT before send`);
+  }
+
+  const compressed = zlib.gzipSync(fs.readFileSync(logFile));
+  const baseName = path.basename(logFile);
+
+  const doPost = (token) =>
+    fetch(backendUrl, {
+      method: "POST",
+      headers: commonHeaders(token),
+      body: compressed,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+  const markSent = () => {
+    try { fs.renameSync(logFile, `${logFile}.sent`); } catch {}
+  };
 
   console.error(
-    `[skillmeter] Transferring event log: ${path.basename(logFile)} (${compressed.length} bytes gzipped)`
+    `[skillmeter] Transferring event log: ${baseName} (${compressed.length} bytes gzipped)`
   );
 
-  return fetch(backendUrl, {
-    method: "POST",
-    headers: commonHeaders(),
-    body: compressed,
-    signal: AbortSignal.timeout(timeoutMs),
-  })
+  return doPost(initialToken)
     .then((res) => {
       if (res.ok) {
-        console.error(
-          `[skillmeter] Event log transferred: ${path.basename(logFile)}`
-        );
-        try {
-          fs.renameSync(logFile, `${logFile}.sent`);
-        } catch {}
-      } else {
-        console.error(
-          `[skillmeter] Event log transfer failed: HTTP ${res.status}`
-        );
+        console.error(`[skillmeter] Event log transferred: ${baseName}`);
+        markSent();
+        return;
       }
+      // Reactive: the server rejected our Authorization header — clear the bad
+      // token so later requests don't reuse it, then retry once without auth.
+      if (initialToken && (res.status === 401 || res.status === 403)) {
+        console.error(
+          `[skillmeter] Event log auth rejected (HTTP ${res.status}), clearing license and retrying without auth`
+        );
+        try { credstore.setLicenseToken(""); } catch {}
+        return doPost(null).then((res2) => {
+          if (res2.ok) {
+            console.error(`[skillmeter] Event log transferred on retry: ${baseName}`);
+            markSent();
+          } else {
+            console.error(`[skillmeter] Event log retry failed: HTTP ${res2.status}`);
+          }
+        });
+      }
+      console.error(`[skillmeter] Event log transfer failed: HTTP ${res.status}`);
     })
     .catch((err) => {
       console.error(`[skillmeter] Event log transfer error: ${err.message}`);
@@ -480,33 +560,60 @@ function uploadPendingTranscript(
 ) {
   if (!pendingPath || !fs.existsSync(pendingPath)) return Promise.resolve();
 
+  const storedToken = getLicenseToken();
+  const initialToken = storedToken && !isJwtExpired(storedToken) ? storedToken : null;
+  if (storedToken && !initialToken) {
+    console.error(`[skillmeter] Transcript: dropping expired license JWT before send`);
+  }
+
   const transcriptId = path.basename(pendingPath);
   const compressed = zlib.gzipSync(fs.readFileSync(pendingPath));
 
-  const headers = commonHeaders({
-    "X-Device-ID": deviceId,
-    "X-Transcript-ID": transcriptId,
-  });
+  const doPost = (token) =>
+    fetch(`${backendUrl}/transcript`, {
+      method: "POST",
+      headers: commonHeaders(token, {
+        "X-Device-ID": deviceId,
+        "X-Transcript-ID": transcriptId,
+      }),
+      body: compressed,
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+
+  const removePending = () => {
+    try { fs.unlinkSync(pendingPath); } catch {}
+  };
 
   console.error(
     `[skillmeter] Transferring transcript: ${transcriptId} (${compressed.length} bytes gzipped)`
   );
 
-  return fetch(`${backendUrl}/transcript`, {
-    method: "POST",
-    headers,
-    body: compressed,
-    signal: AbortSignal.timeout(timeoutMs),
-  })
+  return doPost(initialToken)
     .then((res) => {
       if (res.ok) {
         console.error(`[skillmeter] Transcript transferred: ${transcriptId}`);
-        try { fs.unlinkSync(pendingPath); } catch {}
-      } else {
-        console.error(
-          `[skillmeter] Transcript transfer failed: HTTP ${res.status} — kept pending for retry`
-        );
+        removePending();
+        return;
       }
+      if (initialToken && (res.status === 401 || res.status === 403)) {
+        console.error(
+          `[skillmeter] Transcript auth rejected (HTTP ${res.status}), clearing license and retrying without auth`
+        );
+        try { credstore.setLicenseToken(""); } catch {}
+        return doPost(null).then((res2) => {
+          if (res2.ok) {
+            console.error(`[skillmeter] Transcript transferred on retry: ${transcriptId}`);
+            removePending();
+          } else {
+            console.error(
+              `[skillmeter] Transcript retry failed: HTTP ${res2.status} — kept pending for retry`
+            );
+          }
+        });
+      }
+      console.error(
+        `[skillmeter] Transcript transfer failed: HTTP ${res.status} — kept pending for retry`
+      );
     })
     .catch((err) => {
       console.error(
@@ -697,8 +804,10 @@ function clearDrainOnceLock() {
 
 /**
  * Spawn a detached one-shot drain so the hook returns without waiting on
- * network I/O. The resolved backend URL is passed through the environment so
- * the child doesn't depend on re-reading per-cwd settings.
+ * network I/O. The child inherits the environment and re-resolves the backend
+ * URL itself — that keeps the JWT-derived per-tenant endpoint correct (freezing
+ * it into SKILLMETER_BACKEND_URL would make the child re-validate a tenant host
+ * against the trusted-domain allow-list and fall back to the default).
  */
 function spawnDetachedDrain() {
   if (!shouldSpawnDrainOnce()) return false;
@@ -708,7 +817,7 @@ function spawnDetachedDrain() {
     const child = spawn(process.execPath, [script], {
       detached: true,
       stdio: "ignore",
-      env: { ...process.env, SKILLMETER_BACKEND_URL: getBackendUrl(process.cwd()) },
+      env: process.env,
     });
     child.unref();
     console.error(`[skillmeter] Drain trigger spawned: pid=${child.pid}`);
@@ -796,7 +905,7 @@ function spawnRetryDaemon() {
     const child = spawn(process.execPath, [script], {
       detached: true,
       stdio: "ignore",
-      env: { ...process.env, SKILLMETER_BACKEND_URL: getBackendUrl(process.cwd()) },
+      env: process.env,
     });
     // Claim the lock immediately so a concurrent SessionStart doesn't also
     // spawn one; the daemon refreshes this heartbeat as it runs.
@@ -1102,6 +1211,7 @@ module.exports = {
   getDeviceId,
   getOrCreateHashSalt,
   getLicenseToken,
+  tryRefreshLicense,
   hashHmac,
   sanitizeToolData,
   getTimestamp,
