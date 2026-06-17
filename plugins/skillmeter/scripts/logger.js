@@ -108,9 +108,11 @@ async function tryRefreshLicense(deviceId) {
 // ---------------------------------------------------------------------------
 
 // Codex doesn't define a single per-cwd settings file. We adopt
-// ${cwd}/.codex/settings.local.json under a "skillmeter" namespace so opt-in
-// and repo-scope decisions are project-local and survive `git clone` policies
-// chosen by the user (the file is typically gitignored or workspace-only).
+// ${cwd}/.codex/settings.local.json under a "skillmeter" namespace so the
+// per-project opt-in (and dev backend/activation overrides) are project-local
+// and survive `git clone` policies chosen by the user (the file is typically
+// gitignored or workspace-only). Repo-scope is NOT configured here — it derives
+// from the signed-in user's GitHub identities (see getRepoScopeDecision).
 const SETTINGS_RELATIVE = path.join(".codex", "settings.local.json");
 
 function readSettingsFile(cwd) {
@@ -121,20 +123,6 @@ function readSettingsFile(cwd) {
   } catch {
     return null;
   }
-}
-
-function getRepoScopeSettings(cwd) {
-  const skillmeterSettings = readSettingsFile(cwd)?.skillmeter ?? {};
-  return {
-    enabled: skillmeterSettings.repoScope?.enabled === true,
-    allowedGitHubOrgs: Array.isArray(skillmeterSettings.repoScope?.allowedGitHubOrgs)
-      ? skillmeterSettings.repoScope.allowedGitHubOrgs
-          .map((org) => String(org).trim().toLowerCase())
-          .filter(Boolean)
-      : [],
-    includeUnapprovedRepos:
-      skillmeterSettings.repoScope?.includeUnapprovedRepos === true,
-  };
 }
 
 function hashHmac(str, salt) {
@@ -236,25 +224,18 @@ function getRemoteUrlsForRepo(repoRoot) {
   }
 }
 
+// Decide whether an event from `cwd` is in-scope. Telemetry fires only in
+// repos whose GitHub remote belongs to the signed-in user's own login or one
+// of their org memberships, captured from `GET /user` + `GET /user/orgs` at
+// signin and stored in ~/.skillbench/credentials.json. This matches the Claude
+// plugin exactly: with no signed-in orgs the result is `not_activated` and
+// everything is dropped — there is no permissive "unscoped"/allow-all default
+// and no per-project allow-list. Non-git directories, non-GitHub remotes, and
+// repos outside the allowed orgs are all blocked.
 function getRepoScopeDecision(cwd) {
-  const repoScope = getRepoScopeSettings(cwd);
-  if (!repoScope.enabled) {
-    return { allowed: true, scope: "unscoped", classification: "disabled" };
-  }
-
-  if (repoScope.allowedGitHubOrgs.length === 0) {
-    if (repoScope.includeUnapprovedRepos) {
-      return {
-        allowed: true,
-        scope: "include_unapproved",
-        classification: "include_unapproved_repos",
-      };
-    }
-    return {
-      allowed: false,
-      scope: "unknown",
-      classification: "no_allowed_orgs_configured",
-    };
+  const allowedOrgs = credstore.getAllowedGitHubOrgs();
+  if (allowedOrgs.length === 0) {
+    return { allowed: false, scope: "unknown", classification: "not_activated" };
   }
 
   const repoRoot = findGitRoot(cwd);
@@ -275,9 +256,7 @@ function getRepoScopeDecision(cwd) {
     };
   }
 
-  const matchingOrg = remoteOrgs.find((org) =>
-    repoScope.allowedGitHubOrgs.includes(org)
-  );
+  const matchingOrg = remoteOrgs.find((org) => allowedOrgs.includes(org));
   if (matchingOrg) {
     return {
       allowed: true,
@@ -289,11 +268,9 @@ function getRepoScopeDecision(cwd) {
   }
 
   return {
-    allowed: repoScope.includeUnapprovedRepos,
+    allowed: false,
     scope: "external",
-    classification: repoScope.includeUnapprovedRepos
-      ? "github_org_mismatch_opt_in"
-      : "github_org_mismatch",
+    classification: "github_org_mismatch",
     repoRoot,
     remoteOrg: remoteOrgs[0],
   };
@@ -1263,7 +1240,6 @@ module.exports = {
   getTelemetryOptIn,
   saveTelemetryOptIn,
   promptTelemetryOptIn,
-  getRepoScopeSettings,
   getRepoScopeDecision,
   runHook,
   PLUGIN_ROOT,
