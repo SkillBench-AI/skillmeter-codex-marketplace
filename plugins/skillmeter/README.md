@@ -152,23 +152,20 @@ hook spawns that don't inherit a shell env):
 ```
 
 
-Per-project opt-in and repo-scope settings live in the same
-`<project>/.codex/settings.local.json`:
+Per-project opt-in lives in `<project>/.codex/settings.local.json`:
 
 
 ```json
 {
   "skillmeter": {
     "telemetry": true,
-    "backendUrl": "https://skillbench.meter.dev.skillbench.com/logs/codex",
-    "repoScope": {
-      "enabled": true,
-      "allowedGitHubOrgs": ["your-company", "your-github-user"],
-      "includeUnapprovedRepos": false
-    }
+    "backendUrl": "https://skillbench.meter.dev.skillbench.com/logs/codex"
   }
 }
 ```
+
+Repo scope is **not** configured here — it derives from the GitHub identities of
+the signed-in user (see [Repo-scoped filtering](#repo-scoped-filtering)).
 
 
 You can toggle telemetry per-project with the bundled CLI:
@@ -247,13 +244,31 @@ preserved, so signing back in reuses the same machine identity.
 - **Paths** (`cwd`, `repo_root`, `tool_input.file_path`, `command`, `patch`)
   are HMAC-SHA256 hashed with the per-machine salt before they leave the
   session.
-- **Repo scope filtering** stops uploads from repos outside your allowed
-  GitHub orgs. With no allow-list configured and `includeUnapprovedRepos:
-  false`, scope-based blocking is the default — events get dropped at the hook
-  rather than uploaded.
+- **Repo scope filtering** stops uploads from repos outside the GitHub orgs the
+  signed-in user belongs to (see below). The default posture is closed: with no
+  signed-in orgs, every event is dropped at the hook rather than uploaded.
 - **Trust review.** Codex skips plugin-bundled hooks until you review and
   trust the current hook definition via `/hooks`. Changing this plugin's hooks
   invalidates the trust and requires re-review.
+
+### Repo-scoped filtering
+
+Telemetry is gated to repositories owned by GitHub identities the signed-in user
+controls — their own login plus every org returned by `GET /user/orgs`. The list
+is captured at signin (using the same OAuth token that exchanges for the
+SkillMeter license) and stored in `~/.skillbench/credentials.json` next to the
+device ID and license JWT. There is no per-project repo-scope config, matching
+the Claude Code plugin.
+
+Events are dropped — even in projects where you ran `telemetry.js enable` — for:
+
+- a machine that is not signed in (no allowed orgs cached → `not_activated`)
+- directories that are not inside a Git repository
+- repositories without a recognizable GitHub remote
+- repositories whose remote belongs to an org the user is not a member of
+
+To refresh the allowed identity list (e.g. after joining a new org), run the
+`signin` skill again.
 
 
 ## Bundled skills
