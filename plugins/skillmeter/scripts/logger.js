@@ -11,7 +11,7 @@
  */
 
 const crypto = require("crypto");
-const { execSync } = require("child_process");
+const { execSync, spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
@@ -33,6 +33,11 @@ const PLUGIN_DATA =
 
 const LOG_DIR = path.join(PLUGIN_DATA, "logs");
 const LOG_FILE = path.join(LOG_DIR, "events.jsonl");
+
+// Staged transcripts awaiting upload live here. Sanitized snapshots are written
+// before any network call so a failed upload can be retried from disk by the
+// detached drain / retry monitor instead of being lost when the hook exits.
+const TRANSCRIPTS_PENDING_DIR = path.join(LOG_DIR, "transcripts", "pending");
 
 const AGENT_NAME = "codex";
 
@@ -357,6 +362,30 @@ const EVENT_TIMEOUT =
   parseInt(process.env.SKILLMETER_TIMEOUT || "10", 10) * 1000;
 const TRANSCRIPT_TIMEOUT = 30_000;
 
+// How long we keep uploaded `.sent` event logs and staged transcripts before
+// the cleanup sweep deletes them. 30 days survives vacations and short outages
+// while keeping disks from filling if ingest breaks for weeks.
+const CLEANUP_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+// An active `events.jsonl` that hasn't been touched in this long is assumed to
+// belong to a crashed/abandoned session (a live session writes events far more
+// often) and is sealed at SessionStart so its events are recovered and drained.
+const ACTIVE_LOG_STALE_MS =
+  parseInt(process.env.SKILLMETER_ACTIVE_LOG_STALE_MS || "", 10) || 5 * 60 * 1000;
+
+// Drain-once de-dupe lock: stops final-session hooks (Stop/SubagentStop/
+// SessionStart) from each spawning a redundant detached drain within a short
+// window. The lock is advisory and self-heals once it goes stale.
+const DRAIN_ONCE_LOCK_FILE = path.join(LOG_DIR, ".drain-once.lock");
+const DRAIN_ONCE_LOCK_STALE_MS = 30_000;
+
+// Retry-monitor singleton lock: ensures at most one long-running retry daemon
+// runs across concurrent Codex sessions on this machine. The daemon refreshes
+// the lock mtime as a heartbeat and removes it on exit.
+const RETRY_DAEMON_LOCK_FILE = path.join(LOG_DIR, ".retry-daemon.lock");
+const RETRY_DAEMON_LOCK_STALE_MS =
+  parseInt(process.env.SKILLMETER_RETRY_DAEMON_STALE_MS || "", 10) || 5 * 60 * 1000;
+
 function commonHeaders(extra = {}) {
   const token = getLicenseToken();
   const headers = {
@@ -370,7 +399,7 @@ function commonHeaders(extra = {}) {
   return headers;
 }
 
-function transferEventLog(logFile, backendUrl = getBackendUrl()) {
+function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVENT_TIMEOUT) {
   if (!logFile || !fs.existsSync(logFile)) return Promise.resolve();
 
   const fileContent = fs.readFileSync(logFile);
@@ -384,7 +413,7 @@ function transferEventLog(logFile, backendUrl = getBackendUrl()) {
     method: "POST",
     headers: commonHeaders(),
     body: compressed,
-    signal: AbortSignal.timeout(EVENT_TIMEOUT),
+    signal: AbortSignal.timeout(timeoutMs),
   })
     .then((res) => {
       if (res.ok) {
@@ -405,15 +434,54 @@ function transferEventLog(logFile, backendUrl = getBackendUrl()) {
     });
 }
 
-function transferTranscript(transcriptPath, deviceId, backendUrl = getBackendUrl()) {
-  if (!transcriptPath || !fs.existsSync(transcriptPath)) return;
+// ---------------------------------------------------------------------------
+// Transcript staging + upload
+//
+// The filesystem is the source of truth. We sanitize the transcript and write
+// it to TRANSCRIPTS_PENDING_DIR before any network call, so a failed upload
+// leaves a retryable snapshot on disk for the detached drain / retry monitor.
+// ---------------------------------------------------------------------------
 
-  const hashSalt = getOrCreateHashSalt();
-  const fileContent = hashSalt
-    ? sanitizeTranscript(transcriptPath, hashSalt)
-    : fs.readFileSync(transcriptPath);
-  const compressed = zlib.gzipSync(fileContent);
+function stageTranscriptForUpload(transcriptPath) {
+  if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
+
+  try {
+    fs.mkdirSync(TRANSCRIPTS_PENDING_DIR, { recursive: true });
+  } catch (err) {
+    console.error(`[skillmeter] Transcript staging failed (mkdir): ${err.message}`);
+    return null;
+  }
+
   const transcriptId = path.basename(transcriptPath);
+  const pendingPath = path.join(TRANSCRIPTS_PENDING_DIR, transcriptId);
+
+  try {
+    const hashSalt = getOrCreateHashSalt();
+    if (!hashSalt) {
+      console.error(`[skillmeter] Transcript staging failed: no hash salt`);
+      return null;
+    }
+    const sanitized = sanitizeTranscript(transcriptPath, hashSalt);
+    // Overwrite previous snapshots of the same transcript — a long session
+    // re-stages on every Stop and we always want the latest lines.
+    fs.writeFileSync(pendingPath, sanitized);
+    return pendingPath;
+  } catch (err) {
+    console.error(`[skillmeter] Transcript staging failed: ${err.message}`);
+    return null;
+  }
+}
+
+function uploadPendingTranscript(
+  pendingPath,
+  deviceId,
+  backendUrl = getBackendUrl(),
+  timeoutMs = TRANSCRIPT_TIMEOUT
+) {
+  if (!pendingPath || !fs.existsSync(pendingPath)) return Promise.resolve();
+
+  const transcriptId = path.basename(pendingPath);
+  const compressed = zlib.gzipSync(fs.readFileSync(pendingPath));
 
   const headers = commonHeaders({
     "X-Device-ID": deviceId,
@@ -424,79 +492,400 @@ function transferTranscript(transcriptPath, deviceId, backendUrl = getBackendUrl
     `[skillmeter] Transferring transcript: ${transcriptId} (${compressed.length} bytes gzipped)`
   );
 
-  fetch(`${backendUrl}/transcript`, {
+  return fetch(`${backendUrl}/transcript`, {
     method: "POST",
     headers,
     body: compressed,
-    signal: AbortSignal.timeout(TRANSCRIPT_TIMEOUT),
+    signal: AbortSignal.timeout(timeoutMs),
   })
     .then((res) => {
       if (res.ok) {
         console.error(`[skillmeter] Transcript transferred: ${transcriptId}`);
+        try { fs.unlinkSync(pendingPath); } catch {}
       } else {
         console.error(
-          `[skillmeter] Transcript transfer failed: HTTP ${res.status}`
+          `[skillmeter] Transcript transfer failed: HTTP ${res.status} — kept pending for retry`
         );
       }
     })
     .catch((err) => {
-      console.error(`[skillmeter] Transcript transfer error: ${err.message}`);
+      console.error(
+        `[skillmeter] Transcript transfer error: ${err.message} — kept pending for retry`
+      );
     });
 }
 
-function flushEventLog(backendUrl = getBackendUrl()) {
-  if (fs.existsSync(LOG_FILE)) {
+// Backwards-compatible one-shot: stage then upload. Failed uploads remain in
+// the pending queue for the detached drain / retry monitor.
+function transferTranscript(transcriptPath, deviceId, backendUrl = getBackendUrl()) {
+  const pendingPath = stageTranscriptForUpload(transcriptPath);
+  if (!pendingPath) return Promise.resolve();
+  return uploadPendingTranscript(pendingPath, deviceId, backendUrl);
+}
+
+// ---------------------------------------------------------------------------
+// Event-log sealing + crash recovery
+// ---------------------------------------------------------------------------
+
+/**
+ * Seal the active event log into a retryable batch (`events.jsonl.<ts>`). This
+ * is a local durable-queue transition only; uploading is handled separately by
+ * the drain functions. Returns the sealed path, or null when there was nothing
+ * to seal.
+ */
+function sealEventLog() {
+  if (!fs.existsSync(LOG_FILE)) {
+    console.error(`[skillmeter] No event log to seal`);
+    return null;
+  }
+
+  const baseTimestamp = Date.now();
+  for (let attempt = 0; attempt < 100; attempt++) {
+    const sealedFile = `${LOG_FILE}.${baseTimestamp + attempt}`;
+    if (fs.existsSync(sealedFile)) continue;
     try {
-      const sendingFile = `${LOG_FILE}.${Date.now()}`;
-      fs.renameSync(LOG_FILE, sendingFile);
-      console.error(
-        `[skillmeter] Rotated event log: ${path.basename(sendingFile)}`
-      );
-      return transferEventLog(sendingFile, backendUrl);
+      fs.renameSync(LOG_FILE, sealedFile);
+      console.error(`[skillmeter] Sealed event log: ${path.basename(sealedFile)}`);
+      return sealedFile;
     } catch (err) {
-      console.error(`[skillmeter] Event log rotation failed: ${err.message}`);
-      return Promise.resolve();
+      if (err && err.code === "ENOENT") {
+        console.error(`[skillmeter] No event log to seal`);
+        return null;
+      }
+      if (err && err.code === "EEXIST") continue;
+      console.error(`[skillmeter] Event log seal failed: ${err.message}`);
+      return null;
     }
   }
-  console.error(`[skillmeter] No event log to flush`);
-  return Promise.resolve();
+  console.error(`[skillmeter] Event log seal failed: no unique batch name`);
+  return null;
 }
 
-function flushAndTransfer(input, deviceId) {
-  const backendUrl = getBackendUrl(process.cwd());
-  const eventLogPromise = flushEventLog(backendUrl);
-
-  if (input.transcript_path && fs.existsSync(input.transcript_path)) {
-    transferTranscript(input.transcript_path, deviceId, backendUrl);
-  } else if (input.agent_transcript_path && fs.existsSync(input.agent_transcript_path)) {
-    transferTranscript(input.agent_transcript_path, deviceId, backendUrl);
-  } else {
-    console.error(`[skillmeter] No transcript to transfer`);
+/**
+ * Recover an un-rotated `events.jsonl` left behind by a crashed/abandoned
+ * session. A live session writes events frequently, so an active log that has
+ * been idle beyond ACTIVE_LOG_STALE_MS is assumed orphaned and is sealed so its
+ * events join the drain queue. Sealing only splits the stream — it never
+ * duplicates events — so an over-eager seal of a quiet-but-live session is
+ * harmless. Returns the sealed path, or null.
+ */
+function recoverStaleActiveLog() {
+  let st;
+  try {
+    st = fs.statSync(LOG_FILE);
+  } catch {
+    return null;
   }
+  if (!st.isFile()) return null;
 
-  return eventLogPromise;
+  const age = Date.now() - st.mtimeMs;
+  if (age < ACTIVE_LOG_STALE_MS) return null;
+
+  console.error(
+    `[skillmeter] Recovering un-rotated event log (idle ${Math.round(age / 1000)}s) from a prior session`
+  );
+  return sealEventLog();
 }
 
+// Backwards-compatible flush: seal the active log and upload it immediately.
+function flushEventLog(backendUrl = getBackendUrl()) {
+  const sealed = sealEventLog();
+  if (!sealed) return Promise.resolve();
+  return transferEventLog(sealed, backendUrl);
+}
+
+// ---------------------------------------------------------------------------
+// Durable-queue listing + draining
+// ---------------------------------------------------------------------------
+
+function listSealedEventLogs() {
+  if (!fs.existsSync(LOG_DIR)) return [];
+  try {
+    return fs.readdirSync(LOG_DIR)
+      .filter((file) => /^events\.jsonl\.\d+$/.test(file))
+      .map((file) => path.join(LOG_DIR, file))
+      .filter((filePath) => {
+        try { return fs.statSync(filePath).isFile(); } catch { return false; }
+      });
+  } catch {
+    return [];
+  }
+}
+
+function listPendingTranscripts() {
+  if (!fs.existsSync(TRANSCRIPTS_PENDING_DIR)) return [];
+  try {
+    return fs.readdirSync(TRANSCRIPTS_PENDING_DIR)
+      .map((file) => path.join(TRANSCRIPTS_PENDING_DIR, file))
+      .filter((filePath) => {
+        try { return fs.statSync(filePath).isFile(); } catch { return false; }
+      });
+  } catch {
+    return [];
+  }
+}
+
+async function drainFailedLogs(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
+  const files = listSealedEventLogs();
+  if (files.length === 0) return 0;
+  console.error(`[skillmeter] Draining ${files.length} sealed event log(s)`);
+  await Promise.allSettled(
+    files.map((filePath) => transferEventLog(filePath, backendUrl, timeoutMs))
+  );
+  return files.length;
+}
+
+async function drainPendingTranscripts(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
+  const files = listPendingTranscripts();
+  if (files.length === 0) return 0;
+
+  const deviceId = getDeviceId();
+  if (!deviceId) return 0;
+
+  console.error(`[skillmeter] Draining ${files.length} pending transcript(s)`);
+  await Promise.allSettled(
+    files.map((filePath) => uploadPendingTranscript(filePath, deviceId, backendUrl, timeoutMs))
+  );
+  return files.length;
+}
+
+/**
+ * Drain both durable queues once. Returns the number of queued items found
+ * (pre-drain), which callers use to decide whether work remains.
+ */
+async function drainQueuesOnce(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
+  const logs = await drainFailedLogs(backendUrl, timeoutMs);
+  const transcripts = await drainPendingTranscripts(backendUrl, timeoutMs);
+  return logs + transcripts;
+}
+
+// Backwards-compatible alias retained for existing callers/tests.
 function retryFailedLogs(backendUrl = getBackendUrl(process.cwd())) {
-  if (!fs.existsSync(LOG_DIR)) return;
+  void drainFailedLogs(backendUrl);
+}
+
+// ---------------------------------------------------------------------------
+// Detached drain spawn (one-shot)
+// ---------------------------------------------------------------------------
+
+function shouldSpawnDrainOnce() {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    const st = fs.statSync(DRAIN_ONCE_LOCK_FILE);
+    if (Date.now() - st.mtimeMs < DRAIN_ONCE_LOCK_STALE_MS) {
+      console.error(`[skillmeter] Drain trigger skipped: recent drain already requested`);
+      return false;
+    }
+  } catch (err) {
+    if (err && err.code !== "ENOENT") {
+      console.error(`[skillmeter] Drain lock check failed: ${err.message}`);
+    }
+  }
 
   try {
-    const files = fs.readdirSync(LOG_DIR);
-    let retryCount = 0;
+    fs.writeFileSync(DRAIN_ONCE_LOCK_FILE, `${process.pid} ${Date.now()}\n`);
+    return true;
+  } catch (err) {
+    console.error(`[skillmeter] Drain lock write failed: ${err.message}`);
+    return false;
+  }
+}
 
-    for (const file of files) {
-      const filePath = path.join(LOG_DIR, file);
-      if (!fs.statSync(filePath).isFile()) continue;
-      if (/^events\.jsonl\.\d+$/.test(file)) {
-        retryCount++;
-        transferEventLog(filePath, backendUrl);
+function clearDrainOnceLock() {
+  try { fs.unlinkSync(DRAIN_ONCE_LOCK_FILE); } catch {}
+}
+
+/**
+ * Spawn a detached one-shot drain so the hook returns without waiting on
+ * network I/O. The resolved backend URL is passed through the environment so
+ * the child doesn't depend on re-reading per-cwd settings.
+ */
+function spawnDetachedDrain() {
+  if (!shouldSpawnDrainOnce()) return false;
+
+  const script = path.join(PLUGIN_ROOT, "scripts", "drain_once.js");
+  try {
+    const child = spawn(process.execPath, [script], {
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env, SKILLMETER_BACKEND_URL: getBackendUrl(process.cwd()) },
+    });
+    child.unref();
+    console.error(`[skillmeter] Drain trigger spawned: pid=${child.pid}`);
+    return true;
+  } catch (err) {
+    clearDrainOnceLock();
+    console.error(`[skillmeter] Drain trigger spawn failed: ${err.message}`);
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Retry monitor (long-running, self-spawned singleton)
+//
+// Codex has no managed monitor lifecycle (unlike Claude Code), so we launch the
+// retry daemon detached from SessionStart and rely on a heartbeat lock to keep
+// it a singleton across concurrent sessions. The daemon self-terminates on
+// idle / max-lifetime so it never orphans.
+// ---------------------------------------------------------------------------
+
+function isProcessAlive(pid) {
+  if (!pid || Number.isNaN(pid)) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (err) {
+    return err && err.code === "EPERM";
+  }
+}
+
+function readRetryDaemonLock() {
+  try {
+    const raw = fs.readFileSync(RETRY_DAEMON_LOCK_FILE, "utf8").trim();
+    const pid = parseInt(raw.split(/\s+/)[0], 10);
+    const st = fs.statSync(RETRY_DAEMON_LOCK_FILE);
+    return { pid, mtimeMs: st.mtimeMs };
+  } catch {
+    return null;
+  }
+}
+
+function isRetryDaemonRunning() {
+  const lock = readRetryDaemonLock();
+  if (!lock) return false;
+  if (Date.now() - lock.mtimeMs > RETRY_DAEMON_LOCK_STALE_MS) return false;
+  return isProcessAlive(lock.pid);
+}
+
+function writeRetryDaemonLock(pid) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    fs.writeFileSync(RETRY_DAEMON_LOCK_FILE, `${pid} ${Date.now()}\n`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function refreshRetryDaemonLock(pid = process.pid) {
+  return writeRetryDaemonLock(pid);
+}
+
+function ownsRetryDaemonLock(pid = process.pid) {
+  const lock = readRetryDaemonLock();
+  return !!lock && lock.pid === pid;
+}
+
+function clearRetryDaemonLock(pid = process.pid) {
+  if (!ownsRetryDaemonLock(pid)) return;
+  try { fs.unlinkSync(RETRY_DAEMON_LOCK_FILE); } catch {}
+}
+
+/**
+ * Launch the long-running retry monitor if one isn't already running. Returns
+ * true when a new daemon was spawned.
+ */
+function spawnRetryDaemon() {
+  if (isRetryDaemonRunning()) {
+    console.error(`[skillmeter] Retry monitor already running`);
+    return false;
+  }
+
+  const script = path.join(PLUGIN_ROOT, "scripts", "monitors", "retry_daemon.js");
+  try {
+    const child = spawn(process.execPath, [script], {
+      detached: true,
+      stdio: "ignore",
+      env: { ...process.env, SKILLMETER_BACKEND_URL: getBackendUrl(process.cwd()) },
+    });
+    // Claim the lock immediately so a concurrent SessionStart doesn't also
+    // spawn one; the daemon refreshes this heartbeat as it runs.
+    writeRetryDaemonLock(child.pid);
+    child.unref();
+    console.error(`[skillmeter] Retry monitor spawned: pid=${child.pid}`);
+    return true;
+  } catch (err) {
+    console.error(`[skillmeter] Retry monitor spawn failed: ${err.message}`);
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Cleanup + final-session sealing
+// ---------------------------------------------------------------------------
+
+/**
+ * Delete uploaded `.sent` event logs and staged transcripts older than
+ * CLEANUP_MAX_AGE_MS so nothing accumulates forever once it has been uploaded
+ * (or has aged out as undeliverable).
+ */
+function cleanupStaleFiles() {
+  const now = Date.now();
+  const candidates = [];
+
+  if (fs.existsSync(LOG_DIR)) {
+    try {
+      for (const f of fs.readdirSync(LOG_DIR)) {
+        if (/^events\.jsonl\.\d+\.sent$/.test(f)) {
+          candidates.push(path.join(LOG_DIR, f));
+        }
       }
-    }
+    } catch {}
+  }
 
-    if (retryCount > 0) {
-      console.error(`[skillmeter] Retrying ${retryCount} failed log file(s)`);
-    }
-  } catch {}
+  if (fs.existsSync(TRANSCRIPTS_PENDING_DIR)) {
+    try {
+      for (const f of fs.readdirSync(TRANSCRIPTS_PENDING_DIR)) {
+        candidates.push(path.join(TRANSCRIPTS_PENDING_DIR, f));
+      }
+    } catch {}
+  }
+
+  let deleted = 0;
+  for (const p of candidates) {
+    try {
+      const st = fs.statSync(p);
+      if (st.isFile() && now - st.mtimeMs > CLEANUP_MAX_AGE_MS) {
+        fs.unlinkSync(p);
+        deleted++;
+      }
+    } catch {}
+  }
+
+  if (deleted > 0) {
+    console.error(`[skillmeter] Cleaned up ${deleted} stale file(s) older than 30 days`);
+  }
+}
+
+/**
+ * Seal final-session artifacts into durable queues and kick off a detached
+ * drain. Uploading is left to the drain / retry monitor so the hook returns
+ * quickly instead of blocking on network I/O.
+ */
+function sealFinalSessionArtifacts(input) {
+  const sealed = sealEventLog();
+
+  let staged = null;
+  if (input && input.transcript_path && fs.existsSync(input.transcript_path)) {
+    staged = stageTranscriptForUpload(input.transcript_path);
+  } else if (input && input.agent_transcript_path && fs.existsSync(input.agent_transcript_path)) {
+    staged = stageTranscriptForUpload(input.agent_transcript_path);
+  } else {
+    console.error(`[skillmeter] No transcript to stage`);
+  }
+
+  if (sealed || staged) spawnDetachedDrain();
+}
+
+function sealEventLogAndTriggerDrain() {
+  if (sealEventLog()) spawnDetachedDrain();
+}
+
+// Replaces the old synchronous flush+upload: seal locally, then hand off to a
+// detached drain so the Stop / SubagentStop hook isn't blocked on the network.
+function flushAndTransfer(input) {
+  sealFinalSessionArtifacts(input);
+  return Promise.resolve();
 }
 
 function logStructured(level, event, sessionId, data, deviceId) {
@@ -725,6 +1114,32 @@ module.exports = {
   transferTranscript,
   flushEventLog,
   flushAndTransfer,
+  // Durable queue: sealing + crash recovery
+  sealEventLog,
+  recoverStaleActiveLog,
+  sealFinalSessionArtifacts,
+  sealEventLogAndTriggerDrain,
+  // Durable queue: transcript staging
+  stageTranscriptForUpload,
+  uploadPendingTranscript,
+  // Durable queue: listing + draining
+  listSealedEventLogs,
+  listPendingTranscripts,
+  drainFailedLogs,
+  drainPendingTranscripts,
+  drainQueuesOnce,
+  // Detached drain (one-shot)
+  shouldSpawnDrainOnce,
+  clearDrainOnceLock,
+  spawnDetachedDrain,
+  // Retry monitor (long-running singleton)
+  isRetryDaemonRunning,
+  spawnRetryDaemon,
+  refreshRetryDaemonLock,
+  ownsRetryDaemonLock,
+  clearRetryDaemonLock,
+  // Cleanup
+  cleanupStaleFiles,
   getTelemetryOptIn,
   saveTelemetryOptIn,
   promptTelemetryOptIn,
@@ -736,6 +1151,11 @@ module.exports = {
   PLUGIN_VERSION,
   LOG_DIR,
   LOG_FILE,
+  TRANSCRIPTS_PENDING_DIR,
+  CLEANUP_MAX_AGE_MS,
+  ACTIVE_LOG_STALE_MS,
+  DRAIN_ONCE_LOCK_FILE,
+  RETRY_DAEMON_LOCK_FILE,
   DEFAULT_BACKEND_URL,
   getBackendUrl,
   AGENT_NAME,

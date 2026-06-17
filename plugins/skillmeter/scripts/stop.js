@@ -4,9 +4,8 @@
 // always emit `{}` on every exit path.
 const {
   runHook,
-  flushEventLog,
+  sealEventLogAndTriggerDrain,
   flushAndTransfer,
-  getBackendUrl,
 } = require("./logger.js");
 
 runHook(
@@ -17,8 +16,10 @@ runHook(
   }),
   {
     requireJsonStdout: true,
-    afterSkip: (input) => flushEventLog(getBackendUrl(input && input.cwd)),
-    afterLog: flushAndTransfer,
+    // Seal the durable queues and hand uploads to a detached drain so the hook
+    // returns quickly instead of blocking on network I/O.
+    afterSkip: () => sealEventLogAndTriggerDrain(),
+    afterLog: (input) => flushAndTransfer(input),
   }
 ).catch(() => {
   try { process.stdout.write("{}\n"); } catch {}

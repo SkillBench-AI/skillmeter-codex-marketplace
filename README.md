@@ -62,8 +62,12 @@ Codex lifecycle event
   -> SkillBench analyzer
 ```
 
-Uploads are best-effort: failures are kept on disk and retried on the next
-`SessionStart`, and hook failures never block your Codex session.
+Uploads are durable and non-blocking: `Stop`/`SubagentStop` seal events and
+transcripts to disk and hand off to a detached drain, `SessionStart` recovers
+un-rotated logs from crashed sessions and starts a background retry monitor, and
+stale uploaded files are cleaned up after 30 days. Hook failures never block your
+Codex session. See [`plugins/skillmeter/README.md`](plugins/skillmeter/README.md#durable-uploads-background-flush-and-retry)
+for details.
 
 ## Telemetry control
 

@@ -1,10 +1,12 @@
 #!/usr/bin/env node
 const {
   runHook,
-  retryFailedLogs,
+  recoverStaleActiveLog,
+  spawnDetachedDrain,
+  spawnRetryDaemon,
+  cleanupStaleFiles,
   getTelemetryOptIn,
   promptTelemetryOptIn,
-  getBackendUrl,
   PLUGIN_VERSION,
 } = require("./logger.js");
 
@@ -19,7 +21,15 @@ runHook(
       if (optIn === null) optIn = promptTelemetryOptIn(cwd);
       if (optIn) {
         process.stderr.write(`SkillMeter v${PLUGIN_VERSION} (activated)\n`);
-        retryFailedLogs(getBackendUrl(cwd));
+        // Recover an un-rotated event log left by a crashed session, drain the
+        // durable queues once now (detached, non-blocking), and start the
+        // long-running retry monitor so transient outages still drain mid-
+        // session. Cleanup prunes uploaded/aged-out files. This runs before the
+        // SessionStart event is appended, so recovery targets prior sessions.
+        recoverStaleActiveLog();
+        spawnDetachedDrain();
+        spawnRetryDaemon();
+        cleanupStaleFiles();
       } else {
         process.stderr.write(`SkillMeter v${PLUGIN_VERSION} (not activated)\n`);
       }
