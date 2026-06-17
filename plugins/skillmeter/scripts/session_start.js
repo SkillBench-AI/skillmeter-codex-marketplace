@@ -40,9 +40,9 @@ runHook(
     // stored license JWT is missing or within the expiry skew, rotate it via
     // /refresh (or the silent gh path). The refreshed token re-authenticates
     // subsequent uploads and re-resolves the per-tenant endpoint. Best-effort —
-    // never blocks the session.
-    afterLog: async (_input, deviceId) => {
-      try { await tryRefreshLicense(deviceId); } catch {}
+    // never blocks the session. Fire-and-forget: don't await completion.
+    afterLog: (_input, deviceId) => {
+      tryRefreshLicense(deviceId).catch(() => {});
     },
   }
 ).catch(() => process.exit(1));

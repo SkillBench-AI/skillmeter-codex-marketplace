@@ -358,6 +358,7 @@ const DEFAULT_BACKEND_URL = "https://api.meter.skillbench.com/logs/codex";
 // Trusted domain patterns for backend URL validation
 const TRUSTED_BACKEND_PATTERNS = [
   /^https:\/\/api\.meter\.skillbench\.com\//,
+  /^https:\/\/[a-z0-9-]+\.meter\.skillbench\.com\//,
   /^https:\/\/[a-z0-9-]+\.skillbench\.com\//,
   /^https:\/\/[a-z0-9-]+\.meter\.dev\//,
   /^https:\/\/[a-z0-9-]+\.meter\.dev\.skillbench\.com\//,
@@ -405,7 +406,16 @@ function getBackendUrl(cwd) {
   // token) and append the Codex ingest route. Falls through to the prod default
   // when there's no usable token, preserving the unauthenticated upload path.
   const endpoint = getEndpointFromToken(getLicenseToken());
-  if (endpoint) return `${endpoint}${INGEST_ROUTE}`;
+  if (endpoint) {
+    const fullUrl = `${endpoint}${INGEST_ROUTE}`;
+    if (!isValidBackendUrl(fullUrl)) {
+      console.error(
+        `[skillmeter] JWT-derived endpoint rejected (untrusted domain), using default`
+      );
+      return DEFAULT_BACKEND_URL;
+    }
+    return fullUrl;
+  }
 
   return DEFAULT_BACKEND_URL;
 }

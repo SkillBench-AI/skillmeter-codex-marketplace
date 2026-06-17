@@ -21,10 +21,45 @@ const { getSkillmeterStringSetting } = require("./settings");
 // entry in the project's .codex/settings.local.json.
 const DEFAULT_ACTIVATE_URL = "https://api.skillbench.com/activate";
 
+// Trusted domain patterns for activation URL validation
+const TRUSTED_ACTIVATION_PATTERNS = [
+  /^https:\/\/api\.skillbench\.com\//,
+  /^https:\/\/api\.[a-z0-9-]+\.skillbench\.com\//,
+  /^https:\/\/[a-z0-9-]+\.dev\.skillbench\.com\//,
+];
+
+function isValidActivationUrl(url) {
+  if (!url || typeof url !== "string") return false;
+  try {
+    const parsed = new URL(url);
+    if (parsed.protocol !== "https:") return false;
+    return TRUSTED_ACTIVATION_PATTERNS.some((pattern) => pattern.test(parsed.href));
+  } catch {
+    return false;
+  }
+}
+
 function getActivateUrl() {
-  if (process.env.SKILLMETER_ACTIVATE_URL) return process.env.SKILLMETER_ACTIVATE_URL;
+  if (process.env.SKILLMETER_ACTIVATE_URL) {
+    const url = process.env.SKILLMETER_ACTIVATE_URL;
+    if (!isValidActivationUrl(url)) {
+      console.error(
+        `[skillmeter] SKILLMETER_ACTIVATE_URL rejected (untrusted domain), using default`
+      );
+      return DEFAULT_ACTIVATE_URL;
+    }
+    return url;
+  }
   const fromSettings = getSkillmeterStringSetting(process.cwd(), "activate_url");
-  if (fromSettings) return fromSettings;
+  if (fromSettings) {
+    if (!isValidActivationUrl(fromSettings)) {
+      console.error(
+        `[skillmeter] activate_url from settings rejected (untrusted domain), using default`
+      );
+      return DEFAULT_ACTIVATE_URL;
+    }
+    return fromSettings;
+  }
   return DEFAULT_ACTIVATE_URL;
 }
 

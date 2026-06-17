@@ -196,7 +196,7 @@ async function runBackgroundPoll(deviceId, deviceCode, interval) {
 
 function spawnBackgroundPoll(deviceId, deviceCode, interval) {
   fs.mkdirSync(path.dirname(BACKGROUND_LOG), { recursive: true, mode: 0o700 });
-  const logFd = fs.openSync(BACKGROUND_LOG, "a");
+  const logFd = fs.openSync(BACKGROUND_LOG, "a", 0o600);
   const child = spawn(
     process.execPath,
     [__filename, "--background-poll", deviceId, deviceCode, String(interval)],

@@ -26,13 +26,13 @@ function decodeJwtPayload(token) {
 
 /**
  * Return true when the token's `exp` claim is already past (with a small
- * grace window). A missing/undecodable token is treated as NOT expired —
- * callers already guard on token presence.
+ * grace window). A missing/undecodable token is treated as expired to
+ * ensure malformed tokens are rejected.
  */
 function isJwtExpired(token) {
-  if (!token) return false;
+  if (!token) return true;
   const payload = decodeJwtPayload(token);
-  if (!payload || typeof payload.exp !== "number") return false;
+  if (!payload || typeof payload.exp !== "number") return true;
   return payload.exp < Math.floor(Date.now() / 1000) + JWT_EXPIRY_GRACE_SECONDS;
 }
 
