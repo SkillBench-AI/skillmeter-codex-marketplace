@@ -5,6 +5,7 @@ const {
   spawnDetachedDrain,
   spawnRetryDaemon,
   cleanupStaleFiles,
+  tryRefreshLicense,
   getTelemetryOptIn,
   promptTelemetryOptIn,
   PLUGIN_VERSION,
@@ -34,6 +35,14 @@ runHook(
         process.stderr.write(`SkillMeter v${PLUGIN_VERSION} (not activated)\n`);
       }
       return optIn;
+    },
+    // Mirror the VS Code extension's auto-refresh on service start: if the
+    // stored license JWT is missing or within the expiry skew, rotate it via
+    // /refresh (or the silent gh path). The refreshed token re-authenticates
+    // subsequent uploads and re-resolves the per-tenant endpoint. Best-effort —
+    // never blocks the session. Fire-and-forget: don't await completion.
+    afterLog: (_input, deviceId) => {
+      tryRefreshLicense(deviceId).catch(() => {});
     },
   }
 ).catch(() => process.exit(1));

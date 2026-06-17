@@ -117,6 +117,8 @@ codex plugin marketplace add ./skillmeter-codex-marketplace
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `SKILLMETER_BACKEND_URL` | unset | Per-session ingest-endpoint override (highest priority) |
+| `SKILLMETER_ACTIVATE_URL` | `https://api.skillbench.com/activate` | License activation endpoint (`/refresh` is derived from the same host) |
+| `SKILLMETER_GITHUB_CLIENT_ID` | prod OAuth App | GitHub OAuth App client id used by the device-login flow |
 | `SKILLMETER_TIMEOUT` | `10` | Event-batch upload timeout (seconds) |
 | `SKILLMETER_ACTIVE_LOG_STALE_MS` | `300000` | Idle age after which an un-rotated `events.jsonl` is treated as crash debris and recovered |
 | `SKILLMETER_RETRY_DAEMON_INTERVAL_MS` | `120000` | Retry-monitor sweep interval |
@@ -129,7 +131,13 @@ The ingest endpoint is resolved at upload time in this order:
 
 1. `SKILLMETER_BACKEND_URL` env var
 2. `skillmeter.backendUrl` in `<project>/.codex/settings.local.json`
-3. built-in default (prod): `https://api.meter.skillbench.com/logs/codex`
+3. The `telemetry_endpoint` claim of a valid license JWT (per-tenant routing —
+   see [Identity & authentication](#identity--authentication)), with the
+   `/logs/codex` route appended
+4. built-in default (prod): `https://api.meter.skillbench.com/logs/codex`
+
+Steps 1–2 are user-supplied, so they're validated against a trusted-domain
+allow-list. Step 3 is server-minted at sign-in and trusted as-is.
 
 The shipped plugin defaults to prod. For local development, point a project at
 the dev tenant collector with `skillmeter.backendUrl` (persistent, survives
@@ -178,12 +186,64 @@ dialog. On other platforms the project starts in "not configured" state and you
 must run `telemetry.js enable` once.
 
 
+## Identity & authentication
+
+SkillMeter authenticates uploads and resolves the per-tenant ingest endpoint
+from a license JWT, matching the Claude Code plugin. The license, allowed-org
+list, device id, and hash salt are shared via `~/.skillbench/credentials.json`,
+so signing in through either plugin authenticates both.
+
+### Sign in
+
+```bash
+node "$PLUGIN_ROOT/scripts/signin.js"
+```
+
+(or invoke the bundled `signin` skill). The flow:
+
+1. **Silent `gh` activation.** If the GitHub CLI is already authenticated,
+   `gh auth token` is exchanged at the activation endpoint for a license JWT —
+   no prompts.
+2. **GitHub device flow.** Otherwise a device-login code + verification URL are
+   printed. After you approve on GitHub, the code is exchanged for a license
+   JWT and your GitHub orgs are recorded. In a real TTY the script polls inline;
+   in a buffered runner it polls in the background and you re-run sign-in to
+   confirm.
+
+Once a license is stored, every event/transcript upload is sent with an
+`Authorization: Bearer <jwt>` header and routed to the tenant host from the
+JWT's `telemetry_endpoint` claim.
+
+### Sign out
+
+```bash
+node "$PLUGIN_ROOT/scripts/signout.js"
+```
+
+(or the `signout` skill). This drops the license JWT and org list and sets a
+`signed_out` sentinel so a still-authenticated `gh` CLI doesn't silently
+re-mint a license on the next session. The `device_id` and `hash_salt` are
+preserved, so signing back in reuses the same machine identity.
+
+### JWT refresh & token-clear-and-retry
+
+- **Proactive refresh.** `SessionStart` rotates a missing or near-expiry JWT via
+  the activation Lambda's `/refresh` endpoint (no GitHub round-trip), falling
+  back to the silent `gh` path on `410`/`404`/network errors. Best-effort and
+  non-blocking.
+- **Expiry guard.** A JWT past its `exp` is dropped before a request is sent
+  rather than sent and rejected.
+- **401/403 handling.** If the backend rejects the `Authorization` header, the
+  stored license is cleared and the upload is retried once unauthenticated, so a
+  revoked/rotated token can't permanently wedge the durable queue.
+
 ## Privacy
 
 
-- **Device ID and hash salt** are stored in
-  `~/.skillbench/credentials.json` (mode `0600`) and shared with the SkillMeter
-  Claude Code plugin so the SkillBench analyzer sees one device per machine.
+- **Device ID, hash salt, license JWT, and allowed-org list** are stored in
+  `~/.skillbench/credentials.json` (mode `0600`, written atomically) and shared
+  with the SkillMeter Claude Code plugin so the SkillBench analyzer sees one
+  device per machine and one sign-in across agents.
 - **Paths** (`cwd`, `repo_root`, `tool_input.file_path`, `command`, `patch`)
   are HMAC-SHA256 hashed with the per-machine salt before they leave the
   session.
@@ -199,9 +259,11 @@ must run `telemetry.js enable` once.
 ## Bundled skills
 
 
-The plugin still ships the existing workflow skills under `skills/`:
+The plugin ships these skills under `skills/`:
 
 
+- `signin` — sign in to SkillMeter with GitHub (silent `gh` or device flow)
+- `signout` — sign out and stop authenticating uploads
 - `collect-export` — produce a sanitized session-collector export
 - `check-repo-scope` — verify whether the current repo is in scope
 - `review-export` — summarize a sanitized export before upload
@@ -223,8 +285,17 @@ skillmeter-codex-marketplace/
     ├── README.md
     ├── hooks/hooks.json
     ├── scripts/
-    │   ├── logger.js          # logging + durable queue/drain/retry transport
-    │   ├── credstore.js
+    │   ├── logger.js          # logging + durable queue/drain/retry transport + auth wiring
+    │   ├── credstore.js       # shared ~/.skillbench/credentials.json (identity + license)
+    │   ├── signin.js          # GitHub device-flow / silent-gh sign-in
+    │   ├── signout.js         # drop license + block silent re-signin
+    │   ├── lib/
+    │   │   ├── jwt.js               # JWT decode/expiry + telemetry_endpoint resolution
+    │   │   ├── license-activation.js # /activate, /refresh, silent gh activation
+    │   │   ├── github-api.js        # GitHub /user + /user/orgs lookup
+    │   │   ├── settings.js          # per-project string settings (activate_url, client id)
+    │   │   ├── banner.js            # sign-in welcome banner
+    │   │   └── spinner.js           # TTY spinner for the device-flow poll
     │   ├── sanitizer.js
     │   ├── telemetry.js
     │   ├── drain_once.js      # detached one-shot queue drain
@@ -240,7 +311,11 @@ skillmeter-codex-marketplace/
     │   ├── subagent_start.js
     │   ├── subagent_stop.js
     │   └── stop.js
+    ├── test/
+    │   └── auth.test.js       # unit tests for JWT routing, credstore, 401/403 retry
     └── skills/
+        ├── signin/SKILL.md
+        ├── signout/SKILL.md
         ├── collect-export/SKILL.md
         ├── check-repo-scope/SKILL.md
         └── review-export/SKILL.md
