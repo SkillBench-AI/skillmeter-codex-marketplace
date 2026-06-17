@@ -45,8 +45,9 @@ the current `model` and `turn_id`, hashed `cwd`/`repo_root`, and the
 Codex lifecycle event
   -> ${PLUGIN_ROOT}/scripts/<event>.js
   -> append NDJSON entry to ${PLUGIN_DATA}/logs/events.jsonl
-  -> Stop / SubagentStop rotates events.jsonl and gzips + POSTs to the
-     resolved backend (default https://api.meter.skillbench.com/logs/codex)
+  -> Stop / SubagentStop seal events.jsonl -> events.jsonl.<ts> and stage the
+     transcript, then spawn a detached drain (drain_once.js) that gzips + POSTs
+     to the resolved backend (default https://api.meter.skillbench.com/logs/codex)
   -> SkillBench Codex collector lambda
   -> OTel Collector
   -> ClickHouse skillmeter.otel_logs
@@ -60,9 +61,33 @@ the service name from the event's `agent`), so Codex is queryable separately
 from Claude Code while sharing the same `otel_logs` table.
 
 
-Uploads are best-effort: failed uploads are kept on disk as
-`events.jsonl.<timestamp>` and retried on the next `SessionStart`, and hook
-failures never block your Codex session.
+### Durable uploads, background flush, and retry
+
+The on-disk queues are the source of truth, so hooks never block on the network
+and nothing is lost if an upload fails or a session crashes:
+
+- **Sealing.** `Stop` / `SubagentStop` rename the active `events.jsonl` to a
+  sealed batch `events.jsonl.<timestamp>` and write a sanitized transcript
+  snapshot to `logs/transcripts/pending/`. No network call happens inline.
+- **Background flush (one-shot drain).** Those hooks then spawn a detached
+  `drain_once.js` that uploads every sealed log and pending transcript. On
+  success a log is renamed to `.sent` and a transcript is deleted; on failure
+  the file stays for the next attempt. A short-lived lock
+  (`.drain-once.lock`) coalesces redundant spawns.
+- **Retry monitor.** `SessionStart` launches a long-running, singleton
+  `monitors/retry_daemon.js` that re-drains the queues on an interval, so a
+  backend outage that clears mid-session still uploads without waiting for the
+  next session. It is guarded by a heartbeat lock (`.retry-daemon.lock`) and
+  self-terminates on idle or after a max lifetime (Codex has no managed monitor
+  lifecycle to stop it).
+- **Crash recovery.** `SessionStart` recovers an un-rotated `events.jsonl` left
+  behind by a crashed/abandoned session (one idle beyond
+  `SKILLMETER_ACTIVE_LOG_STALE_MS`) by sealing it into the drain queue.
+- **Cleanup.** Uploaded `.sent` logs and staged transcripts older than 30 days
+  are pruned so disk usage stays bounded even if ingest is unavailable for
+  weeks.
+
+Hook failures never block your Codex session.
 
 
 ## Install
@@ -93,6 +118,11 @@ codex plugin marketplace add ./skillmeter-codex-marketplace
 |----------|---------|---------|
 | `SKILLMETER_BACKEND_URL` | unset | Per-session ingest-endpoint override (highest priority) |
 | `SKILLMETER_TIMEOUT` | `10` | Event-batch upload timeout (seconds) |
+| `SKILLMETER_ACTIVE_LOG_STALE_MS` | `300000` | Idle age after which an un-rotated `events.jsonl` is treated as crash debris and recovered |
+| `SKILLMETER_RETRY_DAEMON_INTERVAL_MS` | `120000` | Retry-monitor sweep interval |
+| `SKILLMETER_RETRY_DAEMON_INITIAL_DELAY_MS` | `60000` | Retry-monitor delay before its first sweep (avoids racing the SessionStart drain) |
+| `SKILLMETER_RETRY_DAEMON_MAX_IDLE_SWEEPS` | `15` | Empty sweeps before the retry monitor self-terminates |
+| `SKILLMETER_RETRY_DAEMON_MAX_LIFETIME_MS` | `28800000` | Hard cap on retry-monitor lifetime |
 
 
 The ingest endpoint is resolved at upload time in this order:
@@ -193,10 +223,13 @@ skillmeter-codex-marketplace/
     ├── README.md
     ├── hooks/hooks.json
     ├── scripts/
-    │   ├── logger.js
+    │   ├── logger.js          # logging + durable queue/drain/retry transport
     │   ├── credstore.js
     │   ├── sanitizer.js
     │   ├── telemetry.js
+    │   ├── drain_once.js      # detached one-shot queue drain
+    │   ├── monitors/
+    │   │   └── retry_daemon.js  # long-running singleton retry monitor
     │   ├── session_start.js
     │   ├── user_prompt_submit.js
     │   ├── pre_tool_use.js
