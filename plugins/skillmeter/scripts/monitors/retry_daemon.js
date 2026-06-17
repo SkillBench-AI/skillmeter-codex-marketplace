@@ -23,15 +23,23 @@
 
 const logger = require("../logger.js");
 
-const INITIAL_DELAY_MS =
-  parseInt(process.env.SKILLMETER_RETRY_DAEMON_INITIAL_DELAY_MS || "", 10) || 60_000;
-const INTERVAL_MS =
-  parseInt(process.env.SKILLMETER_RETRY_DAEMON_INTERVAL_MS || "", 10) || 120_000;
-const MAX_LIFETIME_MS =
-  parseInt(process.env.SKILLMETER_RETRY_DAEMON_MAX_LIFETIME_MS || "", 10) || 8 * 60 * 60 * 1000;
+const INITIAL_DELAY_MS = Math.max(
+  1,
+  parseInt(process.env.SKILLMETER_RETRY_DAEMON_INITIAL_DELAY_MS || "", 10) || 60_000
+);
+const INTERVAL_MS = Math.max(
+  1,
+  parseInt(process.env.SKILLMETER_RETRY_DAEMON_INTERVAL_MS || "", 10) || 120_000
+);
+const MAX_LIFETIME_MS = Math.max(
+  1,
+  parseInt(process.env.SKILLMETER_RETRY_DAEMON_MAX_LIFETIME_MS || "", 10) || 8 * 60 * 60 * 1000
+);
 // Stop after this many consecutive sweeps with nothing queued (≈ idle window).
-const MAX_IDLE_SWEEPS =
-  parseInt(process.env.SKILLMETER_RETRY_DAEMON_MAX_IDLE_SWEEPS || "", 10) || 15;
+const MAX_IDLE_SWEEPS = Math.max(
+  1,
+  parseInt(process.env.SKILLMETER_RETRY_DAEMON_MAX_IDLE_SWEEPS || "", 10) || 15
+);
 
 const startedAt = Date.now();
 let idleSweeps = 0;

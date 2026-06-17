@@ -457,9 +457,11 @@ function stageTranscriptForUpload(transcriptPath) {
 
   try {
     const hashSalt = getOrCreateHashSalt();
-    const sanitized = hashSalt
-      ? sanitizeTranscript(transcriptPath, hashSalt)
-      : fs.readFileSync(transcriptPath);
+    if (!hashSalt) {
+      console.error(`[skillmeter] Transcript staging failed: no hash salt`);
+      return null;
+    }
+    const sanitized = sanitizeTranscript(transcriptPath, hashSalt);
     // Overwrite previous snapshots of the same transcript — a long session
     // re-stages on every Stop and we always want the latest lines.
     fs.writeFileSync(pendingPath, sanitized);

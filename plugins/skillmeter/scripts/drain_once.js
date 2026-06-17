@@ -24,5 +24,5 @@ main().catch((err) => {
     `[skillmeter-drain-once] ${err && err.message ? err.message : err}\n`
   );
   clearDrainOnceLock();
-  process.exit(0);
+  process.exit(1);
 });
