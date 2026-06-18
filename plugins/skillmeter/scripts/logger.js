@@ -964,6 +964,9 @@ async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
         clearBatchMeta(batchPath);
         return "sent";
       }
+      if (retryOutcome === "retry") {
+        return "retry";
+      }
       quarantineFile(batchPath, "still rejected after partial-rejection salvage");
       clearBatchMeta(batchPath);
       return "poison";
