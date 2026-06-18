@@ -22,15 +22,15 @@ The plugin wires a handler into every Codex lifecycle hook that exists today:
 | Hook | When it runs | Recorded payload |
 |------|--------------|------------------|
 | `SessionStart` | A Codex session starts (`startup`, `resume`, `clear`, `compact`) | `source`, `model`, `permission_mode` |
-| `UserPromptSubmit` | The user submits a prompt | `prompt`, `permission_mode` |
+| `UserPromptSubmit` | The user submits a prompt | sanitized `prompt`, `permission_mode` |
 | `PreToolUse` | Before `Bash`, `apply_patch`, or an MCP tool runs | `tool_name`, sanitized `tool_input`, `tool_use_id` |
-| `PermissionRequest` | Codex is about to ask for approval | `tool_name`, sanitized `tool_input`, approval `description` |
+| `PermissionRequest` | Codex is about to ask for approval | `tool_name`, sanitized `tool_input`, sanitized approval `description` |
 | `PostToolUse` | After a supported tool runs (success or failure) | `tool_name`, sanitized `tool_input`, sanitized `tool_response`, `tool_use_id` |
 | `PreCompact` | Before context compaction | `trigger` (`manual` or `auto`) |
 | `PostCompact` | After context compaction | `trigger` |
 | `SubagentStart` | A subagent thread starts | `agent_id`, `agent_type` |
-| `SubagentStop` | A subagent thread stops | `agent_id`, `agent_type`, `agent_transcript_path`, `stop_hook_active`, `last_assistant_message` |
-| `Stop` | A turn stops | `stop_hook_active`, `last_assistant_message` |
+| `SubagentStop` | A subagent thread stops | `agent_id`, `agent_type`, `agent_transcript_path`, `stop_hook_active`, sanitized `last_assistant_message` |
+| `Stop` | A turn stops | `stop_hook_active`, sanitized `last_assistant_message` |
 
 
 Every event record also carries `session_id`, `device_id`, `agent: "codex"`,
@@ -261,6 +261,21 @@ preserved, so signing back in reuses the same machine identity.
 - **Paths** (`cwd`, `repo_root`, `tool_input.file_path`, `command`, `patch`)
   are HMAC-SHA256 hashed with the per-machine salt before they leave the
   session.
+- **Raw content is scrubbed before upload.** Every event — the submitted
+  `prompt`, `last_assistant_message`, approval `description`, tool arguments,
+  tool output, and the staged session transcript — passes through a single
+  deterministic sanitization boundary (`scripts/sanitizer.js`) before it is
+  written to the durable queue or uploaded. The boundary is fail-closed for
+  Tier 1 secrets: API keys, GitHub/Slack tokens, JWTs, AWS access keys, PEM/SSH
+  private keys, `Authorization` headers, database URLs with credentials, and
+  `*_KEY=`/`*_TOKEN=`/`PASSWORD=`/`SECRET=` style assignments are replaced with
+  `[REDACTED_SECRET]`, and emails are replaced with `[EMAIL]`. Only the count
+  and detector types of any redactions travel with the event (under
+  `_sanitization`); the original sensitive values are never stored or logged.
+  This is deterministic, not LLM-based, and runs centrally in `runHook` so a new
+  hook field cannot bypass it. It is a best-effort secret/PII filter, not a
+  guarantee of complete PII removal — see `SANITIZATION_EPIC.md` for the full
+  tiered model.
 - **Repo scope filtering** stops uploads from repos outside the GitHub orgs the
   signed-in user belongs to (see below). The default posture is closed: with no
   signed-in orgs, every event is dropped at the hook rather than uploaded.
@@ -328,7 +343,7 @@ skillmeter-codex-marketplace/
     │   │   ├── settings.js          # per-project string settings (activate_url, client id)
     │   │   ├── banner.js            # sign-in welcome banner
     │   │   └── spinner.js           # TTY spinner for the device-flow poll
-    │   ├── sanitizer.js
+    │   ├── sanitizer.js       # pre-upload Tier 1 secret / Tier 2 PII redaction + transcript scrubbing
     │   ├── telemetry.js
     │   ├── drain_once.js      # detached one-shot queue drain
     │   ├── monitors/
@@ -346,7 +361,8 @@ skillmeter-codex-marketplace/
     ├── test/
     │   ├── auth.test.js       # unit tests for JWT routing, credstore, 401/403 retry
     │   ├── repo-scope.test.js # unit tests for default privacy posture / repo-scope gating
-    │   └── durability.test.js # unit tests for poison-batch handling, salvage, retry/age limits, atomic writes
+    │   ├── durability.test.js # unit tests for poison-batch handling, salvage, retry/age limits, atomic writes
+    │   └── sanitization.test.js # unit + e2e tests for pre-upload secret/PII redaction
     └── skills/
         ├── signin/SKILL.md
         ├── signout/SKILL.md

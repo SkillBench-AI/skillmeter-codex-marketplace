@@ -15,7 +15,7 @@ const { execSync, spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
 const zlib = require("zlib");
-const { sanitizeTranscript } = require("./sanitizer");
+const { sanitizeTranscript, sanitizeEventData } = require("./sanitizer");
 const credstore = require("./credstore");
 const { getEndpointFromToken, isJwtExpired } = require("./lib/jwt");
 const { trySilentGhActivate, refreshExpiredJwt } = require("./lib/license-activation");
@@ -278,7 +278,9 @@ function getRepoScopeDecision(cwd) {
 
 // Codex Bash hooks expose tool_input.command; apply_patch can include path-like
 // fields. We hash any value that looks like a filesystem location or raw shell
-// command so the upload never contains a literal user path.
+// command so the upload never contains a literal user path. Secret / PII
+// scrubbing of the remaining string values is handled by the central
+// sanitizeEventData boundary in runHook, so this stage only owns path hashing.
 const PATH_KEYS = new Set([
   "file_path",
   "filePath",
@@ -1475,7 +1477,7 @@ async function runHook(eventName, buildData, options = {}) {
   const ctx = { hashSalt, cwd, sanitizeToolData, getTranscriptId };
   const eventData = buildData ? buildData(input, ctx) : {};
 
-  const data = {
+  const rawData = {
     transcript_path: getTranscriptId(input.transcript_path),
     cwd: hashHmac(cwd, hashSalt),
     repo_scope: repoScopeDecision.scope,
@@ -1491,6 +1493,21 @@ async function runHook(eventName, buildData, options = {}) {
     turn_id: input.turn_id,
     ...eventData,
   };
+
+  // Single deterministic pre-upload sanitization boundary (SBEE-155). Every
+  // hook routes its event data through here, so raw user content — the
+  // submitted prompt, last_assistant_message, tool descriptions, tool
+  // arguments, and tool output — is scrubbed of Tier 1 secrets and Tier 2
+  // identifiers before it is ever written to the durable queue or uploaded.
+  // Running it centrally means a new hook field can't accidentally bypass the
+  // sanitizer, and the redaction counts/types travel with the event.
+  const { value: data, meta } = sanitizeEventData(rawData);
+  if (meta.tier1 > 0 || meta.tier2 > 0) {
+    data._sanitization = meta;
+    console.error(
+      `[skillmeter] ${eventName}: redacted ${meta.tier1} secret(s) and ${meta.tier2} identifier(s) before upload`
+    );
+  }
 
   logInfo(eventName, sessionId, data, deviceId);
   console.error(
