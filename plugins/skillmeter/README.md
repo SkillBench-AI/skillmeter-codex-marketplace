@@ -83,9 +83,24 @@ and nothing is lost if an upload fails or a session crashes:
 - **Crash recovery.** `SessionStart` recovers an un-rotated `events.jsonl` left
   behind by a crashed/abandoned session (one idle beyond
   `SKILLMETER_ACTIVE_LOG_STALE_MS`) by sealing it into the drain queue.
-- **Cleanup.** Uploaded `.sent` logs and staged transcripts older than 30 days
-  are pruned so disk usage stays bounded even if ingest is unavailable for
-  weeks.
+- **Atomic writes.** Event records are appended in a single `O_APPEND` write and
+  transcript snapshots / salvaged batches are written via a temp file + rename,
+  so a concurrent writer or a crash mid-write can't leave interleaved or
+  half-written ("invalid") lines that would later poison an upload.
+- **Poison-batch handling.** A batch the backend permanently rejects (a 4xx
+  other than 401/403/408/429) is never retried forever. The drain first attempts
+  a *partial-rejection salvage* — it re-parses the batch line by line, drops only
+  the malformed records, and retries the cleaned batch once. If that still fails
+  (or the payload was already well-formed) the batch is *quarantined*: moved to
+  `logs/poison/` so it stops consuming retry bandwidth while remaining available
+  for forensics.
+- **Retry & age limits.** Transient failures (5xx / 408 / 429 / network) are
+  retried with the attempt count tracked in a `.meta` sidecar; a batch is
+  quarantined once it exceeds `SKILLMETER_MAX_BATCH_RETRIES` attempts or its seal
+  time is older than `SKILLMETER_BATCH_MAX_AGE_MS`, whichever comes first.
+- **Cleanup.** Uploaded `.sent` logs, quarantined poison batches, orphaned
+  `.meta`/temp files, and staged transcripts older than 30 days are pruned so
+  disk usage stays bounded even if ingest is unavailable for weeks.
 
 Hook failures never block your Codex session.
 
@@ -120,6 +135,8 @@ codex plugin marketplace add ./skillmeter-codex-marketplace
 | `SKILLMETER_ACTIVATE_URL` | `https://api.skillbench.com/activate` | License activation endpoint (`/refresh` is derived from the same host) |
 | `SKILLMETER_GITHUB_CLIENT_ID` | prod OAuth App | GitHub OAuth App client id used by the device-login flow |
 | `SKILLMETER_TIMEOUT` | `10` | Event-batch upload timeout (seconds) |
+| `SKILLMETER_MAX_BATCH_RETRIES` | `25` | Transient-failure attempts before a sealed batch is quarantined as poison |
+| `SKILLMETER_BATCH_MAX_AGE_MS` | `1209600000` | Max age (14 days) an undeliverable batch/transcript is retried before being quarantined |
 | `SKILLMETER_ACTIVE_LOG_STALE_MS` | `300000` | Idle age after which an un-rotated `events.jsonl` is treated as crash debris and recovered |
 | `SKILLMETER_RETRY_DAEMON_INTERVAL_MS` | `120000` | Retry-monitor sweep interval |
 | `SKILLMETER_RETRY_DAEMON_INITIAL_DELAY_MS` | `60000` | Retry-monitor delay before its first sweep (avoids racing the SessionStart drain) |
@@ -327,7 +344,9 @@ skillmeter-codex-marketplace/
     │   ├── subagent_stop.js
     │   └── stop.js
     ├── test/
-    │   └── auth.test.js       # unit tests for JWT routing, credstore, 401/403 retry
+    │   ├── auth.test.js       # unit tests for JWT routing, credstore, 401/403 retry
+    │   ├── repo-scope.test.js # unit tests for default privacy posture / repo-scope gating
+    │   └── durability.test.js # unit tests for poison-batch handling, salvage, retry/age limits, atomic writes
     └── skills/
         ├── signin/SKILL.md
         ├── signout/SKILL.md

@@ -401,10 +401,39 @@ const EVENT_TIMEOUT =
   parseInt(process.env.SKILLMETER_TIMEOUT || "10", 10) * 1000;
 const TRANSCRIPT_TIMEOUT = 30_000;
 
-// How long we keep uploaded `.sent` event logs and staged transcripts before
-// the cleanup sweep deletes them. 30 days survives vacations and short outages
-// while keeping disks from filling if ingest breaks for weeks.
+// How long we keep uploaded `.sent` event logs, quarantined poison batches, and
+// staged transcripts before the cleanup sweep deletes them. 30 days survives
+// vacations and short outages while keeping disks from filling if ingest breaks
+// for weeks.
 const CLEANUP_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+
+// ---------------------------------------------------------------------------
+// Poison-batch / retry bounds
+//
+// A "poison batch" is a sealed event log the backend will never accept —
+// usually because the payload is malformed (HTTP 400/413/422). Retrying it
+// forever wastes bandwidth and keeps the queue from ever draining, so failed
+// batches are bounded two ways and then quarantined (moved aside, not deleted)
+// so they stop being retried but remain available for forensics until the
+// 30-day cleanup removes them:
+//
+//   - max-retry: a batch that keeps failing transiently is quarantined after
+//     MAX_BATCH_RETRIES attempts (tracked in a `.meta` sidecar).
+//   - max-age:   a batch we've been unable to deliver for longer than
+//     BATCH_MAX_AGE_MS (derived from the seal timestamp in its filename) is
+//     treated as undeliverable and quarantined regardless of attempt count.
+//
+// Permanent HTTP errors short-circuit both bounds: we try a partial-rejection
+// salvage (drop only the invalid NDJSON lines) once, then quarantine.
+// ---------------------------------------------------------------------------
+const POISON_DIR = path.join(LOG_DIR, "poison");
+
+const MAX_BATCH_RETRIES =
+  parseInt(process.env.SKILLMETER_MAX_BATCH_RETRIES || "", 10) || 25;
+
+const BATCH_MAX_AGE_MS =
+  parseInt(process.env.SKILLMETER_BATCH_MAX_AGE_MS || "", 10) ||
+  14 * 24 * 60 * 60 * 1000;
 
 // An active `events.jsonl` that hasn't been touched in this long is assumed to
 // belong to a crashed/abandoned session (a live session writes events far more
@@ -440,8 +469,72 @@ function commonHeaders(token, extra = {}) {
   return headers;
 }
 
+// ---------------------------------------------------------------------------
+// Atomic write helpers
+//
+// Hooks from concurrent Codex processes can write to the queue at the same
+// time, and a process can be killed mid-write. Both can leave interleaved or
+// half-written ("invalid") lines that later poison an upload. These helpers
+// keep on-disk artifacts line-atomic and whole-file-atomic respectively.
+// ---------------------------------------------------------------------------
+
+// Append a single newline-terminated record in one O_APPEND write. POSIX makes
+// each write() to an append-mode fd advance the offset atomically, so a single
+// write of the whole record can't interleave with another writer's record —
+// preventing the spliced lines that would make a batch un-parseable.
+function atomicAppendLine(file, line) {
+  const buf = Buffer.from(line.endsWith("\n") ? line : `${line}\n`);
+  const fd = fs.openSync(file, "a");
+  try {
+    fs.writeSync(fd, buf, 0, buf.length, null);
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+// Write a whole file by staging to a unique temp path and renaming into place.
+// rename(2) is atomic within a filesystem, so readers/drains never observe a
+// partially written file — they see either the old contents or the new ones.
+function atomicWriteFileSync(targetPath, data) {
+  const dir = path.dirname(targetPath);
+  const tmp = path.join(
+    dir,
+    `.${path.basename(targetPath)}.tmp-${process.pid}-${crypto
+      .randomBytes(4)
+      .toString("hex")}`
+  );
+  fs.writeFileSync(tmp, data);
+  try {
+    fs.renameSync(tmp, targetPath);
+  } catch (err) {
+    try { fs.unlinkSync(tmp); } catch {}
+    throw err;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// HTTP outcome classification
+//
+// 401/403 are handled separately (clear the token + retry without auth). Of the
+// remaining non-2xx responses we treat 408 (Request Timeout), 429 (Too Many
+// Requests), and every 5xx as transient (worth retrying) and any other 4xx as
+// permanent — the server is telling us this exact payload will never be
+// accepted, so it must not be retried forever.
+// ---------------------------------------------------------------------------
+function isPermanentHttpStatus(status) {
+  if (status === 408 || status === 429) return false;
+  return status >= 400 && status < 500;
+}
+
+// Upload one sealed event log. Resolves to an outcome the queue layer acts on:
+//   "sent"   — 2xx; the file was renamed to `.sent`.
+//   "poison" — permanent server rejection; the payload will never be accepted.
+//   "retry"  — transient failure (5xx / 408 / 429 / network / timeout).
+//   "skip"   — nothing to do (missing file).
+// Standalone callers can ignore the value; processSealedBatch uses it to decide
+// between salvage, quarantine, and a bounded retry.
 function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVENT_TIMEOUT) {
-  if (!logFile || !fs.existsSync(logFile)) return Promise.resolve();
+  if (!logFile || !fs.existsSync(logFile)) return Promise.resolve("skip");
 
   const storedToken = getLicenseToken();
   // Proactive: never send a JWT we already know is past its exp. The ingest
@@ -467,6 +560,9 @@ function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVE
     try { fs.renameSync(logFile, `${logFile}.sent`); } catch {}
   };
 
+  const classify = (status) =>
+    isPermanentHttpStatus(status) ? "poison" : "retry";
+
   console.error(
     `[skillmeter] Transferring event log: ${baseName} (${compressed.length} bytes gzipped)`
   );
@@ -476,7 +572,7 @@ function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVE
       if (res.ok) {
         console.error(`[skillmeter] Event log transferred: ${baseName}`);
         markSent();
-        return;
+        return "sent";
       }
       // Reactive: the server rejected our Authorization header — clear the bad
       // token so later requests don't reuse it, then retry once without auth.
@@ -489,15 +585,18 @@ function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVE
           if (res2.ok) {
             console.error(`[skillmeter] Event log transferred on retry: ${baseName}`);
             markSent();
-          } else {
-            console.error(`[skillmeter] Event log retry failed: HTTP ${res2.status}`);
+            return "sent";
           }
+          console.error(`[skillmeter] Event log retry failed: HTTP ${res2.status}`);
+          return classify(res2.status);
         });
       }
       console.error(`[skillmeter] Event log transfer failed: HTTP ${res.status}`);
+      return classify(res.status);
     })
     .catch((err) => {
       console.error(`[skillmeter] Event log transfer error: ${err.message}`);
+      return "retry";
     });
 }
 
@@ -530,8 +629,10 @@ function stageTranscriptForUpload(transcriptPath) {
     }
     const sanitized = sanitizeTranscript(transcriptPath, hashSalt);
     // Overwrite previous snapshots of the same transcript — a long session
-    // re-stages on every Stop and we always want the latest lines.
-    fs.writeFileSync(pendingPath, sanitized);
+    // re-stages on every Stop and we always want the latest lines. Write
+    // atomically so a crash mid-stage can't leave a truncated transcript that a
+    // concurrent drain would then upload (and the server reject) as poison.
+    atomicWriteFileSync(pendingPath, sanitized);
     return pendingPath;
   } catch (err) {
     console.error(`[skillmeter] Transcript staging failed: ${err.message}`);
@@ -539,13 +640,17 @@ function stageTranscriptForUpload(transcriptPath) {
   }
 }
 
+// Upload one staged transcript. Resolves to the same outcome vocabulary as
+// transferEventLog ("sent" / "poison" / "retry" / "skip"); on 2xx the pending
+// file is removed. processPendingTranscript uses the outcome to quarantine
+// permanently-rejected transcripts instead of retrying them indefinitely.
 function uploadPendingTranscript(
   pendingPath,
   deviceId,
   backendUrl = getBackendUrl(),
   timeoutMs = TRANSCRIPT_TIMEOUT
 ) {
-  if (!pendingPath || !fs.existsSync(pendingPath)) return Promise.resolve();
+  if (!pendingPath || !fs.existsSync(pendingPath)) return Promise.resolve("skip");
 
   const storedToken = getLicenseToken();
   const initialToken = storedToken && !isJwtExpired(storedToken) ? storedToken : null;
@@ -571,6 +676,9 @@ function uploadPendingTranscript(
     try { fs.unlinkSync(pendingPath); } catch {}
   };
 
+  const classify = (status) =>
+    isPermanentHttpStatus(status) ? "poison" : "retry";
+
   console.error(
     `[skillmeter] Transferring transcript: ${transcriptId} (${compressed.length} bytes gzipped)`
   );
@@ -580,7 +688,7 @@ function uploadPendingTranscript(
       if (res.ok) {
         console.error(`[skillmeter] Transcript transferred: ${transcriptId}`);
         removePending();
-        return;
+        return "sent";
       }
       if (initialToken && (res.status === 401 || res.status === 403)) {
         console.error(
@@ -591,21 +699,24 @@ function uploadPendingTranscript(
           if (res2.ok) {
             console.error(`[skillmeter] Transcript transferred on retry: ${transcriptId}`);
             removePending();
-          } else {
-            console.error(
-              `[skillmeter] Transcript retry failed: HTTP ${res2.status} — kept pending for retry`
-            );
+            return "sent";
           }
+          console.error(
+            `[skillmeter] Transcript retry failed: HTTP ${res2.status} — kept pending for retry`
+          );
+          return classify(res2.status);
         });
       }
       console.error(
         `[skillmeter] Transcript transfer failed: HTTP ${res.status} — kept pending for retry`
       );
+      return classify(res.status);
     })
     .catch((err) => {
       console.error(
         `[skillmeter] Transcript transfer error: ${err.message} — kept pending for retry`
       );
+      return "retry";
     });
 }
 
@@ -710,6 +821,10 @@ function listPendingTranscripts() {
   if (!fs.existsSync(TRANSCRIPTS_PENDING_DIR)) return [];
   try {
     return fs.readdirSync(TRANSCRIPTS_PENDING_DIR)
+      // Skip in-flight atomic-write temp files (.<name>.tmp-…) and meta
+      // sidecars so a concurrent drain never tries to upload a half-written
+      // snapshot.
+      .filter((file) => !file.startsWith("."))
       .map((file) => path.join(TRANSCRIPTS_PENDING_DIR, file))
       .filter((filePath) => {
         try { return fs.statSync(filePath).isFile(); } catch { return false; }
@@ -719,12 +834,190 @@ function listPendingTranscripts() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Poison-batch handling: attempt tracking, partial-rejection salvage, quarantine
+// ---------------------------------------------------------------------------
+
+// Per-batch attempt counter. Kept in a `.meta` sidecar rather than the filename
+// so the batch path (and the drain-list regex) stays stable across retries.
+function batchMetaPath(batchPath) {
+  return `${batchPath}.meta`;
+}
+
+function readBatchMeta(batchPath) {
+  try {
+    const meta = JSON.parse(fs.readFileSync(batchMetaPath(batchPath), "utf8"));
+    return { attempts: Number(meta.attempts) || 0 };
+  } catch {
+    return { attempts: 0 };
+  }
+}
+
+function writeBatchMeta(batchPath, meta) {
+  try {
+    atomicWriteFileSync(batchMetaPath(batchPath), JSON.stringify(meta) + "\n");
+  } catch {}
+}
+
+function clearBatchMeta(batchPath) {
+  try { fs.unlinkSync(batchMetaPath(batchPath)); } catch {}
+}
+
+// Seal timestamp encoded in `events.jsonl.<ts>` — used as the batch's
+// first-seen time for the max-age give-up. Returns null for unexpected names.
+function batchSealTimeMs(batchPath) {
+  const m = path.basename(batchPath).match(/^events\.jsonl\.(\d+)$/);
+  return m ? parseInt(m[1], 10) : null;
+}
+
+// Move an undeliverable file aside into POISON_DIR so it stops being retried
+// but survives for forensics until the 30-day cleanup removes it. Deletion is a
+// last resort only if the move fails (e.g. cross-device) so a poison batch can
+// never wedge the queue.
+function quarantineFile(filePath, reason) {
+  const baseName = path.basename(filePath);
+  try {
+    fs.mkdirSync(POISON_DIR, { recursive: true });
+    const dest = path.join(POISON_DIR, baseName);
+    try { fs.unlinkSync(dest); } catch {}
+    fs.renameSync(filePath, dest);
+    console.error(`[skillmeter] Quarantined poison batch ${baseName}: ${reason}`);
+  } catch (err) {
+    console.error(
+      `[skillmeter] Quarantine of ${baseName} failed (${err.message}); deleting to unblock queue`
+    );
+    try { fs.unlinkSync(filePath); } catch {}
+  }
+}
+
+// Partial batch rejection: an NDJSON batch can be poisoned by a few malformed
+// lines (e.g. a half-written record from a crashed writer). Re-parse line by
+// line, keep only the valid JSON records, and rewrite the batch atomically when
+// — and only when — some lines were actually invalid. Returns a summary the
+// caller uses to decide whether a salvage retry is worthwhile.
+function salvageBatch(batchPath) {
+  let raw;
+  try {
+    raw = fs.readFileSync(batchPath, "utf8");
+  } catch {
+    return { rewrote: false, kept: 0, dropped: 0 };
+  }
+
+  const valid = [];
+  let dropped = 0;
+  for (const line of raw.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      JSON.parse(line);
+      valid.push(line);
+    } catch {
+      dropped++;
+    }
+  }
+
+  // Every line is well-formed JSON, so the rejection isn't about parse-ability
+  // — there's nothing to salvage and the batch is genuinely poison.
+  if (dropped === 0) return { rewrote: false, kept: valid.length, dropped: 0 };
+  // Nothing salvageable; let the caller quarantine the whole batch.
+  if (valid.length === 0) return { rewrote: false, kept: 0, dropped };
+
+  try {
+    atomicWriteFileSync(batchPath, valid.join("\n") + "\n");
+    return { rewrote: true, kept: valid.length, dropped };
+  } catch {
+    return { rewrote: false, kept: valid.length, dropped };
+  }
+}
+
+// Upload a sealed event log with full poison-batch protection. This is the
+// queue-aware wrapper around transferEventLog used by the drains; it enforces
+// the max-age and max-retry bounds and performs partial-rejection salvage.
+async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
+  if (!fs.existsSync(batchPath)) return "skip";
+
+  const baseName = path.basename(batchPath);
+
+  // Max-age give-up: a batch we still can't deliver after BATCH_MAX_AGE_MS is
+  // treated as undeliverable, independent of why each attempt failed.
+  const sealTime = batchSealTimeMs(batchPath);
+  if (sealTime != null && Date.now() - sealTime > BATCH_MAX_AGE_MS) {
+    quarantineFile(batchPath, `exceeded max age (${Math.round(BATCH_MAX_AGE_MS / 86400000)}d)`);
+    clearBatchMeta(batchPath);
+    return "poison";
+  }
+
+  const outcome = await transferEventLog(batchPath, backendUrl, timeoutMs);
+
+  if (outcome === "sent" || outcome === "skip") {
+    clearBatchMeta(batchPath);
+    return outcome;
+  }
+
+  if (outcome === "poison") {
+    const salv = salvageBatch(batchPath);
+    if (salv.rewrote) {
+      console.error(
+        `[skillmeter] Salvaged ${baseName}: dropped ${salv.dropped} invalid line(s), retrying ${salv.kept} valid`
+      );
+      const retryOutcome = await transferEventLog(batchPath, backendUrl, timeoutMs);
+      if (retryOutcome === "sent") {
+        clearBatchMeta(batchPath);
+        return "sent";
+      }
+      if (retryOutcome === "retry") {
+        return "retry";
+      }
+      quarantineFile(batchPath, "still rejected after partial-rejection salvage");
+      clearBatchMeta(batchPath);
+      return "poison";
+    }
+    quarantineFile(
+      batchPath,
+      salv.dropped > 0 ? "no salvageable lines remain" : "server rejected payload (permanent)"
+    );
+    clearBatchMeta(batchPath);
+    return "poison";
+  }
+
+  // Transient failure: bump the attempt counter and quarantine once we've
+  // burned through the retry budget.
+  const meta = readBatchMeta(batchPath);
+  meta.attempts += 1;
+  if (meta.attempts >= MAX_BATCH_RETRIES) {
+    quarantineFile(batchPath, `exceeded ${MAX_BATCH_RETRIES} retries`);
+    clearBatchMeta(batchPath);
+    return "poison";
+  }
+  writeBatchMeta(batchPath, meta);
+  return "retry";
+}
+
+// Upload a staged transcript with poison protection. Transcripts aren't
+// timestamped in their names, so the max-age give-up uses the file mtime (which
+// is refreshed on every re-stage); permanent rejections are quarantined at once.
+async function processPendingTranscript(pendingPath, deviceId, backendUrl, timeoutMs) {
+  if (!fs.existsSync(pendingPath)) return "skip";
+
+  let mtimeMs = Date.now();
+  try { mtimeMs = fs.statSync(pendingPath).mtimeMs; } catch {}
+  if (Date.now() - mtimeMs > BATCH_MAX_AGE_MS) {
+    quarantineFile(pendingPath, `transcript exceeded max age (${Math.round(BATCH_MAX_AGE_MS / 86400000)}d)`);
+    return "poison";
+  }
+
+  const outcome = await uploadPendingTranscript(pendingPath, deviceId, backendUrl, timeoutMs);
+  if (outcome === "poison") {
+    quarantineFile(pendingPath, "transcript rejected by server (permanent)");
+  }
+  return outcome;
+}
+
 async function drainFailedLogs(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
   const files = listSealedEventLogs();
   if (files.length === 0) return 0;
   console.error(`[skillmeter] Draining ${files.length} sealed event log(s)`);
   await Promise.allSettled(
-    files.map((filePath) => transferEventLog(filePath, backendUrl, timeoutMs))
+    files.map((filePath) => processSealedBatch(filePath, backendUrl, timeoutMs))
   );
   return files.length;
 }
@@ -738,7 +1031,7 @@ async function drainPendingTranscripts(backendUrl = getBackendUrl(process.cwd())
 
   console.error(`[skillmeter] Draining ${files.length} pending transcript(s)`);
   await Promise.allSettled(
-    files.map((filePath) => uploadPendingTranscript(filePath, deviceId, backendUrl, timeoutMs))
+    files.map((filePath) => processPendingTranscript(filePath, deviceId, backendUrl, timeoutMs))
   );
   return files.length;
 }
@@ -922,9 +1215,27 @@ function cleanupStaleFiles() {
   if (fs.existsSync(LOG_DIR)) {
     try {
       for (const f of fs.readdirSync(LOG_DIR)) {
+        // Uploaded batches, plus orphaned attempt-meta sidecars whose batch has
+        // already been sent or quarantined (so they never leak).
         if (/^events\.jsonl\.\d+\.sent$/.test(f)) {
           candidates.push(path.join(LOG_DIR, f));
+        } else if (/^events\.jsonl\.\d+\.meta$/.test(f)) {
+          const batch = path.join(LOG_DIR, f.replace(/\.meta$/, ""));
+          if (!fs.existsSync(batch)) candidates.push(path.join(LOG_DIR, f));
+        } else if (/\.tmp-\d+-[0-9a-f]+$/.test(f)) {
+          // Orphaned atomic-write temp file from a crash mid-rename.
+          candidates.push(path.join(LOG_DIR, f));
         }
+      }
+    } catch {}
+  }
+
+  // Quarantined poison batches: kept for forensics, but bounded by the same
+  // 30-day retention so they can't accumulate indefinitely either.
+  if (fs.existsSync(POISON_DIR)) {
+    try {
+      for (const f of fs.readdirSync(POISON_DIR)) {
+        candidates.push(path.join(POISON_DIR, f));
       }
     } catch {}
   }
@@ -999,7 +1310,9 @@ function logStructured(level, event, sessionId, data, deviceId) {
     data,
   };
 
-  fs.appendFileSync(LOG_FILE, JSON.stringify(logEntry) + "\n");
+  // Atomic single-write append so concurrent hook processes can't splice
+  // partial records into the active log and produce an un-parseable batch.
+  atomicAppendLine(LOG_FILE, JSON.stringify(logEntry));
 }
 
 function getTranscriptId(transcriptPath) {
@@ -1225,6 +1538,21 @@ module.exports = {
   drainFailedLogs,
   drainPendingTranscripts,
   drainQueuesOnce,
+  // Poison-batch handling + atomic writes
+  atomicAppendLine,
+  atomicWriteFileSync,
+  isPermanentHttpStatus,
+  salvageBatch,
+  quarantineFile,
+  processSealedBatch,
+  processPendingTranscript,
+  readBatchMeta,
+  writeBatchMeta,
+  clearBatchMeta,
+  batchMetaPath,
+  POISON_DIR,
+  MAX_BATCH_RETRIES,
+  BATCH_MAX_AGE_MS,
   // Detached drain (one-shot)
   shouldSpawnDrainOnce,
   clearDrainOnceLock,
