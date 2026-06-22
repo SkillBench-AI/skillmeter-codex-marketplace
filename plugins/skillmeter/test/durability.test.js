@@ -261,3 +261,69 @@ test("stageTranscriptForUpload writes atomically with no temp leftovers", () => 
     .filter((n) => n.includes(".tmp-"));
   assert.deepEqual(leftovers, [], "no atomic-write temp files left behind");
 });
+
+test("collectTranscriptPaths includes both subagent and session transcripts", () => {
+  const sessionTranscript = path.join(tmpData, "session.jsonl");
+  const agentTranscript = path.join(tmpData, "agent.jsonl");
+  fs.writeFileSync(sessionTranscript, '{"type":"session"}\n');
+  fs.writeFileSync(agentTranscript, '{"type":"agent"}\n');
+
+  const paths = logger.collectTranscriptPaths({
+    transcript_path: sessionTranscript,
+    agent_transcript_path: agentTranscript,
+  });
+
+  assert.deepEqual(paths, [
+    path.resolve(agentTranscript),
+    path.resolve(sessionTranscript),
+  ]);
+});
+
+test("collectTranscriptPaths falls back to Codex session store by session id", () => {
+  const sessionId = "019edc5e-ac83-72f0-bdff-1f819107926a";
+  const sessionsDir = path.join(tmpData, "codex-home", "sessions");
+  const datedDir = path.join(sessionsDir, "2026", "06", "18");
+  fs.mkdirSync(datedDir, { recursive: true });
+  const transcript = path.join(
+    datedDir,
+    `rollout-2026-06-18T15-14-12-${sessionId}.jsonl`
+  );
+  fs.writeFileSync(transcript, '{"type":"session_meta"}\n');
+
+  const paths = logger.collectTranscriptPaths(
+    {
+      session_id: sessionId,
+      transcript_path: null,
+      agent_transcript_path: null,
+    },
+    { sessionsDir }
+  );
+
+  assert.deepEqual(paths, [path.resolve(transcript)]);
+});
+
+test("collectTranscriptPaths fallback can match session_meta payload id", () => {
+  const sessionId = "019edc5e-ac83-72f0-bdff-1f819107926a";
+  const sessionsDir = path.join(tmpData, "codex-home-meta", "sessions");
+  const datedDir = path.join(sessionsDir, "2026", "06", "18");
+  fs.mkdirSync(datedDir, { recursive: true });
+  const transcript = path.join(datedDir, "rollout-without-id.jsonl");
+  fs.writeFileSync(
+    transcript,
+    JSON.stringify({
+      type: "session_meta",
+      payload: { id: sessionId },
+    }) + "\n"
+  );
+
+  const paths = logger.collectTranscriptPaths(
+    {
+      session_id: sessionId,
+      transcript_path: null,
+      agent_transcript_path: null,
+    },
+    { sessionsDir }
+  );
+
+  assert.deepEqual(paths, [path.resolve(transcript)]);
+});
