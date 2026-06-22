@@ -20,6 +20,7 @@ What it does:
    code and URL to the user verbatim so they can approve in their browser.
 3. On approval it exchanges the GitHub token for a SkillMeter license JWT and
    stores it (with the user's GitHub orgs) in `~/.skillbench/credentials.json`.
+4. Clears any machine-global telemetry stop flag set by sign-out.
 
 After sign-in, every Codex upload is authenticated with the license JWT and
 routed to the per-tenant endpoint carried in the JWT's `telemetry_endpoint`
