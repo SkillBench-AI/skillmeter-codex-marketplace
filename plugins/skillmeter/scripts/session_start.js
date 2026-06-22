@@ -8,13 +8,25 @@ const {
   tryRefreshLicense,
   getTelemetryOptIn,
   promptTelemetryOptIn,
+  PLUGIN_ROOT,
   PLUGIN_VERSION,
 } = require("./logger.js");
+const { detectHarness } = require("./harness.js");
 
 runHook(
   "SessionStart",
-  (input) => ({
+  (input, ctx) => ({
     source: input.source,
+    // Harness metadata (SBEE-163): presence/shape of the developer's harness
+    // (instruction files, skills, hooks, plugin/agent info). Detected once at
+    // session start and attached here so it flows through the same
+    // sanitizeEventData boundary as every other event field. Metadata only —
+    // no raw harness file contents.
+    harness: detectHarness(ctx.cwd, {
+      hashSalt: ctx.hashSalt,
+      pluginRoot: PLUGIN_ROOT,
+      pluginVersion: PLUGIN_VERSION,
+    }),
   }),
   {
     checkOptIn: (cwd) => {

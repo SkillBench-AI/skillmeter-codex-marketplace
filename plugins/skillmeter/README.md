@@ -21,7 +21,7 @@ The plugin wires a handler into every Codex lifecycle hook that exists today:
 
 | Hook | When it runs | Recorded payload |
 |------|--------------|------------------|
-| `SessionStart` | A Codex session starts (`startup`, `resume`, `clear`, `compact`) | `source`, `model`, `permission_mode` |
+| `SessionStart` | A Codex session starts (`startup`, `resume`, `clear`, `compact`) | `source`, `model`, `permission_mode`, [`harness`](#harness-metadata) |
 | `UserPromptSubmit` | The user submits a prompt | sanitized `prompt`, `permission_mode` |
 | `PreToolUse` | Before `Bash`, `apply_patch`, or an MCP tool runs | `tool_name`, sanitized `tool_input`, `tool_use_id` |
 | `PermissionRequest` | Codex is about to ask for approval | `tool_name`, sanitized `tool_input`, sanitized approval `description` |
@@ -36,6 +36,72 @@ The plugin wires a handler into every Codex lifecycle hook that exists today:
 Every event record also carries `session_id`, `device_id`, `agent: "codex"`,
 the current `model` and `turn_id`, hashed `cwd`/`repo_root`, and the
 `repo_scope` decision for the current project.
+
+
+## Harness metadata
+
+To judge a session fairly, analysis needs to know whether the developer was
+working *bare* or with a sophisticated **harness** — the instruction files,
+skills, hooks, plugins, and orchestration wrapped around the agent. The
+`SessionStart` event carries a `harness` block describing the **presence and
+shape** of that scaffolding. It is **metadata only**: SkillMeter never collects
+raw `AGENTS.md` / `CLAUDE.md` / skill / hook-config contents (that is a separate,
+higher-risk phase that would route through the Tier 2 sanitization policy).
+
+Detection is split by what is actually observable:
+
+- **Level 1 (filesystem-detectable, collected today):** instruction-file
+  presence, skills, hooks, and plugin/agent info — probed once at session start
+  by [`scripts/harness.js`](scripts/harness.js).
+- **Level 2 (architecture-level, NOT detectable):** external orchestration and
+  multi-agent setups. These can't be inferred from the filesystem or transcript,
+  so they are reported as the explicit string `"unknown"` rather than a
+  misleading `false`. (`subagent_used` is derived downstream from the
+  `SubagentStart` / `SubagentStop` events the collector already emits.)
+
+Example `harness` payload:
+
+```json
+{
+  "schema_version": 1,
+  "agent_type": "codex",
+  "plugin": { "name": "skillmeter", "version": "0.2.0+codex…" },
+  "instructions": {
+    "has_agents_md": true,
+    "has_agents_md_global": false,
+    "has_claude_md": false,
+    "has_claude_md_global": false,
+    "scopes": ["project"]
+  },
+  "skills": { "count": 3, "names": ["deploy", "review-pr", "signin"], "scopes": ["project", "global"] },
+  "hooks": { "enabled": ["PostToolUse", "PreToolUse", "SessionStart", "Stop"], "scopes": ["plugin"] },
+  "orchestration": { "external_orchestration": "unknown", "multi_agent": "unknown" }
+}
+```
+
+What is probed:
+
+| Field | Source |
+|-------|--------|
+| `instructions.has_agents_md` / `has_claude_md` | `AGENTS.md` / `CLAUDE.md` in the cwd or repo root |
+| `instructions.has_*_global` | `~/.codex/AGENTS.md`, `~/.claude/CLAUDE.md` |
+| `skills.count` / `names` / `scopes` | `SKILL.md` files under `.codex/skills/` (project and `~/.codex/skills/`); hidden `.system` namespaces (runtime built-ins) are skipped |
+| `hooks.enabled` / `scopes` | allow-listed lifecycle event names declared in the plugin's `hooks.json` and any project/global `.codex/hooks.json` |
+| `plugin` / `agent_type` / `schema_version` | this plugin's manifest and the harness schema version |
+
+Privacy notes:
+
+- The whole `harness` block is routed through the same central
+  `sanitizeEventData` boundary as every other event field, so a skill or hook
+  name that happens to embed a secret/email is still scrubbed before upload.
+- Only **allow-listed** hook event names are reported, so an arbitrary
+  user-authored `hooks.json` can't inject free-form strings into the metadata.
+- Skill names are emitted in plaintext by default (they're typically generic and
+  useful for cross-session comparison). Set
+  `SKILLMETER_HARNESS_HASH_SKILL_NAMES=1` to emit HMAC-hashed `names_hashed`
+  instead when skill names may be sensitive.
+- Detection is filesystem-only, depth-bounded, and fail-safe: any error leaves
+  the safe `unknown`/empty defaults in place and never breaks the session.
 
 
 ## Data flow
@@ -344,6 +410,7 @@ skillmeter-codex-marketplace/
     │   │   ├── banner.js            # sign-in welcome banner
     │   │   └── spinner.js           # TTY spinner for the device-flow poll
     │   ├── sanitizer.js       # pre-upload Tier 1 secret / Tier 2 PII redaction + transcript scrubbing
+    │   ├── harness.js         # Level 1 harness detection (instruction files, skills, hooks, plugin/agent metadata)
     │   ├── telemetry.js
     │   ├── drain_once.js      # detached one-shot queue drain
     │   ├── monitors/
@@ -362,7 +429,8 @@ skillmeter-codex-marketplace/
     │   ├── auth.test.js       # unit tests for JWT routing, credstore, 401/403 retry
     │   ├── repo-scope.test.js # unit tests for default privacy posture / repo-scope gating
     │   ├── durability.test.js # unit tests for poison-batch handling, salvage, retry/age limits, atomic writes
-    │   └── sanitization.test.js # unit + e2e tests for pre-upload secret/PII redaction
+    │   ├── sanitization.test.js # unit + e2e tests for pre-upload secret/PII redaction
+    │   └── harness.test.js    # unit tests for Level 1 harness detection
     └── skills/
         ├── signin/SKILL.md
         ├── signout/SKILL.md
