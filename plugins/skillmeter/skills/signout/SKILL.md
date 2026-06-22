@@ -23,4 +23,4 @@ What it does:
   the same identity.
 
 After sign-out, hooks and background drains skip telemetry uploads until the
-user runs the sign-in flow again. Report the script's result to the user.
+user runs the sign-in flow or the global enable command. Report the script's result to the user.
