@@ -13,6 +13,7 @@
 const crypto = require("crypto");
 const { execSync, spawn } = require("child_process");
 const fs = require("fs");
+const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
 const { sanitizeTranscript, sanitizeEventData } = require("./sanitizer");
@@ -35,6 +36,8 @@ const PLUGIN_DATA =
 
 const LOG_DIR = path.join(PLUGIN_DATA, "logs");
 const LOG_FILE = path.join(LOG_DIR, "events.jsonl");
+const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
+const CODEX_SESSIONS_DIR = path.join(CODEX_HOME, "sessions");
 
 // Staged transcripts awaiting upload live here. Sanitized snapshots are written
 // before any network call so a failed upload can be retried from disk by the
@@ -1266,6 +1269,100 @@ function cleanupStaleFiles() {
   }
 }
 
+function safeTranscriptCandidate(candidate) {
+  if (!candidate || typeof candidate !== "string") return "";
+  try {
+    return fs.existsSync(candidate) && fs.statSync(candidate).isFile()
+      ? path.resolve(candidate)
+      : "";
+  } catch {
+    return "";
+  }
+}
+
+function transcriptFileMatchesSession(filePath, sessionId) {
+  if (path.basename(filePath).includes(sessionId)) return true;
+  try {
+    const fd = fs.openSync(filePath, "r");
+    let firstLine = "";
+    try {
+      const buf = Buffer.alloc(8192);
+      const bytes = fs.readSync(fd, buf, 0, buf.length, 0);
+      firstLine = buf.toString("utf8", 0, bytes).split("\n", 1)[0];
+    } finally {
+      fs.closeSync(fd);
+    }
+    if (!firstLine) return false;
+    const record = JSON.parse(firstLine);
+    return record && record.payload && record.payload.id === sessionId;
+  } catch {
+    return false;
+  }
+}
+
+function findCodexTranscriptBySessionId(sessionId, sessionsDir = CODEX_SESSIONS_DIR) {
+  if (!sessionId || typeof sessionId !== "string") return "";
+  if (!fs.existsSync(sessionsDir)) return "";
+
+  const stack = [sessionsDir];
+  const candidates = [];
+  let visited = 0;
+  const maxVisited = 5000;
+
+  while (stack.length > 0 && visited < maxVisited) {
+    const dir = stack.pop();
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+
+    for (const entry of entries) {
+      if (visited++ >= maxVisited) break;
+      const p = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        stack.push(p);
+        continue;
+      }
+      if (!entry.isFile() || !entry.name.endsWith(".jsonl")) continue;
+      if (transcriptFileMatchesSession(p, sessionId)) {
+        try {
+          candidates.push({ path: p, mtimeMs: fs.statSync(p).mtimeMs });
+        } catch {}
+      }
+    }
+  }
+
+  candidates.sort((a, b) => b.mtimeMs - a.mtimeMs);
+  return candidates[0] ? candidates[0].path : "";
+}
+
+function collectTranscriptPaths(input, options = {}) {
+  const paths = [];
+  const seen = new Set();
+  const add = (candidate) => {
+    const p = safeTranscriptCandidate(candidate);
+    if (!p || seen.has(p)) return;
+    seen.add(p);
+    paths.push(p);
+  };
+
+  if (input) {
+    // SubagentStop has its own transcript in addition to the parent session
+    // transcript. Stage both when available so subagent conversations are not
+    // hidden behind the common transcript_path field.
+    add(input.agent_transcript_path);
+    add(input.transcript_path);
+
+    if (paths.length === 0) {
+      add(findCodexTranscriptBySessionId(input.session_id, options.sessionsDir));
+    }
+  }
+
+  return paths;
+}
+
 /**
  * Seal final-session artifacts into durable queues and kick off a detached
  * drain. Uploading is left to the drain / retry monitor so the hook returns
@@ -1274,16 +1371,15 @@ function cleanupStaleFiles() {
 function sealFinalSessionArtifacts(input) {
   const sealed = sealEventLog();
 
-  let staged = null;
-  if (input && input.transcript_path && fs.existsSync(input.transcript_path)) {
-    staged = stageTranscriptForUpload(input.transcript_path);
-  } else if (input && input.agent_transcript_path && fs.existsSync(input.agent_transcript_path)) {
-    staged = stageTranscriptForUpload(input.agent_transcript_path);
-  } else {
+  const transcriptPaths = collectTranscriptPaths(input);
+  const staged = transcriptPaths
+    .map((transcriptPath) => stageTranscriptForUpload(transcriptPath))
+    .filter(Boolean);
+  if (staged.length === 0) {
     console.error(`[skillmeter] No transcript to stage`);
   }
 
-  if (sealed || staged) spawnDetachedDrain();
+  if (sealed || staged.length > 0) spawnDetachedDrain();
 }
 
 function sealEventLogAndTriggerDrain() {
@@ -1547,6 +1643,10 @@ module.exports = {
   sealFinalSessionArtifacts,
   sealEventLogAndTriggerDrain,
   // Durable queue: transcript staging
+  safeTranscriptCandidate,
+  transcriptFileMatchesSession,
+  findCodexTranscriptBySessionId,
+  collectTranscriptPaths,
   stageTranscriptForUpload,
   uploadPendingTranscript,
   // Durable queue: listing + draining
@@ -1592,6 +1692,8 @@ module.exports = {
   PLUGIN_VERSION,
   LOG_DIR,
   LOG_FILE,
+  CODEX_HOME,
+  CODEX_SESSIONS_DIR,
   TRANSCRIPTS_PENDING_DIR,
   CLEANUP_MAX_AGE_MS,
   ACTIVE_LOG_STALE_MS,
