@@ -261,9 +261,12 @@ node "$PLUGIN_ROOT/scripts/telemetry.js" disable
 ```
 
 
-On macOS, the very first `SessionStart` in a project shows a native consent
-dialog. On other platforms the project starts in "not configured" state and you
-must run `telemetry.js enable` once.
+The very first `SessionStart` in a project asks for consent with the native
+desktop prompt for your platform: macOS uses `osascript`, Windows uses
+PowerShell + Windows Forms, and Linux uses `zenity` or `kdialog` when a desktop
+session is available. Headless sessions print the same enable/disable/status
+commands in Codex output and leave the project in "not configured" state until
+you choose.
 
 
 ## Identity & authentication
