@@ -260,6 +260,16 @@ node "$PLUGIN_ROOT/scripts/telemetry.js" status
 node "$PLUGIN_ROOT/scripts/telemetry.js" disable
 ```
 
+You can also pause or resume all Codex telemetry uploads on the machine,
+regardless of project opt-in, with the global switch:
+
+```bash
+node "$PLUGIN_ROOT/scripts/telemetry.js" disable --global
+node "$PLUGIN_ROOT/scripts/telemetry.js" enable --global
+```
+
+While globally disabled, hooks do not record new events and durable queues are
+left on disk instead of being uploaded.
 
 The very first `SessionStart` in a project asks for consent with the native
 desktop prompt for your platform: macOS uses `osascript`, Windows uses
@@ -303,10 +313,11 @@ JWT's `telemetry_endpoint` claim.
 node "$PLUGIN_ROOT/scripts/signout.js"
 ```
 
-(or the `signout` skill). This drops the license JWT and org list and sets a
+(or the `signout` skill). This drops the license JWT and org list, sets a
 `signed_out` sentinel so a still-authenticated `gh` CLI doesn't silently
-re-mint a license on the next session. The `device_id` and `hash_salt` are
-preserved, so signing back in reuses the same machine identity.
+re-mint a license on the next session, and enables the machine-global telemetry
+kill-switch. The `device_id` and `hash_salt` are preserved, so signing back in
+reuses the same machine identity and clears the global switch.
 
 ### JWT refresh & token-clear-and-retry
 

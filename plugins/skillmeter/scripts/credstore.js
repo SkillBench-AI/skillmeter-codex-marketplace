@@ -227,13 +227,30 @@ function isLicenseTokenExpired(token, skewSeconds = LICENSE_EXPIRY_SKEW_SECONDS)
 
 // `signed_out` is set by the signout flow. It blocks the silent gh fallback so
 // a still-authenticated gh CLI doesn't auto-resignin on the next SessionStart.
-// `markEngaged()` (called from signin) clears it.
+// `telemetry_disabled` is the machine-global kill switch shared by CLI toggles
+// and signout; hooks and drains must not upload while it is true.
+// `markEngaged()` (called from signin) clears both sentinels.
 //
 // Reads bypass the cache so a setter run by another process is reflected
 // immediately — relevant when signin runs as a long-lived background poll while
 // the user might invoke signout from a fresh hook process.
 function getSignedOut() {
   return readStore().signed_out === true;
+}
+
+function getTelemetryDisabled() {
+  return readStore().telemetry_disabled === true;
+}
+
+function setTelemetryDisabled(disabled) {
+  const store = readStore();
+  if (disabled) {
+    store.telemetry_disabled = true;
+  } else {
+    delete store.telemetry_disabled;
+  }
+  writeStore(store);
+  _cache = store;
 }
 
 // Drop license + org list atomically. Preserves device_id and hash_salt so the
@@ -243,6 +260,7 @@ function signOut() {
   delete store.license_jwt;
   delete store.allowed_github_orgs;
   store.signed_out = true;
+  store.telemetry_disabled = true;
   writeStore(store);
   _cache = store;
 }
@@ -252,6 +270,7 @@ function signOut() {
 function markEngaged() {
   const store = readStore();
   delete store.signed_out;
+  delete store.telemetry_disabled;
   writeStore(store);
   _cache = store;
 }
@@ -307,5 +326,7 @@ module.exports = {
   markEngaged,
   signOut,
   getSignedOut,
+  getTelemetryDisabled,
+  setTelemetryDisabled,
   CRED_FILE,
 };

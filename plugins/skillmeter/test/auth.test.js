@@ -116,11 +116,13 @@ test("commitSignin stores the license + normalized orgs; signOut clears them", (
   assert.equal(credstore.getLicenseToken(), token);
   assert.deepEqual(credstore.getAllowedGitHubOrgs(), ["acme", "beta"]);
   assert.equal(credstore.getSignedOut(), false);
+  assert.equal(credstore.getTelemetryDisabled(), false);
 
   credstore.signOut();
   assert.equal(credstore.getLicenseToken(), null);
   assert.deepEqual(credstore.getAllowedGitHubOrgs(), []);
   assert.equal(credstore.getSignedOut(), true);
+  assert.equal(credstore.getTelemetryDisabled(), true);
   // device identity survives a sign-out
   assert.equal(credstore.getDeviceId(), "TEST-DEVICE");
 });
@@ -131,7 +133,32 @@ test("commitSignin is refused while signed out; markEngaged re-arms it", () => {
 
   credstore.markEngaged();
   assert.equal(credstore.getSignedOut(), false);
+  assert.equal(credstore.getTelemetryDisabled(), false);
   assert.equal(credstore.commitSignin({ jwt: makeJwt({ exp: FUTURE }), orgs: ["x"] }), true);
+});
+
+test("global telemetry switch blocks event-log uploads without consuming the queue", async () => {
+  credstore.setTelemetryDisabled(true);
+
+  let sawRequest = false;
+  const srv = await startServer((_req, res) => {
+    sawRequest = true;
+    res.writeHead(200);
+    res.end("ok");
+  });
+  const logFile = tmpLogFile('{"a":1}\n');
+
+  try {
+    const outcome = await logger.transferEventLog(logFile, `${srv.url}/logs/codex`, 5000);
+    assert.equal(outcome, "skip");
+    assert.equal(sawRequest, false);
+    assert.equal(fs.existsSync(logFile), true, "queued batch remains for later");
+    assert.equal(fs.existsSync(`${logFile}.sent`), false);
+  } finally {
+    credstore.setTelemetryDisabled(false);
+    try { fs.unlinkSync(logFile); } catch {}
+    await srv.close();
+  }
 });
 
 test("isLicenseTokenExpired treats absent/expired tokens as expired", () => {

@@ -72,6 +72,14 @@ function getLicenseToken() {
   return credstore.getLicenseToken(LOG_DIR);
 }
 
+function getTelemetryGloballyDisabled() {
+  return credstore.getTelemetryDisabled();
+}
+
+function setTelemetryGloballyDisabled(disabled) {
+  return credstore.setTelemetryDisabled(disabled);
+}
+
 // ---------------------------------------------------------------------------
 // License refresh
 //
@@ -540,6 +548,10 @@ function isPermanentHttpStatus(status) {
 // between salvage, quarantine, and a bounded retry.
 function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVENT_TIMEOUT) {
   if (!logFile || !fs.existsSync(logFile)) return Promise.resolve("skip");
+  if (getTelemetryGloballyDisabled()) {
+    console.error(`[skillmeter] Event log transfer skipped (telemetry globally disabled)`);
+    return Promise.resolve("skip");
+  }
 
   const storedToken = getLicenseToken();
   // Proactive: never send a JWT we already know is past its exp. The ingest
@@ -614,6 +626,10 @@ function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVE
 // ---------------------------------------------------------------------------
 
 function stageTranscriptForUpload(transcriptPath) {
+  if (getTelemetryGloballyDisabled()) {
+    console.error(`[skillmeter] Transcript staging skipped (telemetry globally disabled)`);
+    return null;
+  }
   if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
 
   try {
@@ -656,6 +672,10 @@ function uploadPendingTranscript(
   timeoutMs = TRANSCRIPT_TIMEOUT
 ) {
   if (!pendingPath || !fs.existsSync(pendingPath)) return Promise.resolve("skip");
+  if (getTelemetryGloballyDisabled()) {
+    console.error(`[skillmeter] Transcript transfer skipped (telemetry globally disabled)`);
+    return Promise.resolve("skip");
+  }
 
   const storedToken = getLicenseToken();
   const initialToken = storedToken && !isJwtExpired(storedToken) ? storedToken : null;
@@ -939,6 +959,10 @@ function salvageBatch(batchPath) {
 // the max-age and max-retry bounds and performs partial-rejection salvage.
 async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
   if (!fs.existsSync(batchPath)) return "skip";
+  if (getTelemetryGloballyDisabled()) {
+    console.error(`[skillmeter] Batch processing skipped (telemetry globally disabled)`);
+    return "skip";
+  }
 
   const baseName = path.basename(batchPath);
 
@@ -1002,6 +1026,10 @@ async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
 // is refreshed on every re-stage); permanent rejections are quarantined at once.
 async function processPendingTranscript(pendingPath, deviceId, backendUrl, timeoutMs) {
   if (!fs.existsSync(pendingPath)) return "skip";
+  if (getTelemetryGloballyDisabled()) {
+    console.error(`[skillmeter] Transcript processing skipped (telemetry globally disabled)`);
+    return "skip";
+  }
 
   let mtimeMs = Date.now();
   try { mtimeMs = fs.statSync(pendingPath).mtimeMs; } catch {}
@@ -1018,6 +1046,10 @@ async function processPendingTranscript(pendingPath, deviceId, backendUrl, timeo
 }
 
 async function drainFailedLogs(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
+  if (getTelemetryGloballyDisabled()) {
+    console.error(`[skillmeter] Event-log drain skipped (telemetry globally disabled)`);
+    return 0;
+  }
   const files = listSealedEventLogs();
   if (files.length === 0) return 0;
   console.error(`[skillmeter] Draining ${files.length} sealed event log(s)`);
@@ -1028,6 +1060,10 @@ async function drainFailedLogs(backendUrl = getBackendUrl(process.cwd()), timeou
 }
 
 async function drainPendingTranscripts(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
+  if (getTelemetryGloballyDisabled()) {
+    console.error(`[skillmeter] Transcript drain skipped (telemetry globally disabled)`);
+    return 0;
+  }
   const files = listPendingTranscripts();
   if (files.length === 0) return 0;
 
@@ -1046,6 +1082,10 @@ async function drainPendingTranscripts(backendUrl = getBackendUrl(process.cwd())
  * (pre-drain), which callers use to decide whether work remains.
  */
 async function drainQueuesOnce(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
+  if (getTelemetryGloballyDisabled()) {
+    console.error(`[skillmeter] Queue drain skipped (telemetry globally disabled)`);
+    return 0;
+  }
   const logs = await drainFailedLogs(backendUrl, timeoutMs);
   const transcripts = await drainPendingTranscripts(backendUrl, timeoutMs);
   return logs + transcripts;
@@ -1646,6 +1686,11 @@ async function runHook(eventName, buildData, options = {}) {
     process.exit(code);
   };
 
+  if (getTelemetryGloballyDisabled()) {
+    console.error(`[skillmeter] ${eventName}: skipped (telemetry globally disabled)`);
+    return exit(0);
+  }
+
   const deviceId = getDeviceId();
   if (!deviceId) {
     console.error(`[skillmeter] ${eventName}: skipped (no device ID)`);
@@ -1752,6 +1797,8 @@ module.exports = {
   getDeviceId,
   getOrCreateHashSalt,
   getLicenseToken,
+  getTelemetryGloballyDisabled,
+  setTelemetryGloballyDisabled,
   tryRefreshLicense,
   hashHmac,
   sanitizeToolData,
