@@ -126,9 +126,10 @@ function detectSkills(roots) {
   const scopes = new Set();
   for (const { scope, dir } of roots) {
     if (!safeIsDir(dir)) continue;
-    const before = names.size;
-    collectSkillNames(dir, 1, names);
-    if (names.size > before) scopes.add(scope);
+    const dirNames = new Set();
+    collectSkillNames(dir, 1, dirNames);
+    if (dirNames.size > 0) scopes.add(scope);
+    for (const name of dirNames) names.add(name);
   }
   return { names: [...names].sort(), scopes: [...scopes].sort() };
 }
@@ -183,7 +184,7 @@ function detectHarness(cwd, options = {}) {
   const base = {
     schema_version: HARNESS_SCHEMA_VERSION,
     agent_type: options.agentType || "codex",
-    instructions: { has_agents_md: false, has_claude_md: false, scopes: [] },
+    instructions: { has_agents_md: false, has_agents_md_global: false, has_claude_md: false, has_claude_md_global: false, scopes: [] },
     skills: { count: 0, names: [], scopes: [] },
     hooks: { enabled: [], scopes: [] },
     // Level 2 — architecture-level signals are not detectable from the
