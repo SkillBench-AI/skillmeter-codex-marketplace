@@ -11,7 +11,7 @@
  */
 
 const crypto = require("crypto");
-const { execSync, spawn } = require("child_process");
+const { spawn, spawnSync } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -1446,6 +1446,15 @@ function readStdin() {
 // Telemetry opt-in management
 // ---------------------------------------------------------------------------
 
+const TELEMETRY_CONSENT_MESSAGE =
+  "Enable SkillMeter telemetry for this Codex project?\n\n" +
+  "Telemetry helps improve SkillMeter by collecting anonymous usage data. " +
+  "You can change this per-project setting at any time.";
+
+function telemetryCliCommand(action) {
+  return `node ${JSON.stringify(path.join(PLUGIN_ROOT, "scripts", "telemetry.js"))} ${action}`;
+}
+
 function getTelemetryOptIn(cwd) {
   try {
     const content = readSettingsFile(cwd);
@@ -1472,24 +1481,143 @@ function saveTelemetryOptIn(cwd, value) {
   fs.writeFileSync(settingsPath, JSON.stringify(content, null, 2) + "\n");
 }
 
-function promptTelemetryOptIn(cwd) {
-  // Codex hooks run with the session cwd as their working directory but
-  // typically without a controlling TTY, so an osascript dialog is the only
-  // reliable way to surface a consent prompt on macOS. On other platforms we
-  // default to "not yet decided" so the user can opt in via `node telemetry.js
-  // enable`.
-  if (process.platform !== "darwin") return false;
-  try {
-    const result = execSync(
-      `osascript -e 'display dialog "Enable SkillMeter telemetry for this Codex project?\\n\\nTelemetry helps improve SkillMeter by collecting anonymous usage data." with title "SkillMeter" buttons {"No", "Yes"} default button "Yes"'`,
-      { encoding: "utf8", stdio: ["pipe", "pipe", "pipe"], timeout: 30_000 }
+function runConsentCommand(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    encoding: "utf8",
+    env: options.env || process.env,
+    stdio: ["ignore", "pipe", "pipe"],
+    timeout: options.timeout || 30_000,
+    windowsHide: true,
+  });
+  return {
+    status: result.status,
+    stdout: result.stdout || "",
+    stderr: result.stderr || "",
+    error: result.error || null,
+  };
+}
+
+function parseMacOsConsentResult(result) {
+  if (!result || result.error || result.status !== 0) return null;
+  const output = `${result.stdout}\n${result.stderr}`;
+  if (output.includes("button returned:Yes")) return true;
+  if (output.includes("button returned:No")) return false;
+  return null;
+}
+
+function parseWindowsConsentResult(result) {
+  if (!result || result.error || result.status !== 0) return null;
+  const output = `${result.stdout}\n${result.stderr}`.trim();
+  if (/\bYes\b/i.test(output)) return true;
+  if (/\bNo\b/i.test(output)) return false;
+  return null;
+}
+
+function parseLinuxConsentResult(result) {
+  if (!result || result.error) return null;
+  if (result.status === 0) return true;
+  if (result.status === 1) return false;
+  return null;
+}
+
+function resolveTelemetryConsent(platform, options = {}) {
+  const env = options.env || process.env;
+  const runner = options.runConsentCommand || runConsentCommand;
+
+  if (platform === "darwin") {
+    return parseMacOsConsentResult(
+      runner("osascript", [
+        "-e",
+        `display dialog ${JSON.stringify(TELEMETRY_CONSENT_MESSAGE)} with title "SkillMeter" buttons {"No", "Yes"} default button "Yes"`,
+      ], { env })
     );
-    const enabled = result.trim().includes("button returned:Yes");
-    saveTelemetryOptIn(cwd, enabled);
-    return enabled;
-  } catch {
-    return false;
   }
+
+  if (platform === "win32") {
+    const script = [
+      "Add-Type -AssemblyName System.Windows.Forms",
+      `$result = [System.Windows.Forms.MessageBox]::Show(${JSON.stringify(TELEMETRY_CONSENT_MESSAGE)}, "SkillMeter", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)`,
+      "[Console]::Out.WriteLine($result)",
+    ].join("; ");
+
+    for (const command of ["powershell.exe", "pwsh"]) {
+      const decision = parseWindowsConsentResult(
+        runner(command, [
+          "-NoProfile",
+          "-NonInteractive",
+          "-ExecutionPolicy",
+          "Bypass",
+          "-Command",
+          script,
+        ], { env })
+      );
+      if (decision !== null) return decision;
+    }
+    return null;
+  }
+
+  if (platform === "linux") {
+    if (!env.DISPLAY && !env.WAYLAND_DISPLAY) return null;
+
+    const candidates = [
+      {
+        command: "zenity",
+        args: [
+          "--question",
+          "--title=SkillMeter",
+          `--text=${TELEMETRY_CONSENT_MESSAGE}`,
+          "--ok-label=Yes",
+          "--cancel-label=No",
+        ],
+      },
+      {
+        command: "kdialog",
+        args: [
+          "--title",
+          "SkillMeter",
+          "--yesno",
+          TELEMETRY_CONSENT_MESSAGE,
+        ],
+      },
+    ];
+
+    for (const candidate of candidates) {
+      const decision = parseLinuxConsentResult(
+        runner(candidate.command, candidate.args, { env })
+      );
+      if (decision !== null) return decision;
+    }
+  }
+
+  return null;
+}
+
+function writeTelemetryConsentFallback(cwd, stream = process.stderr) {
+  stream.write(
+    [
+      `SkillMeter: Telemetry is not configured for ${cwd}`,
+      "SkillMeter: Enable or disable telemetry for this project with:",
+      `  ${telemetryCliCommand("enable")}`,
+      `  ${telemetryCliCommand("disable")}`,
+      `  ${telemetryCliCommand("status")}`,
+      "",
+    ].join("\n")
+  );
+}
+
+function promptTelemetryOptIn(cwd, options = {}) {
+  // Codex hooks usually run without a controlling TTY, so consent is collected
+  // through platform-native GUI prompts when available. Headless environments
+  // get an explicit in-Codex command flow and remain "not configured" until the
+  // user chooses enable/disable.
+  const decision = resolveTelemetryConsent(options.platform || process.platform, options);
+  if (decision !== null) {
+    saveTelemetryOptIn(cwd, decision);
+    return decision;
+  }
+
+  writeTelemetryConsentFallback(cwd, options.stderr || process.stderr);
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1684,6 +1812,8 @@ module.exports = {
   cleanupStaleFiles,
   getTelemetryOptIn,
   saveTelemetryOptIn,
+  resolveTelemetryConsent,
+  writeTelemetryConsentFallback,
   promptTelemetryOptIn,
   getRepoScopeDecision,
   runHook,
