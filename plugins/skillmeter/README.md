@@ -37,6 +37,17 @@ Every event record also carries `session_id`, `device_id`, `agent: "codex"`,
 the current `model` and `turn_id`, hashed `cwd`/`repo_root`, and the
 `repo_scope` decision for the current project.
 
+These ten events are the **complete** post-GA Codex lifecycle hook catalog
+([OpenAI Codex hooks docs](https://developers.openai.com/codex/hooks)), so the
+plugin handles every hook Codex can emit. The Claude Code plugin additionally
+ships `Notification`, `SessionEnd`, `PermissionDenied`, `TaskCreated` /
+`TaskCompleted`, and `WorktreeCreate` / `WorktreeRemove` handlers, but **none of
+those events exist in Codex today** — `SessionEnd` is only an open upstream
+request ([openai/codex#20603](https://github.com/openai/codex/issues/20603)) and
+the rest are Claude-only. Wiring them would be dead config, so they are
+deliberately omitted; `test/hook-surface.test.js` guards this contract so the
+plugin picks any new event up the moment Codex ships it.
+
 
 ## Harness metadata
 
@@ -319,6 +330,26 @@ re-mint a license on the next session, and enables the machine-global telemetry
 kill-switch. The `device_id` and `hash_salt` are preserved, so signing back in
 reuses the same machine identity and clears the global switch.
 
+### Command-line tools (`bin/`)
+
+For quick auth/debug work from a shell — without an LLM round-trip through a
+skill — the plugin ships thin CLI wrappers in `bin/` (parity with the Claude
+Code plugin):
+
+| Tool | Purpose |
+|------|---------|
+| `bin/signin` | Run the sign-in flow (silent `gh` / GitHub device flow) |
+| `bin/signout` | Sign out, drop the license, and pause uploads |
+| `bin/sk-jwt` | Print the stored license JWT's claims (org, endpoint, expiry) in human-readable form — **never** prints the raw token |
+| `bin/sk-refresh` | Clear the stored license and re-activate immediately (swap tenants / recover from a revoked token / test the silent-gh path) |
+| `bin/sk-telemetry` | `enable` / `disable` / `status` telemetry, with `--global` for the machine-wide kill switch (forwards to `scripts/telemetry.js`) |
+
+```bash
+node "$PLUGIN_ROOT/bin/sk-jwt"            # inspect the current license
+node "$PLUGIN_ROOT/bin/sk-refresh"        # force a fresh activation
+node "$PLUGIN_ROOT/bin/sk-telemetry" status
+```
+
 ### JWT refresh & token-clear-and-retry
 
 - **Proactive refresh.** `SessionStart` rotates a missing or near-expiry JWT via
@@ -411,6 +442,12 @@ skillmeter-codex-marketplace/
     ├── .codex-plugin/plugin.json
     ├── README.md
     ├── hooks/hooks.json
+    ├── bin/                   # shell-facing auth/debug CLIs (thin wrappers)
+    │   ├── signin
+    │   ├── signout
+    │   ├── sk-jwt            # print license JWT claims (no raw token)
+    │   ├── sk-refresh        # clear license + re-activate
+    │   └── sk-telemetry      # enable/disable/status telemetry
     ├── scripts/
     │   ├── logger.js          # logging + durable queue/drain/retry transport + auth wiring
     │   ├── credstore.js       # shared ~/.skillbench/credentials.json (identity + license)
@@ -444,6 +481,11 @@ skillmeter-codex-marketplace/
     │   ├── repo-scope.test.js # unit tests for default privacy posture / repo-scope gating
     │   ├── durability.test.js # unit tests for poison-batch handling, salvage, retry/age limits, atomic writes
     │   ├── sanitization.test.js # unit + e2e tests for pre-upload secret/PII redaction
+    │   ├── sanitizer-edge-cases.test.js # boundary/idempotency/metadata edge cases for the sanitizer
+    │   ├── logger.test.js     # unit tests for sanitizeToolData (path hashing) + getBackendUrl resolution
+    │   ├── hook-surface.test.js # guards the verified 10-event Codex hook catalog in hooks.json
+    │   ├── bin-cli.test.js    # unit tests for the bin/ auth/debug CLIs
+    │   ├── telemetry-consent.test.js # unit tests for cross-platform consent prompts
     │   └── harness.test.js    # unit tests for Level 1 harness detection
     └── skills/
         ├── signin/SKILL.md
@@ -452,4 +494,23 @@ skillmeter-codex-marketplace/
         ├── check-repo-scope/SKILL.md
         └── review-export/SKILL.md
 ```
+
+
+## Testing
+
+The suite uses the built-in Node test runner (`node:test`) with no external
+dependencies. Run it from the repo root:
+
+```bash
+node --test plugins/skillmeter/test/*.test.js
+```
+
+Each suite isolates state by pointing `HOME` at a throwaway directory (so the
+shared `~/.skillbench/credentials.json` is never touched) and seeds a device id
++ hash salt up front. Coverage spans JWT routing and the 401/403 retry, the
+repo-scope privacy posture, poison-batch durability, pre-upload secret/PII
+redaction (plus boundary/idempotency edge cases), path hashing and ingest-URL
+resolution (`logger.test.js`), the verified Codex hook catalog
+(`hook-surface.test.js`), the cross-platform consent prompts, Level 1 harness
+detection, and the `bin/` auth/debug CLIs.
 
