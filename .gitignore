@@ -29,6 +29,10 @@ Temporary Items
 plugins/skillmeter/logs/
 plugins/skillmeter/tracking/
 
+# Node / CI artifacts
+node_modules/
+dist/
+
 # Local user settings
 .codex/settings.local.json
 

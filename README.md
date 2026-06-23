@@ -99,6 +99,24 @@ collector (e.g. the dev tenant collector) without changing the default, set
 `skillmeter.backendUrl` in that project's `.codex/settings.local.json` — see
 [`plugins/skillmeter/README.md`](plugins/skillmeter/README.md#configuration).
 
+## Versioning & releases
+
+The plugin version is the single source of truth in
+[`plugins/skillmeter/.codex-plugin/plugin.json`](plugins/skillmeter/.codex-plugin/plugin.json)
+and uses clean [SemVer](https://semver.org/) (`MAJOR.MINOR.PATCH`, no
+build-metadata suffix). Releases are cut by pushing a matching `vMAJOR.MINOR.PATCH`
+tag, which runs the full CI gate and publishes a GitHub Release automatically.
+
+Run the same checks CI runs:
+
+```bash
+npm run check   # clean-SemVer check + manifest validation + unit tests
+npm test        # just the unit tests (node --test)
+```
+
+See [`RELEASING.md`](RELEASING.md) for the full versioning policy, tag strategy,
+and step-by-step release process.
+
 ## Bundled skills
 
 The plugin still ships the original workflow skills, useful for batch exports
@@ -112,8 +130,13 @@ and audits on top of the live feed:
 
 ```text
 skillmeter-codex-marketplace/
+├── .github/
+│   ├── workflows/            # ci.yml (lint + test) and release.yml (tag → release)
+│   └── scripts/              # check-version.mjs, validate-manifests.mjs
 ├── .claude-plugin/marketplace.json
 ├── .agents/plugins/marketplace.json
+├── package.json              # test / check script entrypoints
+├── RELEASING.md              # versioning policy + release process
 └── plugins/skillmeter/
     ├── .codex-plugin/plugin.json
     ├── README.md
