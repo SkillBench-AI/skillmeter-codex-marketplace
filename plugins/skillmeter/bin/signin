@@ -1,0 +1,18 @@
+#!/usr/bin/env node
+/**
+ * signin — run the SkillMeter sign-in (silent gh / GitHub device flow) directly
+ * from a shell, without invoking the `signin` skill.
+ *
+ * Usage:
+ *   node bin/signin
+ */
+const path = require("path");
+
+const PLUGIN_ROOT =
+  process.env.PLUGIN_ROOT ||
+  process.env.CLAUDE_PLUGIN_ROOT ||
+  path.resolve(__dirname, "..");
+process.env.PLUGIN_ROOT = PLUGIN_ROOT;
+process.env.CLAUDE_PLUGIN_ROOT = PLUGIN_ROOT;
+
+require(path.join(PLUGIN_ROOT, "scripts", "signin.js"));

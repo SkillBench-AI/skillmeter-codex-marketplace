@@ -1,0 +1,27 @@
+#!/usr/bin/env node
+/**
+ * sk-telemetry — toggle SkillMeter telemetry opt-in (per project or the
+ * machine-global kill switch) without going through a Codex skill invocation
+ * (which incurs LLM latency).
+ *
+ * Usage:
+ *   node bin/sk-telemetry enable
+ *   node bin/sk-telemetry disable
+ *   node bin/sk-telemetry status
+ *   node bin/sk-telemetry enable --global
+ *   node bin/sk-telemetry disable --global
+ *
+ * The heavy lifting lives in scripts/telemetry.js. This wrapper just forwards
+ * execution so there is a single source of truth; process.argv is inherited by
+ * the required module, so the subcommand reaches it unchanged.
+ */
+const path = require("path");
+
+const PLUGIN_ROOT =
+  process.env.PLUGIN_ROOT ||
+  process.env.CLAUDE_PLUGIN_ROOT ||
+  path.resolve(__dirname, "..");
+process.env.PLUGIN_ROOT = PLUGIN_ROOT;
+process.env.CLAUDE_PLUGIN_ROOT = PLUGIN_ROOT;
+
+require(path.join(PLUGIN_ROOT, "scripts", "telemetry.js"));

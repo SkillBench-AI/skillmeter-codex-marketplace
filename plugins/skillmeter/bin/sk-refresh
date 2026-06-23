@@ -1,0 +1,37 @@
+#!/usr/bin/env node
+/**
+ * sk-refresh — clear the stored license JWT and run the sign-in / activation
+ * flow immediately. Useful for:
+ *   - swapping tenants (pull a fresh JWT with a new telemetry_endpoint)
+ *   - recovering from a revoked/rotated license without waiting for the natural
+ *     expiry + SessionStart refresh
+ *   - testing the silent-gh activation path
+ *
+ * This is the Codex counterpart to the Claude plugin's `sk-refresh` tool.
+ *
+ * Usage:
+ *   node bin/sk-refresh
+ */
+const path = require("path");
+
+const PLUGIN_ROOT =
+  process.env.PLUGIN_ROOT ||
+  process.env.CLAUDE_PLUGIN_ROOT ||
+  path.resolve(__dirname, "..");
+process.env.PLUGIN_ROOT = PLUGIN_ROOT;
+process.env.CLAUDE_PLUGIN_ROOT = PLUGIN_ROOT;
+
+const credstore = require(path.join(PLUGIN_ROOT, "scripts", "credstore.js"));
+
+const existing = credstore.getLicenseToken();
+if (existing) {
+  process.stderr.write("sk-refresh: clearing stored license JWT\n");
+  credstore.setLicenseToken("");
+} else {
+  process.stderr.write("sk-refresh: no stored license; running fresh activation\n");
+}
+
+// Requiring signin.js runs its top-level entrypoint immediately. With the
+// license cleared above it falls through to the silent-gh / device-flow
+// pipeline and re-mints a fresh license + per-tenant endpoint.
+require(path.join(PLUGIN_ROOT, "scripts", "signin.js"));

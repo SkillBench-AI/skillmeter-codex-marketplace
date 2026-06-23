@@ -1,0 +1,19 @@
+#!/usr/bin/env node
+/**
+ * signout — sign the machine out of SkillMeter directly from a shell, without
+ * invoking the `signout` skill. Drops the license + allowed-org list, enables
+ * the machine-global telemetry kill switch, and blocks silent gh re-signin.
+ *
+ * Usage:
+ *   node bin/signout
+ */
+const path = require("path");
+
+const PLUGIN_ROOT =
+  process.env.PLUGIN_ROOT ||
+  process.env.CLAUDE_PLUGIN_ROOT ||
+  path.resolve(__dirname, "..");
+process.env.PLUGIN_ROOT = PLUGIN_ROOT;
+process.env.CLAUDE_PLUGIN_ROOT = PLUGIN_ROOT;
+
+require(path.join(PLUGIN_ROOT, "scripts", "signout.js"));
