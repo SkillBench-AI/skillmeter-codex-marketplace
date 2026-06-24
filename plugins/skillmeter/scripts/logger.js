@@ -352,10 +352,19 @@ const INGEST_ROUTE = "/logs/codex";
 // The env override (1) is user-supplied so it's validated against the
 // trusted-domain allow-list; the JWT endpoint (2) is server-minted and trusted
 // as-is (see lib/jwt.js).
-const DEFAULT_BACKEND_URL = "https://api.meter.skillbench.com/logs/codex";
+// Prod telemetry lives on the greenfield skillbench.ai zone: the activation
+// Lambda mints per-tenant `telemetry_endpoint` claims of the form
+// https://{slug}.meter.skillbench.ai (prod) / https://{slug}.meter.dev.skillbench.com
+// (dev), per the infra telemetry_endpoint_url_template. This default is only the
+// unauthenticated fallback — real routing comes from the JWT claim.
+const DEFAULT_BACKEND_URL = "https://api.meter.skillbench.ai/logs/codex";
 
-// Trusted domain patterns for backend URL validation
+// Trusted domain patterns for backend URL validation. Prod tenants are on
+// *.meter.skillbench.ai; dev/non-prod on *.meter.dev.skillbench.com (the
+// legacy *.meter.skillbench.com patterns are retained for back-compat).
 const TRUSTED_BACKEND_PATTERNS = [
+  /^https:\/\/api\.meter\.skillbench\.ai\//,
+  /^https:\/\/[a-z0-9-]+\.meter\.skillbench\.ai\//,
   /^https:\/\/api\.meter\.skillbench\.com\//,
   /^https:\/\/[a-z0-9-]+\.meter\.skillbench\.com\//,
   /^https:\/\/[a-z0-9-]+\.skillbench\.com\//,

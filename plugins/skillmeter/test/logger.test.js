@@ -200,6 +200,21 @@ test("getBackendUrl derives the per-tenant endpoint from a valid license JWT", (
   }
 });
 
+test("getBackendUrl trusts a prod skillbench.ai per-tenant endpoint", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sk-logger-cwd-"));
+  credstore.setLicenseToken(
+    makeJwt({ telemetry_endpoint: "https://acme.meter.skillbench.ai", exp: futureExp() })
+  );
+  try {
+    assert.equal(
+      logger.getBackendUrl(cwd),
+      "https://acme.meter.skillbench.ai/logs/codex"
+    );
+  } finally {
+    credstore.setLicenseToken("");
+  }
+});
+
 test("getBackendUrl falls back to default when the JWT endpoint is untrusted", () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sk-logger-cwd-"));
   credstore.setLicenseToken(
@@ -246,7 +261,7 @@ test("getBackendUrl returns the shipped default when unauthenticated", () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sk-logger-cwd-"));
   credstore.setLicenseToken("");
   assert.equal(logger.getBackendUrl(cwd), logger.DEFAULT_BACKEND_URL);
-  assert.match(logger.DEFAULT_BACKEND_URL, /^https:\/\/api\.meter\.skillbench\.com\/logs\/codex$/);
+  assert.match(logger.DEFAULT_BACKEND_URL, /^https:\/\/api\.meter\.skillbench\.ai\/logs\/codex$/);
 });
 
 test("getBackendUrl env override takes precedence over the JWT", () => {

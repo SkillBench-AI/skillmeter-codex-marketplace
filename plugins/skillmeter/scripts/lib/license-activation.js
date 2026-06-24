@@ -16,13 +16,18 @@ const credstore = require("../credstore");
 const { fetchUserGitHubOrgs } = require("./github-api");
 const { getSkillmeterStringSetting } = require("./settings");
 
-// Default points at prod. Devs/agents override via SKILLMETER_ACTIVATE_URL
-// (e.g. https://api.dev.skillbench.com/activate) or a `skillmeter.activate_url`
-// entry in the project's .codex/settings.local.json.
-const DEFAULT_ACTIVATE_URL = "https://api.skillbench.com/activate";
+// Default points at prod. The prod control plane lives on the greenfield
+// `skillbench.ai` zone (api.skillbench.ai), matching the Claude plugin and the
+// infra `api_domain_name` — NOT skillbench.com, which has no DNS record.
+// Devs/agents override via SKILLMETER_ACTIVATE_URL (e.g.
+// https://api.dev.skillbench.com/activate) or a `skillmeter.activate_url` entry
+// in the project's .codex/settings.local.json.
+const DEFAULT_ACTIVATE_URL = "https://api.skillbench.ai/activate";
 
-// Trusted domain patterns for activation URL validation
+// Trusted domain patterns for activation URL validation. Prod is on
+// skillbench.ai; dev/non-prod environments are on api.<env>.skillbench.com.
 const TRUSTED_ACTIVATION_PATTERNS = [
+  /^https:\/\/api\.skillbench\.ai\//,
   /^https:\/\/api\.skillbench\.com\//,
   /^https:\/\/api\.[a-z0-9-]+\.skillbench\.com\//,
   /^https:\/\/[a-z0-9-]+\.dev\.skillbench\.com\//,
