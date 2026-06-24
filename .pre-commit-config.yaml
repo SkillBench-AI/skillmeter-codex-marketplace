@@ -1,0 +1,29 @@
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-json
+      - id: check-merge-conflict
+      - id: detect-private-key
+      - id: no-commit-to-branch
+        args: [--branch, main]
+
+  # Repo-local guards mirroring the CI gate, so version/manifest mistakes are
+  # caught before they reach a PR. Dependency-free Node scripts (no install).
+  - repo: local
+    hooks:
+      - id: check-plugin-version
+        name: plugin version is clean SemVer
+        entry: node .github/scripts/check-version.mjs
+        language: system
+        files: ^plugins/skillmeter/\.codex-plugin/plugin\.json$
+        pass_filenames: false
+      - id: validate-manifests
+        name: validate marketplace & plugin manifests
+        entry: node .github/scripts/validate-manifests.mjs
+        language: system
+        files: ^(plugins/skillmeter/\.codex-plugin/plugin\.json|\.claude-plugin/marketplace\.json|\.agents/plugins/marketplace\.json)$
+        pass_filenames: false
