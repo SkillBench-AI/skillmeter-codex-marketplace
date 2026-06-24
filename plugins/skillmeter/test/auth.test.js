@@ -35,6 +35,7 @@ const assert = require("node:assert/strict");
 const jwt = require("../scripts/lib/jwt");
 const credstore = require("../scripts/credstore");
 const logger = require("../scripts/logger");
+const licenseActivation = require("../scripts/lib/license-activation");
 
 // --- helpers ---------------------------------------------------------------
 
@@ -186,6 +187,48 @@ test("getBackendUrl routes to the JWT per-tenant endpoint with /logs/codex", () 
 test("getBackendUrl falls back to the prod default when unauthenticated", () => {
   credstore.setLicenseToken("");
   assert.equal(logger.getBackendUrl(tmpHome), logger.DEFAULT_BACKEND_URL);
+});
+
+// --- activation URL resolution (prod is on skillbench.ai) ------------------
+
+test("activation defaults to the prod skillbench.ai control plane", () => {
+  // getActivateUrl reads `skillmeter.activate_url` from <cwd>/.codex; run from a
+  // clean dir so this repo's own dev settings.local.json doesn't interfere.
+  const prevCwd = process.cwd();
+  process.chdir(tmpHome);
+  try {
+    assert.equal(licenseActivation.getActivateUrl(), "https://api.skillbench.ai/activate");
+    assert.equal(licenseActivation.getRefreshUrl(), "https://api.skillbench.ai/refresh");
+  } finally {
+    process.chdir(prevCwd);
+  }
+});
+
+test("a trusted skillbench.ai activation override is honored", () => {
+  process.env.SKILLMETER_ACTIVATE_URL = "https://api.skillbench.ai/activate";
+  try {
+    assert.equal(licenseActivation.getActivateUrl(), "https://api.skillbench.ai/activate");
+  } finally {
+    delete process.env.SKILLMETER_ACTIVATE_URL;
+  }
+});
+
+test("a trusted dev activation override is honored", () => {
+  process.env.SKILLMETER_ACTIVATE_URL = "https://api.dev.skillbench.com/activate";
+  try {
+    assert.equal(licenseActivation.getActivateUrl(), "https://api.dev.skillbench.com/activate");
+  } finally {
+    delete process.env.SKILLMETER_ACTIVATE_URL;
+  }
+});
+
+test("an untrusted activation override falls back to the prod default", () => {
+  process.env.SKILLMETER_ACTIVATE_URL = "https://evil.example.com/activate";
+  try {
+    assert.equal(licenseActivation.getActivateUrl(), "https://api.skillbench.ai/activate");
+  } finally {
+    delete process.env.SKILLMETER_ACTIVATE_URL;
+  }
 });
 
 // --- authenticated upload + 401/403 clear-and-retry ------------------------

@@ -124,7 +124,7 @@ Codex lifecycle event
   -> append NDJSON entry to ${PLUGIN_DATA}/logs/events.jsonl
   -> Stop / SubagentStop seal events.jsonl -> events.jsonl.<ts> and stage the
      transcript, then spawn a detached drain (drain_once.js) that gzips + POSTs
-     to the resolved backend (default https://api.meter.skillbench.com/logs/codex)
+     to the resolved backend (default https://api.meter.skillbench.ai/logs/codex)
   -> SkillBench Codex collector lambda
   -> OTel Collector
   -> ClickHouse skillmeter.otel_logs
@@ -209,7 +209,7 @@ codex plugin marketplace add ./skillmeter-codex-marketplace
 | Variable | Default | Purpose |
 |----------|---------|---------|
 | `SKILLMETER_BACKEND_URL` | unset | Per-session ingest-endpoint override (highest priority) |
-| `SKILLMETER_ACTIVATE_URL` | `https://api.skillbench.com/activate` | License activation endpoint (`/refresh` is derived from the same host) |
+| `SKILLMETER_ACTIVATE_URL` | `https://api.skillbench.ai/activate` | License activation endpoint (`/refresh` is derived from the same host). Point at `https://api.dev.skillbench.com/activate` to run against dev. |
 | `SKILLMETER_GITHUB_CLIENT_ID` | prod OAuth App | GitHub OAuth App client id used by the device-login flow |
 | `SKILLMETER_TIMEOUT` | `10` | Event-batch upload timeout (seconds) |
 | `SKILLMETER_MAX_BATCH_RETRIES` | `25` | Transient-failure attempts before a sealed batch is quarantined as poison |
@@ -232,7 +232,7 @@ than configured separately):
    [Identity & authentication](#identity--authentication)), with the
    `/logs/codex` route appended. The claim is read even from an expired token so
    a drain still reaches the right tenant host while a refresh is pending.
-3. built-in default (prod): `https://api.meter.skillbench.com/logs/codex`
+3. built-in default (prod): `https://api.meter.skillbench.ai/logs/codex`
 
 Step 1 is user-supplied, so it's validated against a trusted-domain allow-list.
 Step 2 is server-minted at sign-in and trusted as-is.
