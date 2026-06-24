@@ -160,25 +160,29 @@ test("getBackendUrl rejects a non-https env override", () => {
   }
 });
 
-test("getBackendUrl reads a trusted backendUrl from project settings", () => {
-  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sk-logger-cwd-"));
-  fs.mkdirSync(path.join(cwd, ".codex"), { recursive: true });
-  const url = "https://acme.meter.dev.skillbench.com/logs/codex";
-  fs.writeFileSync(
-    path.join(cwd, ".codex", "settings.local.json"),
-    JSON.stringify({ skillmeter: { backendUrl: url } }) + "\n"
-  );
-  assert.equal(logger.getBackendUrl(cwd), url);
-});
-
-test("getBackendUrl ignores an untrusted backendUrl from settings", () => {
+test("getBackendUrl ignores a backendUrl settings key (env/JWT only, like Claude)", () => {
+  // Environment selection now lives on the activation side (activate_url); the
+  // upload host is read back from the license JWT. A stale `backendUrl` settings
+  // entry must not override the JWT-derived per-tenant endpoint.
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sk-logger-cwd-"));
   fs.mkdirSync(path.join(cwd, ".codex"), { recursive: true });
   fs.writeFileSync(
     path.join(cwd, ".codex", "settings.local.json"),
-    JSON.stringify({ skillmeter: { backendUrl: "https://evil.example.com/x" } }) + "\n"
+    JSON.stringify({
+      skillmeter: { backendUrl: "https://acme.meter.dev.skillbench.com/logs/codex" },
+    }) + "\n"
   );
-  assert.equal(logger.getBackendUrl(cwd), logger.DEFAULT_BACKEND_URL);
+  credstore.setLicenseToken(
+    makeJwt({ telemetry_endpoint: "https://jwt.meter.skillbench.com", exp: futureExp() })
+  );
+  try {
+    assert.equal(
+      logger.getBackendUrl(cwd),
+      "https://jwt.meter.skillbench.com/logs/codex"
+    );
+  } finally {
+    credstore.setLicenseToken("");
+  }
 });
 
 test("getBackendUrl derives the per-tenant endpoint from a valid license JWT", () => {
@@ -208,10 +212,28 @@ test("getBackendUrl falls back to default when the JWT endpoint is untrusted", (
   }
 });
 
-test("getBackendUrl ignores an expired license JWT and uses the default", () => {
+test("getBackendUrl derives the per-tenant endpoint even from an expired license JWT", () => {
+  // The telemetry_endpoint claim is routing info, not an auth decision: an
+  // expired token still resolves the tenant host so a drain reaches the right
+  // collector while a refresh is pending (matches the Claude plugin).
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sk-logger-cwd-"));
   credstore.setLicenseToken(
     makeJwt({ telemetry_endpoint: "https://acme.meter.skillbench.com", exp: futureExp(-3600) })
+  );
+  try {
+    assert.equal(
+      logger.getBackendUrl(cwd),
+      "https://acme.meter.skillbench.com/logs/codex"
+    );
+  } finally {
+    credstore.setLicenseToken("");
+  }
+});
+
+test("getBackendUrl falls back to default when an expired JWT endpoint is untrusted", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sk-logger-cwd-"));
+  credstore.setLicenseToken(
+    makeJwt({ telemetry_endpoint: "https://evil.example.com", exp: futureExp(-3600) })
   );
   try {
     assert.equal(logger.getBackendUrl(cwd), logger.DEFAULT_BACKEND_URL);
@@ -227,13 +249,8 @@ test("getBackendUrl returns the shipped default when unauthenticated", () => {
   assert.match(logger.DEFAULT_BACKEND_URL, /^https:\/\/api\.meter\.skillbench\.com\/logs\/codex$/);
 });
 
-test("getBackendUrl env override takes precedence over settings and JWT", () => {
+test("getBackendUrl env override takes precedence over the JWT", () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sk-logger-cwd-"));
-  fs.mkdirSync(path.join(cwd, ".codex"), { recursive: true });
-  fs.writeFileSync(
-    path.join(cwd, ".codex", "settings.local.json"),
-    JSON.stringify({ skillmeter: { backendUrl: "https://settings.meter.skillbench.com/logs/codex" } }) + "\n"
-  );
   credstore.setLicenseToken(
     makeJwt({ telemetry_endpoint: "https://jwt.meter.skillbench.com", exp: futureExp() })
   );

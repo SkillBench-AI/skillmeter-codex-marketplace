@@ -221,29 +221,27 @@ codex plugin marketplace add ./skillmeter-codex-marketplace
 | `SKILLMETER_RETRY_DAEMON_MAX_LIFETIME_MS` | `28800000` | Hard cap on retry-monitor lifetime |
 
 
-The ingest endpoint is resolved at upload time in this order:
+The ingest endpoint is resolved at upload time in this order (mirroring the
+Claude plugin — you pick the environment on the activation side via
+`activate_url`, and the upload host is read back out of the license JWT rather
+than configured separately):
 
-1. `SKILLMETER_BACKEND_URL` env var
-2. `skillmeter.backendUrl` in `<project>/.codex/settings.local.json`
-3. The `telemetry_endpoint` claim of a valid license JWT (per-tenant routing —
-   see [Identity & authentication](#identity--authentication)), with the
-   `/logs/codex` route appended
-4. built-in default (prod): `https://api.meter.skillbench.com/logs/codex`
+1. `SKILLMETER_BACKEND_URL` env var — a dev/test bypass that skips the JWT
+   entirely (point it at a fake server without minting a token)
+2. The `telemetry_endpoint` claim of the license JWT (per-tenant routing — see
+   [Identity & authentication](#identity--authentication)), with the
+   `/logs/codex` route appended. The claim is read even from an expired token so
+   a drain still reaches the right tenant host while a refresh is pending.
+3. built-in default (prod): `https://api.meter.skillbench.com/logs/codex`
 
-Steps 1–2 are user-supplied, so they're validated against a trusted-domain
-allow-list. Step 3 is server-minted at sign-in and trusted as-is.
+Step 1 is user-supplied, so it's validated against a trusted-domain allow-list.
+Step 2 is server-minted at sign-in and trusted as-is.
 
-The shipped plugin defaults to prod. For local development, point a project at
-the dev tenant collector with `skillmeter.backendUrl` (persistent, survives
-hook spawns that don't inherit a shell env):
-
-```json
-{
-  "skillmeter": {
-    "backendUrl": "https://skillbench.meter.dev.skillbench.com/logs/codex"
-  }
-}
-```
+There is no `backendUrl` settings key. To run against a non-default
+environment, point activation at that environment (`activate_url` /
+`SKILLMETER_ACTIVATE_URL`); the JWT minted there carries the matching
+`telemetry_endpoint`, so uploads route to the same environment automatically.
+See [Pointing at a non-default environment](#pointing-at-a-non-default-environment).
 
 
 Per-project opt-in lives in `<project>/.codex/settings.local.json`:
@@ -253,13 +251,34 @@ Per-project opt-in lives in `<project>/.codex/settings.local.json`:
 {
   "skillmeter": {
     "telemetry": true,
-    "backendUrl": "https://skillbench.meter.dev.skillbench.com/logs/codex"
+    "activate_url": "https://api.dev.skillbench.com/activate"
   }
 }
 ```
 
 Repo scope is **not** configured here — it derives from the GitHub identities of
 the signed-in user (see [Repo-scoped filtering](#repo-scoped-filtering)).
+
+### Pointing at a non-default environment
+
+`SKILLMETER_ACTIVATE_URL` and `SKILLMETER_GITHUB_CLIENT_ID` both also accept
+persistent per-project values via `.codex/settings.local.json`:
+
+```json
+{
+  "skillmeter": {
+    "activate_url": "https://api.dev.skillbench.com/activate",
+    "github_client_id": "<dev OAuth App client_id>"
+  }
+}
+```
+
+Resolution order is env var → settings file → built-in default. Set these
+together when activating against dev; once the license JWT is cached, telemetry
+routing is read straight from its `telemetry_endpoint` claim, so uploads follow
+the same environment without a separate `backendUrl`. (`SKILLMETER_BACKEND_URL`
+remains available only as a local-dev bypass that points uploads at a fake
+server without a token.)
 
 
 You can toggle telemetry per-project with the bundled CLI:

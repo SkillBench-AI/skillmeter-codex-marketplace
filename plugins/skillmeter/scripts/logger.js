@@ -18,7 +18,11 @@ const path = require("path");
 const zlib = require("zlib");
 const { sanitizeTranscript, sanitizeEventData } = require("./sanitizer");
 const credstore = require("./credstore");
-const { getEndpointFromToken, isJwtExpired } = require("./lib/jwt");
+const {
+  getEndpointFromToken,
+  getEndpointFromTokenAllowExpired,
+  isJwtExpired,
+} = require("./lib/jwt");
 const { trySilentGhActivate, refreshExpiredJwt } = require("./lib/license-activation");
 
 // Codex sets PLUGIN_ROOT for plugin-bundled hooks and also exports
@@ -331,18 +335,23 @@ function getTimestamp() {
 const INGEST_ROUTE = "/logs/codex";
 
 // The published SkillMeter Codex plugin ships pointing at the prod collector.
-// The ingest endpoint is resolved at upload time in this order:
-//   1. SKILLMETER_BACKEND_URL env var (full ingest URL; dev/test bypass)
-//   2. `skillmeter.backendUrl` in <cwd>/.codex/settings.local.json (full URL)
-//   3. JWT-derived per-tenant endpoint: the `telemetry_endpoint` claim of a
-//      valid license JWT, with the /logs/codex route appended. This is what
-//      routes each tenant's traffic to its own meter host without per-tenant
-//      plugin builds (matching the Claude plugin).
-//   4. DEFAULT_BACKEND_URL (prod) — fallback when unauthenticated or the JWT
+// The ingest endpoint is resolved at upload time in this order (matching the
+// Claude plugin's approach — environment selection lives on the activation side
+// via `activate_url`/SKILLMETER_ACTIVATE_URL, and the upload host is read back
+// out of the license JWT rather than configured separately):
+//   1. SKILLMETER_BACKEND_URL env var (full ingest URL; dev/test bypass that
+//      skips the JWT entirely — point it at a fake server without a token).
+//   2. JWT-derived per-tenant endpoint: the `telemetry_endpoint` claim of the
+//      license JWT, with the /logs/codex route appended. This routes each
+//      tenant's traffic to its own meter host without per-tenant plugin builds.
+//      The claim is read even from an expired token (allow-expired) so a drain
+//      still reaches the right host while a refresh is pending — the collector
+//      accepts unauthenticated uploads, and routing is not an auth decision.
+//   3. DEFAULT_BACKEND_URL (prod) — fallback when unauthenticated or the JWT
 //      carries no endpoint.
-// Env/settings overrides (1, 2) are user-supplied so they're validated against
-// the trusted-domain allow-list; the JWT endpoint (3) is server-minted and
-// trusted as-is (see lib/jwt.js).
+// The env override (1) is user-supplied so it's validated against the
+// trusted-domain allow-list; the JWT endpoint (2) is server-minted and trusted
+// as-is (see lib/jwt.js).
 const DEFAULT_BACKEND_URL = "https://api.meter.skillbench.com/logs/codex";
 
 // Trusted domain patterns for backend URL validation
@@ -367,7 +376,7 @@ function isValidBackendUrl(url) {
   }
 }
 
-function getBackendUrl(cwd) {
+function getBackendUrl() {
   const override = process.env.SKILLMETER_BACKEND_URL;
   if (override) {
     if (!isValidBackendUrl(override)) {
@@ -379,23 +388,15 @@ function getBackendUrl(cwd) {
     return override;
   }
 
-  const fromSettings = readSettingsFile(cwd)?.skillmeter?.backendUrl;
-  if (typeof fromSettings === "string" && fromSettings.trim()) {
-    const trimmed = fromSettings.trim();
-    if (!isValidBackendUrl(trimmed)) {
-      console.error(
-        `[skillmeter] backendUrl from settings rejected (untrusted domain), using default`
-      );
-      return DEFAULT_BACKEND_URL;
-    }
-    return trimmed;
-  }
-
   // Per-tenant routing: a signed-in user's license JWT carries the tenant's
-  // meter host in its `telemetry_endpoint` claim. Resolve it (skips an expired
-  // token) and append the Codex ingest route. Falls through to the prod default
-  // when there's no usable token, preserving the unauthenticated upload path.
-  const endpoint = getEndpointFromToken(getLicenseToken());
+  // meter host in its `telemetry_endpoint` claim. Prefer a fresh token, but fall
+  // back to the claim of an expired one (allow-expired) so a drain still reaches
+  // the correct tenant host while a refresh is pending. Append the Codex ingest
+  // route, then fall through to the prod default when there's no usable token —
+  // preserving the unauthenticated upload path.
+  const token = getLicenseToken();
+  const endpoint =
+    getEndpointFromToken(token) || getEndpointFromTokenAllowExpired(token);
   if (endpoint) {
     const fullUrl = `${endpoint}${INGEST_ROUTE}`;
     if (!isValidBackendUrl(fullUrl)) {

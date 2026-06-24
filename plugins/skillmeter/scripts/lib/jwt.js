@@ -53,13 +53,34 @@ function isJwtExpired(token) {
 function getEndpointFromToken(token) {
   if (!token) return null;
   if (isJwtExpired(token)) return null;
+  return readEndpointClaim(token);
+}
+
+/**
+ * Like getEndpointFromToken but WITHOUT the expiry gate. The telemetry endpoint
+ * is routing info (the per-tenant meter hostname) and stays valid after the
+ * token has aged out — and the collector accepts unauthenticated uploads, so a
+ * drain can still deliver to the correct tenant host while a refresh is pending
+ * or failing. Never used for an auth decision; only to recover the destination
+ * URL. Mirrors the Claude plugin's helper of the same name.
+ *
+ * @param {string} token - License JWT (raw, as stored in the credstore)
+ * @returns {string|null}
+ */
+function getEndpointFromTokenAllowExpired(token) {
+  if (!token) return null;
+  return readEndpointClaim(token);
+}
+
+// Shared claim extraction. The claim is server-minted, but reject anything that
+// isn't a plain https origin so a malformed claim can't redirect traffic to a
+// non-TLS host.
+function readEndpointClaim(token) {
   const payload = decodeJwtPayload(token);
   if (!payload) return null;
   const endpoint = payload.telemetry_endpoint;
   if (typeof endpoint !== "string") return null;
   const trimmed = endpoint.trim();
-  // The claim is server-minted, but reject anything that isn't a plain https
-  // origin so a malformed claim can't redirect traffic to a non-TLS host.
   if (!/^https:\/\//i.test(trimmed)) return null;
   return trimmed.replace(/\/+$/, "");
 }
@@ -69,4 +90,5 @@ module.exports = {
   decodeJwtPayload,
   isJwtExpired,
   getEndpointFromToken,
+  getEndpointFromTokenAllowExpired,
 };
