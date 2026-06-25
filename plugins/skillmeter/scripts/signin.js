@@ -73,19 +73,34 @@ function say(msg) {
 // org their account belongs to.
 function parseOrgArgs(argv) {
   const orgs = [];
+  let hadExplicitOrgFlag = false;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--org" || a === "--orgs") {
+      hadExplicitOrgFlag = true;
       const v = argv[i + 1];
       if (v && !v.startsWith("--")) {
         orgs.push(...v.split(/[,\s]+/));
         i++;
       }
     } else if (a.startsWith("--org=") || a.startsWith("--orgs=")) {
+      hadExplicitOrgFlag = true;
       orgs.push(...a.slice(a.indexOf("=") + 1).split(/[,\s]+/));
     }
   }
-  return orgs;
+  // Filter out empty strings from the split result
+  const filtered = orgs.filter((o) => o.trim().length > 0);
+
+  // If --org or --orgs was explicitly provided but resulted in no valid orgs,
+  // treat it as a usage error rather than silently falling back to defaults.
+  if (hadExplicitOrgFlag && filtered.length === 0) {
+    log("Error: --org or --orgs was provided but no valid organization names were found.");
+    log("Usage: signin.js --org <org-name> [--org <org-name> ...]");
+    log("Example: signin.js --org skillbench-ai");
+    process.exit(1);
+  }
+
+  return filtered;
 }
 
 // Narrow the fetched memberships to the configured scope (CLI > env > setting)
@@ -223,14 +238,14 @@ async function runBackgroundPoll(deviceId, deviceCode, interval, cliOrgs) {
     log(`[${new Date().toISOString()}] license issued`);
 
     const orgs = await fetchUserGitHubOrgs(githubToken);
-    log(`[${new Date().toISOString()}] orgs fetched: ${orgs.join(", ") || "(none)"}`);
+    log(`[${new Date().toISOString()}] orgs fetched: ${orgs.length} org(s)`);
 
     const { committed, scopedOrgs } = scopeAndCommit(licenseJwt, orgs, cliOrgs);
     if (!committed) {
       log(`[${new Date().toISOString()}] sign-in discarded: signed out during poll`);
       process.exit(0);
     }
-    log(`[${new Date().toISOString()}] activation complete (orgs: ${scopedOrgs.join(", ") || "none"})`);
+    log(`[${new Date().toISOString()}] activation complete (${scopedOrgs.length} org(s) persisted)`);
     process.exit(0);
   } catch (err) {
     log(`[${new Date().toISOString()}] background poll failed: ${err.message}`);
@@ -266,10 +281,11 @@ async function main() {
 
   const existingToken = credstore.getLicenseToken();
   const existingOrgs = credstore.getAllowedGitHubOrgs();
+  const hasExplicitScope = credstore.hasExplicitOrgScope();
   if (
     existingToken &&
     !credstore.isLicenseTokenExpired(existingToken) &&
-    existingOrgs.length > 0
+    (existingOrgs.length > 0 || hasExplicitScope)
   ) {
     // Already signed in. An explicit `--org` lets the user re-scope the stored
     // org list in place (intersection with what's already there) without a full

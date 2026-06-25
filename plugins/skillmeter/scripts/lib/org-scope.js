@@ -15,7 +15,9 @@
  * can only restrict the captured set, never widen it.
  */
 
-const { readSettingsFile } = require("./settings");
+const { readSettingsFile, SETTINGS_RELATIVE } = require("./settings");
+const path = require("path");
+const fs = require("fs");
 
 /** Normalize to lowercase, trimmed, de-duplicated, non-empty org names. */
 function normalizeOrgList(orgs) {
@@ -32,6 +34,25 @@ function normalizeOrgList(orgs) {
 
 function splitOrgString(value) {
   return normalizeOrgList(String(value).split(/[,\s]+/));
+}
+
+/**
+ * Walk up the directory tree to find the project root (the directory containing
+ * .codex/settings.local.json). Returns the settings content and the root path,
+ * or null if not found.
+ */
+function findProjectSettings(startDir) {
+  let current = path.resolve(startDir);
+  const root = path.parse(current).root;
+
+  while (true) {
+    const settings = readSettingsFile(current);
+    if (settings !== null) {
+      return { settings, root: current };
+    }
+    if (current === root) return null;
+    current = path.dirname(current);
+  }
 }
 
 /**
@@ -55,9 +76,11 @@ function resolveOrgScope({ cwd = process.cwd(), cliOrgs } = {}) {
     if (list.length) return list;
   }
 
-  const settings = readSettingsFile(cwd);
+  const found = findProjectSettings(cwd);
+  if (!found) return null;
+
   const raw =
-    settings && settings.skillmeter ? settings.skillmeter.repoScopeOrgs : undefined;
+    found.settings && found.settings.skillmeter ? found.settings.skillmeter.repoScopeOrgs : undefined;
   if (Array.isArray(raw)) {
     const list = normalizeOrgList(raw);
     return list.length ? list : null;

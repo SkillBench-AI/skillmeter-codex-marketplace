@@ -243,7 +243,7 @@ async function trySilentGhActivate(deviceId, options = {}) {
   const { orgs: scopedOrgs, excluded, applied } = narrowOrgsToScope(orgs, scope);
   if (applied) {
     console.error(
-      `[skillmeter] gh activation: org scope ${JSON.stringify(scope)} applied — keeping [${scopedOrgs.join(", ") || "none"}], excluded [${excluded.join(", ") || "none"}]`
+      `[skillmeter] gh activation: org scope applied — keeping ${scopedOrgs.length} org(s), excluded ${excluded.length} org(s)`
     );
     if (scopedOrgs.length === 0) {
       console.error(
@@ -252,11 +252,15 @@ async function trySilentGhActivate(deviceId, options = {}) {
     }
   }
 
-  if (!credstore.commitSignin({ jwt, orgs: scopedOrgs })) {
+  // Persist only explicit CLI org narrowing to the global credential store.
+  // Repo-local or env-based scope is used for local evaluation only, so silent
+  // refreshes don't shrink allowed_github_orgs for other repos.
+  const orgsToWrite = options.orgScope ? scopedOrgs : orgs;
+  if (!credstore.commitSignin({ jwt, orgs: orgsToWrite })) {
     console.error("[skillmeter] gh activation discarded: signed out during issuance");
     return null;
   }
-  console.error(`[skillmeter] gh activation succeeded (allowed orgs: ${scopedOrgs.join(", ") || "none"})`);
+  console.error(`[skillmeter] gh activation succeeded (allowed orgs: ${orgsToWrite.length} persisted)`);
   return jwt;
 }
 
