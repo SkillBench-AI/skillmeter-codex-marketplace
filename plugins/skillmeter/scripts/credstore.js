@@ -259,6 +259,7 @@ function signOut() {
   const store = readStore();
   delete store.license_jwt;
   delete store.allowed_github_orgs;
+  delete store.orgs_explicitly_set;
   store.signed_out = true;
   store.telemetry_disabled = true;
   writeStore(store);
@@ -291,11 +292,17 @@ function normalizeOrgs(orgs) {
 // and aborts if signout fired while the license issuance was in flight — the
 // user's most recent intent wins. Returns true when the license was written,
 // false when it was discarded.
+//
+// When `orgs` is an empty array, we store it explicitly as [] to distinguish
+// "intentionally narrowed to zero orgs" from "not signed in" (missing field).
 function commitSignin({ jwt, orgs }) {
   const store = readStore();
   if (store.signed_out === true) return false;
   store.license_jwt = jwt;
   store.allowed_github_orgs = normalizeOrgs(orgs);
+  // Mark that org scope was explicitly set (even if empty) so we can
+  // distinguish from missing data
+  store.orgs_explicitly_set = true;
   writeStore(store);
   _cache = store;
   return true;
@@ -303,14 +310,25 @@ function commitSignin({ jwt, orgs }) {
 
 /**
  * GitHub identities (user login + org logins) the activated user belongs to.
- * Empty array means "not activated". Stored at sign-in for future repo-scope
- * gating parity with the Claude plugin.
+ * Empty array means "not activated" OR "intentionally narrowed to zero orgs".
+ * Use hasExplicitOrgScope() to distinguish these cases. Stored at sign-in for
+ * future repo-scope gating parity with the Claude plugin.
  */
 function getAllowedGitHubOrgs() {
   const store = loadStore();
   const orgs = store.allowed_github_orgs;
   if (!Array.isArray(orgs)) return [];
   return orgs;
+}
+
+/**
+ * Returns true if the user has signed in and explicitly set an org scope
+ * (even if that scope is empty). This distinguishes "intentionally narrowed
+ * to zero orgs" from "never signed in".
+ */
+function hasExplicitOrgScope() {
+  const store = loadStore();
+  return store.orgs_explicitly_set === true;
 }
 
 module.exports = {
@@ -320,6 +338,7 @@ module.exports = {
   setLicenseToken,
   isLicenseTokenExpired,
   getAllowedGitHubOrgs,
+  hasExplicitOrgScope,
   // Atomic sign-in lifecycle — prefer these over the lower-level set* helpers
   // when adjusting more than one field, so partial writes can't race.
   commitSignin,

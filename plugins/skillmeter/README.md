@@ -419,8 +419,7 @@ Telemetry is gated to repositories owned by GitHub identities the signed-in user
 controls — their own login plus every org returned by `GET /user/orgs`. The list
 is captured at signin (using the same OAuth token that exchanges for the
 SkillMeter license) and stored in `~/.skillbench/credentials.json` next to the
-device ID and license JWT. There is no per-project repo-scope config, matching
-the Claude Code plugin.
+device ID and license JWT.
 
 Events are dropped — even in projects where you ran `telemetry.js enable` — for:
 
@@ -431,6 +430,48 @@ Events are dropped — even in projects where you ran `telemetry.js enable` — 
 
 To refresh the allowed identity list (e.g. after joining a new org), run the
 `signin` skill again.
+
+#### Narrowing scope to specific orgs
+
+By default every signed-in org is in scope. If your account belongs to several
+orgs but you only want to capture telemetry for some of them (for example, only
+`skillbench-ai`), narrow it. Narrowing is intersected with your signed-in orgs,
+so it can only restrict the captured set — never widen it (a repo in an org you
+are not a member of stays blocked).
+
+**At sign-in (recommended)** — scope which orgs are even persisted. Useful when
+the silent `gh` path would otherwise enroll every org your account belongs to:
+
+```bash
+node "$PLUGIN_ROOT/scripts/signin.js" --org skillbench-ai
+```
+
+`--org` is repeatable and accepts comma-separated values. If you are already
+signed in, re-running with `--org` re-scopes the stored org list in place
+(no full re-auth needed). Re-expanding later requires sign-out + sign-in.
+
+**At runtime** — narrow the repo-scope gate without touching the stored org
+list. Resolution order (env var wins, mirroring the backend-URL resolver):
+
+1. `SKILLMETER_REPO_SCOPE_ORGS` — comma- or space-separated env var, applied to
+   every project on the machine. Useful for a single-org workstation:
+
+   ```bash
+   export SKILLMETER_REPO_SCOPE_ORGS="skillbench-ai"
+   ```
+
+2. `skillmeter.repoScopeOrgs` in `<project>/.codex/settings.local.json` — an
+   array (or comma-separated string), scoped to that project:
+
+   ```json
+   { "skillmeter": { "repoScopeOrgs": ["skillbench-ai"] } }
+   ```
+
+Org names are matched case-insensitively. Leaving everything unset preserves the
+default "all signed-in orgs" behavior. The same `SKILLMETER_REPO_SCOPE_ORGS` /
+`skillmeter.repoScopeOrgs` values are also honored at sign-in (precedence:
+`--org` > env > setting), so a configured scope narrows the persisted org list
+even on the silent `gh` path.
 
 
 ## Bundled skills

@@ -138,3 +138,123 @@ test("directory outside any git repo => no_repository, dropped", () => {
   assert.equal(decision.allowed, false);
   assert.equal(decision.classification, "no_repository");
 });
+
+// --- org-filter narrowing (intersection with signed-in orgs) ---------------
+
+// Write skillmeter.repoScopeOrgs into a repo's .codex/settings.local.json so the
+// per-project resolution path can be exercised.
+function writeRepoScopeSetting(repoRoot, value) {
+  const dir = path.join(repoRoot, ".codex");
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(
+    path.join(dir, "settings.local.json"),
+    JSON.stringify({ skillmeter: { repoScopeOrgs: value } }) + "\n"
+  );
+}
+
+test("env filter narrows multi-org account to a single org => other member org dropped", () => {
+  signInWithOrgs(["skillbench-ai", "acme"]);
+  process.env.SKILLMETER_REPO_SCOPE_ORGS = "skillbench-ai";
+  try {
+    const inScope = logger.getRepoScopeDecision(
+      makeRepo("git@github.com:skillbench-ai/widgets.git")
+    );
+    assert.equal(inScope.allowed, true);
+    assert.equal(inScope.classification, "github_org_match");
+    assert.equal(inScope.remoteOrg, "skillbench-ai");
+
+    // acme is still a signed-in org, but the filter excludes it.
+    const filteredOut = logger.getRepoScopeDecision(
+      makeRepo("git@github.com:acme/widgets.git")
+    );
+    assert.equal(filteredOut.allowed, false);
+    assert.equal(filteredOut.classification, "github_org_mismatch");
+    assert.equal(filteredOut.remoteOrg, "acme");
+  } finally {
+    delete process.env.SKILLMETER_REPO_SCOPE_ORGS;
+  }
+});
+
+test("env filter is case-insensitive and accepts comma/space-separated lists", () => {
+  signInWithOrgs(["skillbench-ai", "acme"]);
+  process.env.SKILLMETER_REPO_SCOPE_ORGS = "SkillBench-AI, octocat";
+  try {
+    const decision = logger.getRepoScopeDecision(
+      makeRepo("https://github.com/SKILLBENCH-AI/widgets.git")
+    );
+    assert.equal(decision.allowed, true);
+    assert.equal(decision.classification, "github_org_match");
+  } finally {
+    delete process.env.SKILLMETER_REPO_SCOPE_ORGS;
+  }
+});
+
+test("filter can only narrow, never widen: a non-member org stays blocked", () => {
+  signInWithOrgs(["acme"]);
+  process.env.SKILLMETER_REPO_SCOPE_ORGS = "skillbench-ai";
+  try {
+    // skillbench-ai is on the filter but NOT a signed-in org, so the
+    // intersection is empty and the repo is out of scope.
+    const decision = logger.getRepoScopeDecision(
+      makeRepo("git@github.com:skillbench-ai/widgets.git")
+    );
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.classification, "github_org_mismatch");
+  } finally {
+    delete process.env.SKILLMETER_REPO_SCOPE_ORGS;
+  }
+});
+
+test("per-project repoScopeOrgs array narrows scope", () => {
+  signInWithOrgs(["skillbench-ai", "acme"]);
+  const repo = makeRepo("git@github.com:skillbench-ai/widgets.git");
+  writeRepoScopeSetting(repo, ["skillbench-ai"]);
+  const decision = logger.getRepoScopeDecision(repo);
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.classification, "github_org_match");
+
+  const otherOrgRepo = makeRepo("git@github.com:acme/widgets.git");
+  writeRepoScopeSetting(otherOrgRepo, ["skillbench-ai"]);
+  const dropped = logger.getRepoScopeDecision(otherOrgRepo);
+  assert.equal(dropped.allowed, false);
+  assert.equal(dropped.classification, "github_org_mismatch");
+});
+
+test("per-project repoScopeOrgs accepts a comma-separated string", () => {
+  signInWithOrgs(["skillbench-ai", "acme"]);
+  const repo = makeRepo("git@github.com:skillbench-ai/widgets.git");
+  writeRepoScopeSetting(repo, "skillbench-ai, octocat");
+  const decision = logger.getRepoScopeDecision(repo);
+  assert.equal(decision.allowed, true);
+  assert.equal(decision.classification, "github_org_match");
+});
+
+test("env filter takes precedence over the per-project setting", () => {
+  signInWithOrgs(["skillbench-ai", "acme"]);
+  const repo = makeRepo("git@github.com:acme/widgets.git");
+  // Per-project allows acme, but the env filter restricts to skillbench-ai.
+  writeRepoScopeSetting(repo, ["acme"]);
+  process.env.SKILLMETER_REPO_SCOPE_ORGS = "skillbench-ai";
+  try {
+    const decision = logger.getRepoScopeDecision(repo);
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.classification, "github_org_mismatch");
+  } finally {
+    delete process.env.SKILLMETER_REPO_SCOPE_ORGS;
+  }
+});
+
+test("an empty/whitespace filter is ignored => all signed-in orgs allowed", () => {
+  signInWithOrgs(["acme"]);
+  process.env.SKILLMETER_REPO_SCOPE_ORGS = "   ";
+  try {
+    assert.equal(logger.getRepoScopeOrgFilter(makeNonRepo()), null);
+    const decision = logger.getRepoScopeDecision(
+      makeRepo("git@github.com:acme/widgets.git")
+    );
+    assert.equal(decision.allowed, true);
+    assert.equal(decision.classification, "github_org_match");
+  } finally {
+    delete process.env.SKILLMETER_REPO_SCOPE_ORGS;
+  }
+});

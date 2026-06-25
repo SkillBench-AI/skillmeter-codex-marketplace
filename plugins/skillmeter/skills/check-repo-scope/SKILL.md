@@ -20,6 +20,16 @@ Workflow:
 5. If the user wants to proceed with collection, suggest or run the matching
    `skillbench collect --allowed-orgs ...` command.
 
+If the user belongs to several orgs but only wants some of them collected,
+point them at the narrowing allow-list (intersected with their signed-in orgs,
+so it can only restrict scope):
+
+- `signin --org skillbench-ai` — narrows the orgs persisted at sign-in (also
+  re-scopes an existing sign-in in place).
+- `SKILLMETER_REPO_SCOPE_ORGS="skillbench-ai"` — env var, machine-wide.
+- `{ "skillmeter": { "repoScopeOrgs": ["skillbench-ai"] } }` in
+  `<project>/.codex/settings.local.json` — per-project.
+
 Guardrails:
 
 - Keep the explanation concrete and repo-specific.

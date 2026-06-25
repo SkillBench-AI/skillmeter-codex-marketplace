@@ -15,6 +15,7 @@ const { execSync } = require("child_process");
 const credstore = require("../credstore");
 const { fetchUserGitHubOrgs } = require("./github-api");
 const { getSkillmeterStringSetting } = require("./settings");
+const { resolveOrgScope, narrowOrgsToScope } = require("./org-scope");
 
 // Default points at prod. The prod control plane lives on the greenfield
 // `skillbench.ai` zone (api.skillbench.ai), matching the Claude plugin and the
@@ -158,8 +159,13 @@ async function refreshExpiredJwt(jwt, deviceId) {
  * once per SessionStart, so the hook architecture itself gives us a natural
  * "at-most-once-per-session" rate limit. Anything that fails here just returns
  * null; the caller leaves the on-disk queue for the next session to drain.
+ *
+ * `options.orgScope` (an explicit org allow-list, e.g. from `signin --org`)
+ * narrows which fetched memberships are persisted. When omitted, the scope is
+ * resolved from SKILLMETER_REPO_SCOPE_ORGS / the project setting so even the
+ * hook-triggered silent refresh stays narrowed.
  */
-async function trySilentGhActivate(deviceId) {
+async function trySilentGhActivate(deviceId, options = {}) {
   if (credstore.getSignedOut()) {
     console.error("[skillmeter] gh activation skipped: signed out (run the skillmeter signin flow to re-enable)");
     return null;
@@ -230,11 +236,31 @@ async function trySilentGhActivate(deviceId) {
     return null;
   }
 
-  if (!credstore.commitSignin({ jwt, orgs })) {
+  // Narrow the captured memberships to the configured org scope (CLI > env >
+  // project setting). This is what stops the silent path from enrolling every
+  // org the user belongs to.
+  const scope = resolveOrgScope({ cliOrgs: options.orgScope });
+  const { orgs: scopedOrgs, excluded, applied } = narrowOrgsToScope(orgs, scope);
+  if (applied) {
+    console.error(
+      `[skillmeter] gh activation: org scope applied — keeping ${scopedOrgs.length} org(s), excluded ${excluded.length} org(s)`
+    );
+    if (scopedOrgs.length === 0) {
+      console.error(
+        `[skillmeter] gh activation: WARNING — scope matched none of your memberships; no repos will be in scope`
+      );
+    }
+  }
+
+  // Persist only explicit CLI org narrowing to the global credential store.
+  // Repo-local or env-based scope is used for local evaluation only, so silent
+  // refreshes don't shrink allowed_github_orgs for other repos.
+  const orgsToWrite = options.orgScope ? scopedOrgs : orgs;
+  if (!credstore.commitSignin({ jwt, orgs: orgsToWrite })) {
     console.error("[skillmeter] gh activation discarded: signed out during issuance");
     return null;
   }
-  console.error(`[skillmeter] gh activation succeeded (allowed orgs: ${orgs.join(", ") || "none"})`);
+  console.error(`[skillmeter] gh activation succeeded (allowed orgs: ${orgsToWrite.length} persisted)`);
   return jwt;
 }
 
