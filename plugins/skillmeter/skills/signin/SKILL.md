@@ -12,6 +12,18 @@ Run the SkillMeter sign-in flow:
 node "$PLUGIN_ROOT/scripts/signin.js"
 ```
 
+To scope telemetry to specific GitHub org(s) instead of every org the account
+belongs to, pass `--org` (repeatable, or comma-separated):
+
+```bash
+node "$PLUGIN_ROOT/scripts/signin.js" --org skillbench-ai
+```
+
+This is the fix for "the silent `gh` sign-in enrolled all my orgs": only the
+listed orgs (intersected with the user's real memberships) are persisted. If the
+user is already signed in, re-running with `--org` re-scopes the stored list in
+place without a full re-auth.
+
 What it does:
 
 1. Tries a silent sign-in via `gh auth token` when the GitHub CLI is already
@@ -19,7 +31,8 @@ What it does:
 2. Otherwise prints a GitHub device-login code and verification URL. Relay the
    code and URL to the user verbatim so they can approve in their browser.
 3. On approval it exchanges the GitHub token for a SkillMeter license JWT and
-   stores it (with the user's GitHub orgs) in `~/.skillbench/credentials.json`.
+   stores it (with the user's GitHub orgs, narrowed to `--org`/the configured
+   scope when set) in `~/.skillbench/credentials.json`.
 4. Clears any machine-global telemetry stop flag set by sign-out.
 
 After sign-in, every Codex upload is authenticated with the license JWT and

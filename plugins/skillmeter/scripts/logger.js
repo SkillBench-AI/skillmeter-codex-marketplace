@@ -24,6 +24,7 @@ const {
   isJwtExpired,
 } = require("./lib/jwt");
 const { trySilentGhActivate, refreshExpiredJwt } = require("./lib/license-activation");
+const { resolveOrgScope } = require("./lib/org-scope");
 
 // Codex sets PLUGIN_ROOT for plugin-bundled hooks and also exports
 // CLAUDE_PLUGIN_ROOT for compatibility with existing plugin hook scripts.
@@ -239,19 +240,42 @@ function getRemoteUrlsForRepo(repoRoot) {
   }
 }
 
+// Optional narrowing allow-list of GitHub orgs. When configured, repo-scope is
+// restricted to the *intersection* of this list and the signed-in user's org
+// memberships, so a user whose account belongs to several orgs can scope
+// telemetry to just one (e.g. only "skillbench-ai"). The filter can only narrow
+// the captured set, never widen it — an org you aren't a member of is still
+// blocked even if it's listed. Returns null when unconfigured, preserving the
+// default "all signed-in orgs" behavior. Resolution (env → per-project setting)
+// lives in lib/org-scope so the sign-in flow narrows identically.
+function getRepoScopeOrgFilter(cwd) {
+  return resolveOrgScope({ cwd });
+}
+
 // Decide whether an event from `cwd` is in-scope. Telemetry fires only in
 // repos whose GitHub remote belongs to the signed-in user's own login or one
 // of their org memberships, captured from `GET /user` + `GET /user/orgs` at
-// signin and stored in ~/.skillbench/credentials.json. This matches the Claude
-// plugin exactly: with no signed-in orgs the result is `not_activated` and
-// everything is dropped — there is no permissive "unscoped"/allow-all default
-// and no per-project allow-list. Non-git directories, non-GitHub remotes, and
-// repos outside the allowed orgs are all blocked.
+// signin and stored in ~/.skillbench/credentials.json. With no signed-in orgs
+// the result is `not_activated` and everything is dropped — there is no
+// permissive "unscoped"/allow-all default. Non-git directories, non-GitHub
+// remotes, and repos outside the allowed orgs are all blocked.
+//
+// The signed-in org set may be further narrowed by an optional org filter
+// (getRepoScopeOrgFilter); when set, only repos in orgs that are both
+// signed-in *and* on the filter are in scope.
 function getRepoScopeDecision(cwd) {
-  const allowedOrgs = credstore.getAllowedGitHubOrgs();
-  if (allowedOrgs.length === 0) {
+  const signedInOrgs = credstore.getAllowedGitHubOrgs();
+  if (signedInOrgs.length === 0) {
     return { allowed: false, scope: "unknown", classification: "not_activated" };
   }
+
+  // Narrow to the configured org allow-list when present (intersection only —
+  // never widens the signed-in set). An empty intersection means every repo
+  // falls through to the github_org_mismatch path below.
+  const orgFilter = getRepoScopeOrgFilter(cwd);
+  const allowedOrgs = orgFilter
+    ? signedInOrgs.filter((org) => orgFilter.includes(org))
+    : signedInOrgs;
 
   const repoRoot = findGitRoot(cwd);
   if (!repoRoot) {
@@ -1873,6 +1897,7 @@ module.exports = {
   writeTelemetryConsentFallback,
   promptTelemetryOptIn,
   getRepoScopeDecision,
+  getRepoScopeOrgFilter,
   runHook,
   PLUGIN_ROOT,
   PLUGIN_DATA,
