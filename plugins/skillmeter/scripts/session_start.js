@@ -26,6 +26,9 @@ runHook(
       hashSalt: ctx.hashSalt,
       pluginRoot: PLUGIN_ROOT,
       pluginVersion: PLUGIN_VERSION,
+      agentType: input.agent_type,
+      model: input.model,
+      sessionSource: input.source,
     }),
   }),
   {
