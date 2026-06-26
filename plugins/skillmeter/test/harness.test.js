@@ -21,7 +21,7 @@ const path = require("path");
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 
-const { detectHarness, findRepoRoot } = require("../scripts/harness");
+const { detectHarness, findRepoRoot, HARNESS_SCHEMA_VERSION } = require("../scripts/harness");
 const sanitizer = require("../scripts/sanitizer");
 
 // --- helpers ---------------------------------------------------------------
@@ -62,7 +62,7 @@ test("bare project: empty defaults, Level 2 unknown, no raw content", () => {
 
   const h = detectHarness(root, { homeDir: home, repoRoot: root });
 
-  assert.equal(h.schema_version, 1);
+  assert.equal(h.schema_version, 2);
   assert.equal(h.agent_type, "codex");
   assert.equal(h.instructions.has_agents_md, false);
   assert.equal(h.instructions.has_claude_md, false);
@@ -72,6 +72,17 @@ test("bare project: empty defaults, Level 2 unknown, no raw content", () => {
   assert.deepEqual(h.hooks.enabled, []);
   assert.equal(h.orchestration.external_orchestration, "unknown");
   assert.equal(h.orchestration.multi_agent, "unknown");
+  // Phase 2 (SBEE-165): policy versioning + redaction bookkeeping defaults.
+  assert.equal(h.policy_version, sanitizer.POLICY_VERSION);
+  assert.deepEqual(h.redactions, { hashed_count: 0, dropped_count: 0, by_type: {} });
+});
+
+test("schema_version reflects the bumped Phase 2 payload shape", () => {
+  const root = makeProject();
+  const home = makeHome();
+  const h = detectHarness(root, { homeDir: home, repoRoot: root });
+  assert.equal(h.schema_version, HARNESS_SCHEMA_VERSION);
+  assert.equal(h.schema_version, 2);
 });
 
 test("detects project AGENTS.md and CLAUDE.md presence (project scope)", () => {
@@ -135,6 +146,52 @@ test("hashes skill names when requested, omitting plaintext", () => {
   assert.equal(h.skills.names_hashed.length, 1);
   assert.notEqual(h.skills.names_hashed[0], "secret-internal-workflow");
   assert.match(h.skills.names_hashed[0], /^[0-9a-f]{12}$/);
+  // Each hashed name is accounted for in the Phase 2 redaction bookkeeping.
+  assert.equal(h.redactions.hashed_count, 1);
+  assert.equal(h.redactions.dropped_count, 0);
+  assert.deepEqual(h.redactions.by_type, { skill_name: 1 });
+});
+
+test("Tier 1 fail-closed: a skill name embedding a secret is dropped, not hashed", () => {
+  const root = makeProject();
+  const home = makeHome();
+  // A pathological skill directory whose name embeds a token assignment. This
+  // is exactly the Tier 1 case the Phase 2 boundary must catch before the name
+  // is hashed/emitted.
+  addSkill(root, "deploy");
+  addSkill(root, "AWS_SECRET_ACCESS_KEY=AKIAIOSFODNN7EXAMPLE");
+
+  const h = detectHarness(root, { homeDir: home, repoRoot: root });
+
+  // count still reflects the true on-disk total (a non-sensitive integer)...
+  assert.equal(h.skills.count, 2);
+  // ...but the secret-bearing name never makes it into the emitted list.
+  assert.deepEqual(h.skills.names, ["deploy"]);
+  assert.equal(h.redactions.dropped_count, 1);
+  assert.equal(h.redactions.hashed_count, 0);
+  assert.deepEqual(h.redactions.by_type, { skill_name: 1 });
+});
+
+test("Tier 1 dropped names are excluded even when hashing is enabled", () => {
+  const root = makeProject();
+  const home = makeHome();
+  addSkill(root, "review-pr");
+  addSkill(root, "GITHUB_TOKEN=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789");
+
+  const h = detectHarness(root, {
+    homeDir: home,
+    repoRoot: root,
+    hashSalt: "deadbeef",
+    hashSkillNames: true,
+  });
+
+  assert.equal(h.skills.count, 2);
+  assert.equal(h.skills.names, undefined);
+  // Only the safe name is hashed; the secret-bearing one is dropped first.
+  assert.equal(h.skills.names_hashed.length, 1);
+  assert.equal(h.redactions.hashed_count, 1);
+  assert.equal(h.redactions.dropped_count, 1);
+  assert.deepEqual(h.redactions.by_type, { skill_name: 2 });
 });
 
 test("reports hook events from the plugin hooks.json, allow-listed only", () => {
@@ -198,7 +255,7 @@ test("never throws on a bogus cwd; returns safe defaults", () => {
     homeDir: "/also/nonexistent",
     repoRoot: "",
   });
-  assert.equal(h.schema_version, 1);
+  assert.equal(h.schema_version, 2);
   assert.equal(h.skills.count, 0);
   assert.deepEqual(h.hooks.enabled, []);
   assert.equal(h.orchestration.multi_agent, "unknown");
