@@ -29,11 +29,13 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { hashHmac } = require("./sanitizer");
+const { hashHmac, containsTier1, POLICY_VERSION } = require("./sanitizer");
 
-// Bump when the shape of the emitted harness metadata changes. Phase 2 routes
-// this through the same schema-versioning the rest of the pipeline uses.
-const HARNESS_SCHEMA_VERSION = 1;
+// Bump when the shape of the emitted harness metadata changes. Phase 2
+// (SBEE-165) widened the payload — it now carries the sanitization
+// `policy_version` and a `redactions` bookkeeping block — so the schema version
+// moves to 2 in lock-step with the rest of the pipeline's versioning.
+const HARNESS_SCHEMA_VERSION = 2;
 
 // Standard lifecycle hook event names. We only ever report event names from
 // this allow-list so an arbitrary user-authored hooks.json can't inject
@@ -58,6 +60,17 @@ const SKILL_SCAN_MAX_DEPTH = 4;
 // Cap the number of skill names we enumerate; the count is always exact, but
 // the name list is bounded so a huge skills library can't bloat the event.
 const SKILL_NAMES_LIMIT = 64;
+
+// Record a single sanitization action against the harness redaction
+// bookkeeping (SBEE-165, Phase 2). `kind` is "hashed" (an HMAC token replaced a
+// raw Tier 2 name) or "dropped" (a Tier 1 fail-closed removal). Only counts and
+// a coarse field `type` are tracked — never the original name/value — so the
+// bookkeeping is itself Tier 3 safe.
+function recordRedaction(redactions, kind, type) {
+  if (kind === "hashed") redactions.hashed_count += 1;
+  else if (kind === "dropped") redactions.dropped_count += 1;
+  redactions.by_type[type] = (redactions.by_type[type] || 0) + 1;
+}
 
 function safeIsFile(p) {
   try {
@@ -183,6 +196,11 @@ function detectHooks(sources) {
 function detectHarness(cwd, options = {}) {
   const base = {
     schema_version: HARNESS_SCHEMA_VERSION,
+    // Sanitization policy version this metadata was produced under (SBEE-165,
+    // Phase 2). Sourced from the single sanitizer constant so the harness block
+    // and the central sanitizeEventData metadata always agree on the policy in
+    // force, and the backend can reason about which 3-tier rules applied.
+    policy_version: POLICY_VERSION,
     agent_type: options.agentType || "codex",
     instructions: { has_agents_md: false, has_agents_md_global: false, has_claude_md: false, has_claude_md_global: false, scopes: [] },
     skills: { count: 0, names: [], scopes: [] },
@@ -195,6 +213,13 @@ function detectHarness(cwd, options = {}) {
       external_orchestration: "unknown",
       multi_agent: "unknown",
     },
+    // Sanitization bookkeeping (SBEE-165, Phase 2): how many harness values
+    // were HMAC-hashed (Tier 2 names) or dropped (Tier 1 fail-closed) at this
+    // boundary, broken down by field type. Counts/types only — the original
+    // names/values never appear here. This complements the central
+    // sanitizeEventData summary, which only ever sees the already
+    // hashed/dropped result and so can't attribute these harness-level actions.
+    redactions: { hashed_count: 0, dropped_count: 0, by_type: {} },
   };
 
   try {
@@ -247,11 +272,31 @@ function detectHarness(cwd, options = {}) {
         ? options.hashSkillNames
         : process.env.SKILLMETER_HARNESS_HASH_SKILL_NAMES === "1";
     const limited = skillNames.slice(0, SKILL_NAMES_LIMIT);
+
+    // Tier 1 fail-closed scan (SBEE-165, Phase 2). A skill *name* is Tier 2
+    // business data we may hash, but the directory name could still accidentally
+    // embed a Tier 1 secret (an env var or token pasted into a folder name).
+    // Drop any such name outright — never hash or emit it — and record the drop
+    // in the bookkeeping. Scanning happens here, before the value is hashed,
+    // because once hashed the central boundary can no longer tell it apart from
+    // a benign token. (`skills.count` is a non-sensitive integer and keeps the
+    // true on-disk total, just as it does for truncation.)
+    const safeNames = limited.filter((name) => {
+      if (containsTier1(name)) {
+        recordRedaction(base.redactions, "dropped", "skill_name");
+        return false;
+      }
+      return true;
+    });
+
     if (hashNames && options.hashSalt) {
       delete base.skills.names;
-      base.skills.names_hashed = limited.map((n) => hashHmac(n, options.hashSalt));
+      base.skills.names_hashed = safeNames.map((n) => {
+        recordRedaction(base.redactions, "hashed", "skill_name");
+        return hashHmac(n, options.hashSalt);
+      });
     } else {
-      base.skills.names = limited;
+      base.skills.names = safeNames;
     }
     if (skillNames.length > limited.length) {
       base.skills.names_truncated = true;

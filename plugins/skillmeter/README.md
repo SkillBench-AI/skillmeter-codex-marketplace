@@ -74,7 +74,8 @@ Example `harness` payload:
 
 ```json
 {
-  "schema_version": 1,
+  "schema_version": 2,
+  "policy_version": "1.0.0",
   "agent_type": "codex",
   "plugin": { "name": "skillmeter", "version": "0.2.0+codex…" },
   "instructions": {
@@ -86,7 +87,8 @@ Example `harness` payload:
   },
   "skills": { "count": 3, "names": ["deploy", "review-pr", "signin"], "scopes": ["project", "global"] },
   "hooks": { "enabled": ["PostToolUse", "PreToolUse", "SessionStart", "Stop"], "scopes": ["plugin"] },
-  "orchestration": { "external_orchestration": "unknown", "multi_agent": "unknown" }
+  "orchestration": { "external_orchestration": "unknown", "multi_agent": "unknown" },
+  "redactions": { "hashed_count": 0, "dropped_count": 0, "by_type": {} }
 }
 ```
 
@@ -99,12 +101,24 @@ What is probed:
 | `skills.count` / `names` / `scopes` | `SKILL.md` files under `.codex/skills/` (project and `~/.codex/skills/`); hidden `.system` namespaces (runtime built-ins) are skipped |
 | `hooks.enabled` / `scopes` | allow-listed lifecycle event names declared in the plugin's `hooks.json` and any project/global `.codex/hooks.json` |
 | `plugin` / `agent_type` / `schema_version` | this plugin's manifest and the harness schema version |
+| `policy_version` | the sanitization policy version this metadata was produced under |
+| `redactions` | sanitization bookkeeping (`hashed_count`, `dropped_count`, `by_type`) — counts/types only |
 
 Privacy notes:
 
 - The whole `harness` block is routed through the same central
   `sanitizeEventData` boundary as every other event field, so a skill or hook
   name that happens to embed a secret/email is still scrubbed before upload.
+- **Tier 1 fail-closed at the harness boundary (Phase 2, SBEE-165):** before any
+  skill name is hashed or emitted it is scanned for Tier 1 secrets, and a name
+  that embeds one is **dropped** outright (the hashing step would otherwise hide
+  it from the downstream scrubber). Every hash and drop is tallied in the
+  `redactions` block — `hashed_count`, `dropped_count`, and a `by_type`
+  breakdown — which records counts and field types only, never the original
+  values. `skills.count` always keeps the true on-disk total.
+- The block also carries `policy_version`, sourced from the same constant the
+  central sanitizer uses, so the harness metadata and the event's sanitization
+  summary always agree on which 3-tier policy applied.
 - Only **allow-listed** hook event names are reported, so an arbitrary
   user-authored `hooks.json` can't inject free-form strings into the metadata.
 - Skill names are emitted in plaintext by default (they're typically generic and
