@@ -22,7 +22,7 @@
   "interface": {
     "displayName": "SkillMeter",
     "shortDescription": "Live SkillBench telemetry for Codex sessions.",
-    "longDescription": "SkillMeter records anonymized Codex lifecycle telemetry (sessions, prompts, tool use, subagents) and forwards it to the SkillBench analyzer alongside Claude Code and GitHub data. Telemetry is opt-in per project with path hashing and repo-scope filtering. Bundled skills also collect, scope-check, and review sanitized exports.",
+    "longDescription": "SkillMeter records privacy-scoped Codex lifecycle telemetry (sessions, prompts, tool use, subagents) and forwards it to the SkillBench analyzer alongside Claude Code and GitHub data. Secrets are redacted fail-closed and paths hashed; harness identifiers (skill/command/MCP/plugin names) are collected raw for internal analysis. Telemetry is opt-in per project with repo-scope filtering. Bundled skills also collect, scope-check, and review sanitized exports.",
     "developerName": "SkillBench",
     "category": "Productivity",
     "capabilities": [
