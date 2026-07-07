@@ -15,12 +15,12 @@
  * collector (so the backend sees one harness schema across both surfaces),
  * probing Codex's own locations: `.codex/` trees, `~/.codex/AGENTS.md`, and the
  * `~/.codex/config.toml` `[mcp_servers.*]` / `[plugins.*]` / `[marketplaces.*]`
- * tables. It is *metadata-only* — presence booleans, counts, size buckets,
- * allow-listed hook event-name enums, and opaque HMAC-hashed identifiers. It
- * never emits raw harness file CONTENT, hook command strings, MCP
- * command/args/env, or file paths. It is deterministic, filesystem-only, and
- * must never throw: detection runs inside the SessionStart hook and a failure
- * here must not break the session.
+ * tables plus top-level sandbox keys. As of schema v2.0 it carries harness
+ * identifiers (skill / subagent / command / MCP / plugin names) as RAW values
+ * for semantic analysis. It never emits raw harness file CONTENT, hook command
+ * strings, or MCP command/args/env (those hold literal secrets). It is
+ * deterministic, filesystem-only, and must never throw: detection runs inside
+ * the SessionStart hook and a failure here must not break the session.
  *
  * Detection levels (contract `detectionLevels`):
  *   - Level 1 (filesystem-detectable): everything collected here.
@@ -28,20 +28,23 @@
  *     multi-agent topology. Emitted as "unknown" (SBEE-168).
  *
  * Privacy (SANITIZATION_EPIC.md 3-tier policy): tier3_safe values raw;
- * tier2_business names HMAC-hashed (public-marketplace plugin names raw);
- * tier1_secret material dropped fail-closed. Every hash/drop is tallied in
- * `redactions` (counts/types only). The whole block is also routed through the
- * central `sanitizeEventData` boundary by the caller.
+ * harness identifiers raw (v2.0); a name that embeds a Tier 1 secret is STILL
+ * dropped fail-closed; tier1_secret config (hook commands, MCP env) is never
+ * collected. Every fail-closed drop is tallied in `redactions` (counts/types
+ * only). The whole block is also routed through the central `sanitizeEventData`
+ * boundary by the caller.
  */
 
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
-const { hashHmac, containsTier1, POLICY_VERSION } = require("./sanitizer");
+const { containsTier1, POLICY_VERSION } = require("./sanitizer");
 
 // Version of the emitted harness metadata contract this payload conforms to.
-const HARNESS_SCHEMA_VERSION = "1.0";
+// Bumped to 2.0 when identifier fields switched from `*_names_hashed` to raw
+// `*_names`; downstream otel_logs queries must select the new field names.
+const HARNESS_SCHEMA_VERSION = "2.0";
 
 // Standard lifecycle hook event names. Only names on this allow-list are ever
 // reported (contract `hooks_enabled` action: enum) so an arbitrary user-authored
@@ -73,8 +76,9 @@ const KNOWN_HOOK_EVENTS = new Set([
   "WorktreeRemove",
 ]);
 
-// Marketplaces whose plugin names are public and therefore tier3_safe — their
-// names may be carried raw. Anything else is hashed.
+// Marketplaces recognised as public/known. As of schema v2.0 all plugin names
+// are emitted raw, so this set is no longer a raw-vs-hash gate; it is retained
+// (and exported) so downstream can still tell public-catalog plugins apart.
 const PUBLIC_MARKETPLACES = new Set([
   "skillbench",
   "openai-bundled",
@@ -175,23 +179,18 @@ function findRepoRoot(startPath) {
 }
 
 /**
- * Convert raw tier2_business names into the contract's `*_names_hashed` array.
- * Fail-closed: a name embedding a Tier 1 secret is dropped; with no salt the raw
- * name is dropped rather than leaked. Every action is tallied in `redactions`.
+ * Collect harness identifier names for emission. As of schema v2.0 names are
+ * emitted RAW. Fail-closed remains: a name embedding a Tier 1 secret is dropped
+ * outright and tallied in `redactions`.
  */
-function hashNames(names, type, hashSalt, redactions) {
+function collectNames(names, type, redactions) {
   const out = [];
   for (const name of names.slice(0, NAMES_LIMIT)) {
     if (containsTier1(name)) {
       recordRedaction(redactions, "dropped", type);
       continue;
     }
-    if (!hashSalt) {
-      recordRedaction(redactions, "dropped", type);
-      continue;
-    }
-    out.push(hashHmac(name, hashSalt));
-    recordRedaction(redactions, "hashed", type);
+    out.push(name);
   }
   return out;
 }
@@ -300,29 +299,48 @@ function splitTomlKey(key) {
 
 /**
  * Parse the `[mcp_servers.*]`, `[plugins.*]`, and `[marketplaces.*]` table
- * headers out of ~/.codex/config.toml. Only the table KEYS are read — never the
- * values (which can carry tier1 secrets like MCP env). Returns distinct
- * top-level names for each.
+ * headers out of ~/.codex/config.toml, plus the top-level sandbox keys that
+ * describe the trust boundary (`sandbox_mode`, `approval_policy`). MCP env and
+ * other table VALUES are never read — they can carry tier1 secrets. Returns
+ * distinct top-level names for each table plus the sandbox scalars.
  */
 function parseCodexConfig(tomlPath) {
-  const result = { mcpServers: new Set(), pluginKeys: new Set(), marketplaces: new Set() };
+  const result = {
+    mcpServers: new Set(),
+    pluginKeys: new Set(),
+    marketplaces: new Set(),
+    sandboxMode: "",
+    approvalPolicy: "",
+  };
   let text;
   try {
     text = fs.readFileSync(tomlPath, "utf8");
   } catch {
     return result;
   }
+  // Track whether we're inside a nested table so a `sandbox_mode = ...` under
+  // some `[section]` isn't mistaken for the top-level trust-boundary setting.
+  let inTopLevel = true;
+  const unquote = (v) => v.trim().replace(/^["']|["']$/g, "");
   for (const rawLine of text.split("\n")) {
     const line = rawLine.trim();
-    if (!line.startsWith("[")) continue;
-    // Match a single (non-array) table header: [ key ]
-    const m = line.match(/^\[([^[\]]+)\]\s*$/);
-    if (!m) continue;
-    const seg = splitTomlKey(m[1]);
-    if (seg.length < 2) continue;
-    if (seg[0] === "mcp_servers") result.mcpServers.add(seg[1]);
-    else if (seg[0] === "plugins") result.pluginKeys.add(seg[1]);
-    else if (seg[0] === "marketplaces") result.marketplaces.add(seg[1]);
+    if (!line || line.startsWith("#")) continue;
+    if (line.startsWith("[")) {
+      const m = line.match(/^\[([^[\]]+)\]\s*$/);
+      inTopLevel = false;
+      if (!m) continue;
+      const seg = splitTomlKey(m[1]);
+      if (seg.length < 2) continue;
+      if (seg[0] === "mcp_servers") result.mcpServers.add(seg[1]);
+      else if (seg[0] === "plugins") result.pluginKeys.add(seg[1]);
+      else if (seg[0] === "marketplaces") result.marketplaces.add(seg[1]);
+      continue;
+    }
+    if (!inTopLevel) continue;
+    const kv = line.match(/^([A-Za-z0-9_]+)\s*=\s*(.+)$/);
+    if (!kv) continue;
+    if (kv[1] === "sandbox_mode") result.sandboxMode = unquote(kv[2]);
+    else if (kv[1] === "approval_policy") result.approvalPolicy = unquote(kv[2]);
   }
   return result;
 }
@@ -341,8 +359,9 @@ function parseCodexConfig(tomlPath) {
  * @param {string} [options.agentType] - agent surface (defaults "codex").
  * @param {string} [options.model] - model id from SessionStart input.model.
  * @param {string} [options.sessionSource] - SessionStart input.source.
- * @param {string} [options.hashSalt] - per-install HMAC salt; required to emit
- *   any hashed identifier.
+ * @param {string} [options.agentVersion] - Codex CLI version when available.
+ * @param {string} [options.hashSalt] - accepted for backward compatibility;
+ *   no longer used (identifiers are emitted raw in v2.0).
  * @returns {object} flat, plain-JSON harness metadata.
  */
 function detectHarness(cwd, options = {}) {
@@ -351,6 +370,7 @@ function detectHarness(cwd, options = {}) {
     harness_schema_version: HARNESS_SCHEMA_VERSION,
     policy_version: POLICY_VERSION,
     agent_type: options.agentType || "codex",
+    agent_version: options.agentVersion || "",
     model: options.model || "",
     session_source: options.sessionSource || "",
     plugin_version: options.pluginVersion || "",
@@ -368,12 +388,12 @@ function detectHarness(cwd, options = {}) {
     skills_present: false,
     skills_count: 0,
     skill_source_counts: { project: 0, user: 0, plugin: 0 },
-    skill_names_hashed: [],
+    skill_names: [],
 
     // ---- Subagents ----
     subagents_present: false,
     subagents_count: 0,
-    subagent_names_hashed: [],
+    subagent_names: [],
     subagent_used: false,
 
     // ---- Hooks ----
@@ -384,12 +404,21 @@ function detectHarness(cwd, options = {}) {
     // ---- Slash commands ----
     commands_present: false,
     commands_count: 0,
-    command_names_hashed: [],
+    command_names: [],
 
     // ---- MCP servers ----
     has_mcp_config: false,
     mcp_servers_count: 0,
-    mcp_server_names_hashed: [],
+    mcp_server_names: [],
+
+    // ---- Permissions / sandbox (the developer's AI trust boundary) ----
+    // Codex expresses this via config.toml sandbox_mode / approval_policy rather
+    // than Claude's allow/deny/ask rule arrays, so those arrays stay empty here.
+    permission_default_mode: "",
+    permission_allow: [],
+    permission_deny: [],
+    permission_ask: [],
+    permission_additional_directories_count: 0,
 
     // ---- Plugins / marketplaces ----
     plugins_count: 0,
@@ -405,7 +434,6 @@ function detectHarness(cwd, options = {}) {
   };
 
   try {
-    const hashSalt = options.hashSalt;
     const homeDir = options.homeDir || os.homedir();
     const repoRoot =
       options.repoRoot !== undefined ? options.repoRoot : findRepoRoot(cwd);
@@ -461,10 +489,9 @@ function detectHarness(cwd, options = {}) {
       user: seenSkillScopes.user.size,
       plugin: seenSkillScopes.plugin.size,
     };
-    harness.skill_names_hashed = hashNames(
+    harness.skill_names = collectNames(
       [...skillNames].sort(),
       "skill_name",
-      hashSalt,
       harness.redactions
     );
 
@@ -480,10 +507,9 @@ function detectHarness(cwd, options = {}) {
     }
     harness.subagents_count = subagentNames.size;
     harness.subagents_present = subagentNames.size > 0;
-    harness.subagent_names_hashed = hashNames(
+    harness.subagent_names = collectNames(
       [...subagentNames].sort(),
       "subagent_name",
-      hashSalt,
       harness.redactions
     );
 
@@ -502,10 +528,9 @@ function detectHarness(cwd, options = {}) {
     }
     harness.commands_count = commandNames.size;
     harness.commands_present = commandNames.size > 0;
-    harness.command_names_hashed = hashNames(
+    harness.command_names = collectNames(
       [...commandNames].sort(),
       "command_name",
-      hashSalt,
       harness.redactions
     );
 
@@ -528,10 +553,15 @@ function detectHarness(cwd, options = {}) {
     }
     harness.hooks_enabled = [...enabledEvents].sort();
 
-    // ---- Plugins / marketplaces / MCP (from ~/.codex/config.toml) ----
+    // ---- Plugins / marketplaces / MCP / sandbox (from ~/.codex/config.toml) ----
     const config = parseCodexConfig(
       userCodexDir ? path.join(userCodexDir, "config.toml") : ""
     );
+
+    // Permissions / sandbox: Codex's trust boundary is the top-level
+    // sandbox_mode / approval_policy. Prefer sandbox_mode; fall back to
+    // approval_policy. Codex has no allow/deny/ask rule arrays.
+    harness.permission_default_mode = config.sandboxMode || config.approvalPolicy || "";
 
     // MCP servers: config.toml [mcp_servers.*] plus any project .mcp.json.
     const mcpNames = new Set(config.mcpServers);
@@ -546,15 +576,17 @@ function detectHarness(cwd, options = {}) {
     }
     harness.has_mcp_config = mcpNames.size > 0;
     harness.mcp_servers_count = mcpNames.size;
-    harness.mcp_server_names_hashed = hashNames(
+    // Server NAMES raw (v2.0); server config (command/args/env) never collected.
+    harness.mcp_server_names = collectNames(
       [...mcpNames].sort(),
       "mcp_name",
-      hashSalt,
       harness.redactions
     );
 
-    // Plugins: each key is "name@marketplace". Public-marketplace names stay
-    // raw (tier3); private names are hashed (tier2).
+    // Plugins: each key is "name@marketplace". Names are raw (v2.0); the source
+    // marketplace + a `public` flag are kept so downstream can still tell
+    // public-catalog plugins from private ones. Codex config.toml carries no
+    // per-plugin version, so `version` is omitted (tracked in known-gaps).
     harness.marketplaces_count = config.marketplaces.size;
     const pluginKeys = [...config.pluginKeys].sort();
     harness.plugins_count = pluginKeys.length;
@@ -566,16 +598,9 @@ function detectHarness(cwd, options = {}) {
         recordRedaction(harness.redactions, "dropped", "plugin_name");
         continue;
       }
-      const rec = {};
-      if (PUBLIC_MARKETPLACES.has(marketplace)) {
-        rec.name = name;
-      } else if (hashSalt) {
-        rec.name_hashed = hashHmac(name, hashSalt);
-        recordRedaction(harness.redactions, "hashed", "plugin_name");
-      } else {
-        recordRedaction(harness.redactions, "dropped", "plugin_name");
-        continue;
-      }
+      const rec = { name };
+      if (marketplace) rec.marketplace = marketplace;
+      rec.public = PUBLIC_MARKETPLACES.has(marketplace);
       harness.plugins.push(rec);
     }
   } catch {

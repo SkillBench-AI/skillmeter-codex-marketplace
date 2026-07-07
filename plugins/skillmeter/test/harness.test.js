@@ -1,21 +1,20 @@
 "use strict";
 
 /**
- * Unit tests for Level 1 harness detection — SBEE-166 (Phase 1) implementation
- * of the flat SBEE-164 harness-metadata contract, Codex surface, with the
- * SBEE-165 sanitization integration.
+ * Unit tests for Level 1 harness detection — Codex surface, updated for the
+ * v2.0 raw-identifier schema (SBEE-170).
  * Run with:  node --test plugins/skillmeter/test/harness.test.js
  *
  * detectHarness is pure filesystem inspection, so each test builds a throwaway
  * project tree (and a fake $HOME) and asserts on the emitted metadata shape.
- * The contract under test (spec/harness-metadata-contract.v1.json):
+ * The contract under test (spec/harness-metadata-contract.v1.json, v2.0):
  *   - the SAME flat field set as the Claude collector, probing Codex's own
- *     locations (.codex/ trees, ~/.codex/config.toml tables, AGENTS.md);
- *   - presence/shape metadata only, never raw file contents or MCP env;
+ *     locations (.codex/ trees, ~/.codex/config.toml tables + sandbox keys);
+ *   - RAW identifiers (skill/subagent/command/MCP/plugin names); never raw file
+ *     contents or MCP env;
  *   - Level 2 (external_orchestration / multi_agent) is always "unknown";
  *   - detection never throws and degrades to safe defaults;
- *   - tier2_business names HMAC-hashed; public-marketplace plugin names raw;
- *   - Tier 1 fail-closed name scanning + redaction bookkeeping;
+ *   - a name embedding a Tier 1 secret is dropped fail-closed + tallied;
  *   - the emitted block survives the sanitizeEventData boundary.
  */
 
@@ -36,7 +35,6 @@ const {
 const sanitizer = require("../scripts/sanitizer");
 
 const SALT = "deadbeefcafe";
-const HASH12 = /^[0-9a-f]{12}$/;
 
 // --- helpers ---------------------------------------------------------------
 
@@ -74,8 +72,9 @@ test("bare project: flat defaults, Level 2 unknown, no raw content", () => {
 
   const h = detectHarness(root, { homeDir: home, repoRoot: root, hashSalt: SALT });
 
-  assert.equal(h.harness_schema_version, "1.0");
+  assert.equal(h.harness_schema_version, "2.0");
   assert.equal(h.agent_type, "codex");
+  assert.equal(h.agent_version, "");
   assert.equal(h.has_agents_md, false);
   assert.equal(h.has_claude_md, false);
   assert.equal(h.has_user_claude_md, false);
@@ -84,11 +83,19 @@ test("bare project: flat defaults, Level 2 unknown, no raw content", () => {
   assert.equal(h.skills_present, false);
   assert.equal(h.skills_count, 0);
   assert.deepEqual(h.skill_source_counts, { project: 0, user: 0, plugin: 0 });
-  assert.deepEqual(h.skill_names_hashed, []);
+  assert.deepEqual(h.skill_names, []);
   assert.equal(h.subagents_count, 0);
+  assert.deepEqual(h.subagent_names, []);
   assert.equal(h.subagent_used, false);
   assert.equal(h.commands_count, 0);
+  assert.deepEqual(h.command_names, []);
   assert.equal(h.has_mcp_config, false);
+  assert.deepEqual(h.mcp_server_names, []);
+  assert.equal(h.permission_default_mode, "");
+  assert.deepEqual(h.permission_allow, []);
+  assert.deepEqual(h.permission_deny, []);
+  assert.deepEqual(h.permission_ask, []);
+  assert.equal(h.permission_additional_directories_count, 0);
   assert.deepEqual(h.hooks_enabled, []);
   assert.equal(h.hooks_count, 0);
   assert.deepEqual(h.hooks_source_counts, { user: 0, project: 0, local: 0, plugin: 0 });
@@ -99,27 +106,30 @@ test("bare project: flat defaults, Level 2 unknown, no raw content", () => {
   assert.equal(h.multi_agent, "unknown");
   assert.equal(h.policy_version, sanitizer.POLICY_VERSION);
   assert.deepEqual(h.redactions, { hashed_count: 0, dropped_count: 0, by_type: {} });
+  assert.equal(h.skill_names_hashed, undefined);
 });
 
 test("harness_schema_version matches the exported contract version", () => {
   const root = makeProject();
   const h = detectHarness(root, { homeDir: makeHome(), repoRoot: root, hashSalt: SALT });
   assert.equal(h.harness_schema_version, HARNESS_SCHEMA_VERSION);
-  assert.equal(h.harness_schema_version, "1.0");
+  assert.equal(h.harness_schema_version, "2.0");
 });
 
-test("carries runtime fields (agent_type, model, session_source, plugin_version)", () => {
+test("carries runtime fields (agent_type, agent_version, model, session_source, plugin_version)", () => {
   const root = makeProject();
   const h = detectHarness(root, {
     homeDir: makeHome(),
     repoRoot: root,
     hashSalt: SALT,
     agentType: "codex",
+    agentVersion: "0.9.0",
     model: "gpt-5.5",
     sessionSource: "startup",
     pluginVersion: "0.2.1",
   });
   assert.equal(h.agent_type, "codex");
+  assert.equal(h.agent_version, "0.9.0");
   assert.equal(h.model, "gpt-5.5");
   assert.equal(h.session_source, "startup");
   assert.equal(h.plugin_version, "0.2.1");
@@ -150,7 +160,7 @@ test("detects user-level CLAUDE.md (~/.claude/CLAUDE.md)", () => {
   assert.equal(h.has_user_claude_md, true);
 });
 
-test("skills: count, per-source counts, hashed names; skips hidden .system", () => {
+test("skills: count, per-source counts, RAW names; skips hidden .system", () => {
   const root = makeProject();
   const home = makeHome();
   addSkill(root, "deploy");
@@ -163,22 +173,20 @@ test("skills: count, per-source counts, hashed names; skips hidden .system", () 
   assert.equal(h.skills_present, true);
   assert.equal(h.skills_count, 3);
   assert.deepEqual(h.skill_source_counts, { project: 2, user: 1, plugin: 0 });
-  assert.equal(h.skill_names_hashed.length, 3);
-  for (const t of h.skill_names_hashed) assert.match(t, HASH12);
-  assert.equal(h.redactions.hashed_count, 3);
+  assert.deepEqual(h.skill_names, ["deploy", "review-pr", "signin"]);
+  assert.equal(h.redactions.hashed_count, 0);
+  assert.equal(h.redactions.dropped_count, 0);
 });
 
-test("skill names are never emitted in plaintext", () => {
+test("skill names are emitted raw (v2.0), even without a hash salt", () => {
   const root = makeProject();
   const home = makeHome();
-  addSkill(root, "secret-internal-workflow");
-  const h = detectHarness(root, { homeDir: home, repoRoot: root, hashSalt: SALT });
-  assert.equal(h.skill_names, undefined);
-  assert.equal(h.skill_names_hashed.length, 1);
-  assert.notEqual(h.skill_names_hashed[0], "secret-internal-workflow");
+  addSkill(root, "internal-workflow");
+  const h = detectHarness(root, { homeDir: home, repoRoot: root });
+  assert.deepEqual(h.skill_names, ["internal-workflow"]);
 });
 
-test("Tier 1 fail-closed: a skill name embedding a secret is dropped, not hashed", () => {
+test("Tier 1 fail-closed: a skill name embedding a secret is dropped, not emitted", () => {
   const root = makeProject();
   const home = makeHome();
   addSkill(root, "deploy");
@@ -187,13 +195,14 @@ test("Tier 1 fail-closed: a skill name embedding a secret is dropped, not hashed
   const h = detectHarness(root, { homeDir: home, repoRoot: root, hashSalt: SALT });
 
   assert.equal(h.skills_count, 2);
-  assert.equal(h.skill_names_hashed.length, 1);
+  assert.deepEqual(h.skill_names, ["deploy"]);
   assert.equal(h.redactions.dropped_count, 1);
-  assert.equal(h.redactions.hashed_count, 1);
-  assert.deepEqual(h.redactions.by_type, { skill_name: 2 });
+  assert.equal(h.redactions.hashed_count, 0);
+  assert.deepEqual(h.redactions.by_type, { skill_name: 1 });
+  assert.ok(!JSON.stringify(h).includes("AKIAIOSFODNN7EXAMPLE"));
 });
 
-test("subagents: .codex/agents/*.md detected, counted, hashed", () => {
+test("subagents: .codex/agents/*.md detected, counted, raw names", () => {
   const root = makeProject();
   const home = makeHome();
   write(path.join(root, ".codex", "agents", "reviewer.md"), "# reviewer\n");
@@ -203,11 +212,11 @@ test("subagents: .codex/agents/*.md detected, counted, hashed", () => {
 
   assert.equal(h.subagents_present, true);
   assert.equal(h.subagents_count, 2);
-  assert.equal(h.subagent_names_hashed.length, 2);
+  assert.deepEqual(h.subagent_names, ["planner", "reviewer"]);
   assert.equal(h.subagent_used, false);
 });
 
-test("slash commands: .codex/commands + ~/.codex/prompts detected", () => {
+test("slash commands: .codex/commands + ~/.codex/prompts detected, raw names", () => {
   const root = makeProject();
   const home = makeHome();
   write(path.join(root, ".codex", "commands", "deploy.md"), "# deploy\n");
@@ -217,7 +226,7 @@ test("slash commands: .codex/commands + ~/.codex/prompts detected", () => {
 
   assert.equal(h.commands_present, true);
   assert.equal(h.commands_count, 2);
-  assert.equal(h.command_names_hashed.length, 2);
+  assert.deepEqual([...h.command_names].sort(), ["deploy", "summarize"]);
 });
 
 test("hooks: allow-listed event names, entry count, and per-source counts", () => {
@@ -247,7 +256,29 @@ test("hooks: allow-listed event names, entry count, and per-source counts", () =
   assert.equal(h.hooks_source_counts.project, 1);
 });
 
-test("MCP / plugins / marketplaces parsed from ~/.codex/config.toml", () => {
+test("sandbox: permission_default_mode from config.toml sandbox_mode", () => {
+  const root = makeProject();
+  const home = makeHome();
+  write(
+    path.join(home, ".codex", "config.toml"),
+    [
+      'model = "gpt-5.5"',
+      'sandbox_mode = "workspace-write"',
+      'approval_policy = "on-request"',
+      "",
+      "[mcp_servers.github]",
+      'command = "npx"',
+    ].join("\n")
+  );
+
+  const h = detectHarness(root, { homeDir: home, repoRoot: root, hashSalt: SALT });
+  // sandbox_mode preferred over approval_policy.
+  assert.equal(h.permission_default_mode, "workspace-write");
+  // Codex has no allow/deny/ask rule arrays.
+  assert.deepEqual(h.permission_allow, []);
+});
+
+test("MCP / plugins / marketplaces parsed from ~/.codex/config.toml, raw names", () => {
   const root = makeProject();
   const home = makeHome();
   write(
@@ -264,7 +295,7 @@ test("MCP / plugins / marketplaces parsed from ~/.codex/config.toml", () => {
       '[plugins."computer-use@openai-bundled"]',
       "enabled = true",
       "",
-      '[plugins."secret-tool@acme-private"]',
+      '[plugins."inhouse-tool@acme-private"]',
       "enabled = true",
       "",
       "[mcp_servers.github]",
@@ -280,33 +311,41 @@ test("MCP / plugins / marketplaces parsed from ~/.codex/config.toml", () => {
 
   assert.equal(h.marketplaces_count, 2);
   assert.equal(h.plugins_count, 2);
+
   const pub = h.plugins.find((p) => p.name === "computer-use");
   assert.ok(pub, "public-marketplace plugin kept raw");
-  const priv = h.plugins.find((p) => p.name_hashed);
-  assert.ok(priv, "private plugin name hashed");
-  assert.match(priv.name_hashed, HASH12);
+  assert.equal(pub.public, true);
+  assert.equal(pub.marketplace, "openai-bundled");
+  assert.equal(pub.version, undefined); // Codex config carries no version
+
+  const priv = h.plugins.find((p) => p.name === "inhouse-tool");
+  assert.ok(priv, "private plugin name also raw (v2.0)");
+  assert.equal(priv.public, false);
+  assert.ok(h.plugins.every((p) => p.name_hashed === undefined));
 
   assert.equal(h.has_mcp_config, true);
   assert.equal(h.mcp_servers_count, 2);
-  assert.equal(h.mcp_server_names_hashed.length, 2);
+  assert.deepEqual(h.mcp_server_names, ["github", "sentry"]);
 
-  // No MCP env / command / raw private names leak into the payload.
+  // No MCP env / command leaks into the payload.
   const blob = JSON.stringify(h);
   assert.ok(!blob.includes("ghp_secretvalue"));
   assert.ok(!blob.includes("npx"));
-  assert.ok(!blob.includes("secret-tool"));
 });
 
-test("parseCodexConfig: honours quoted keys and ignores subtables/values", () => {
+test("parseCodexConfig: honours quoted keys, sandbox scalars, ignores subtables/values", () => {
   const home = makeHome();
   const toml = path.join(home, "config.toml");
   write(
     toml,
     [
+      'sandbox_mode = "read-only"',
+      'approval_policy = "never"',
       "[marketplaces.skillbench]",
       "[marketplaces.skillbench.extra]", // subtable: still same top-level name
       '[plugins."a@b"]',
       "[mcp_servers.svc]",
+      'sandbox_mode = "not-top-level"', // under a table — must be ignored
       "[hooks.state.foo]", // unrelated table — ignored
       "not a table line",
     ].join("\n")
@@ -315,6 +354,8 @@ test("parseCodexConfig: honours quoted keys and ignores subtables/values", () =>
   assert.deepEqual([...cfg.marketplaces].sort(), ["skillbench"]);
   assert.deepEqual([...cfg.pluginKeys], ["a@b"]);
   assert.deepEqual([...cfg.mcpServers], ["svc"]);
+  assert.equal(cfg.sandboxMode, "read-only");
+  assert.equal(cfg.approvalPolicy, "never");
 });
 
 test("never throws on a bogus cwd; returns safe defaults", () => {
@@ -323,7 +364,7 @@ test("never throws on a bogus cwd; returns safe defaults", () => {
     repoRoot: "",
     hashSalt: SALT,
   });
-  assert.equal(h.harness_schema_version, "1.0");
+  assert.equal(h.harness_schema_version, "2.0");
   assert.equal(h.skills_count, 0);
   assert.deepEqual(h.hooks_enabled, []);
   assert.equal(h.multi_agent, "unknown");
@@ -352,6 +393,7 @@ test("emitted harness object survives the sanitizeEventData boundary", () => {
   assert.equal(meta.tier1, 0);
   assert.equal(value.harness.has_agents_md, true);
   assert.equal(value.harness.skills_count, 1);
+  assert.deepEqual(value.harness.skill_names, ["deploy"]);
 });
 
 test("sizeBucket boundaries", () => {

@@ -27,6 +27,7 @@ runHook(
       pluginRoot: PLUGIN_ROOT,
       pluginVersion: PLUGIN_VERSION,
       agentType: input.agent_type,
+      agentVersion: input.version || process.env.CODEX_VERSION || "",
       model: input.model,
       sessionSource: input.source,
     }),

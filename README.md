@@ -1,7 +1,7 @@
 # SkillMeter for Codex
 
 SkillMeter is the SkillBench **telemetry plugin for Codex**. It records
-anonymized lifecycle telemetry from your Codex sessions through Codex's plugin
+privacy-scoped lifecycle telemetry from your Codex sessions through Codex's plugin
 hooks and forwards it to the SkillBench analyzer, so your skill reports include
 Codex activity alongside Claude Code and GitHub PR data.
 
