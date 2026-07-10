@@ -72,7 +72,7 @@ test("bare project: flat defaults, Level 2 unknown, no raw content", () => {
 
   const h = detectHarness(root, { homeDir: home, repoRoot: root, hashSalt: SALT });
 
-  assert.equal(h.harness_schema_version, "2.0");
+  assert.equal(h.harness_schema_version, "2.1");
   assert.equal(h.agent_type, "codex");
   assert.equal(h.agent_version, "");
   assert.equal(h.has_agents_md, false);
@@ -84,6 +84,7 @@ test("bare project: flat defaults, Level 2 unknown, no raw content", () => {
   assert.equal(h.skills_count, 0);
   assert.deepEqual(h.skill_source_counts, { project: 0, user: 0, plugin: 0 });
   assert.deepEqual(h.skill_names, []);
+  assert.deepEqual(h.skill_contents, []);
   assert.equal(h.subagents_count, 0);
   assert.deepEqual(h.subagent_names, []);
   assert.equal(h.subagent_used, false);
@@ -113,7 +114,7 @@ test("harness_schema_version matches the exported contract version", () => {
   const root = makeProject();
   const h = detectHarness(root, { homeDir: makeHome(), repoRoot: root, hashSalt: SALT });
   assert.equal(h.harness_schema_version, HARNESS_SCHEMA_VERSION);
-  assert.equal(h.harness_schema_version, "2.0");
+  assert.equal(h.harness_schema_version, "2.1");
 });
 
 test("carries runtime fields (agent_type, agent_version, model, session_source, plugin_version)", () => {
@@ -199,7 +200,28 @@ test("Tier 1 fail-closed: a skill name embedding a secret is dropped, not emitte
   assert.equal(h.redactions.dropped_count, 1);
   assert.equal(h.redactions.hashed_count, 0);
   assert.deepEqual(h.redactions.by_type, { skill_name: 1 });
+  // A skill dropped for a secret in its NAME must not have its body read either.
+  assert.deepEqual(h.skill_contents.map((c) => c.name), ["deploy"]);
   assert.ok(!JSON.stringify(h).includes("AKIAIOSFODNN7EXAMPLE"));
+});
+
+test("skill_contents: custom project/user skill body collected with frontmatter", () => {
+  const root = makeProject();
+  const home = makeHome();
+  write(
+    path.join(root, ".codex", "skills", "deploy", "SKILL.md"),
+    "---\nname: deploy\ndescription: Ship the app\n---\n1. run tests\n2. deploy\n"
+  );
+
+  const h = detectHarness(root, { homeDir: home, repoRoot: root, hashSalt: SALT });
+
+  assert.deepEqual(h.skill_names, ["deploy"]);
+  assert.equal(h.skill_contents.length, 1);
+  const c = h.skill_contents[0];
+  assert.equal(c.name, "deploy");
+  assert.equal(c.description, "Ship the app");
+  assert.match(c.body, /run tests/);
+  assert.equal(c.truncated, false);
 });
 
 test("subagents: .codex/agents/*.md detected, counted, raw names", () => {
@@ -364,7 +386,7 @@ test("never throws on a bogus cwd; returns safe defaults", () => {
     repoRoot: "",
     hashSalt: SALT,
   });
-  assert.equal(h.harness_schema_version, "2.0");
+  assert.equal(h.harness_schema_version, "2.1");
   assert.equal(h.skills_count, 0);
   assert.deepEqual(h.hooks_enabled, []);
   assert.equal(h.multi_agent, "unknown");
