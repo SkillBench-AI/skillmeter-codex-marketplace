@@ -17,10 +17,12 @@
  * `~/.codex/config.toml` `[mcp_servers.*]` / `[plugins.*]` / `[marketplaces.*]`
  * tables plus top-level sandbox keys. As of schema v2.0 it carries harness
  * identifiers (skill / subagent / command / MCP / plugin names) as RAW values
- * for semantic analysis. It never emits raw harness file CONTENT, hook command
- * strings, or MCP command/args/env (those hold literal secrets). It is
- * deterministic, filesystem-only, and must never throw: detection runs inside
- * the SessionStart hook and a failure here must not break the session.
+ * for semantic analysis. As of schema v2.1 (SBEE-169) it also emits the SKILL.md
+ * body of CUSTOM (project/user) skills, size-capped and secret-scrubbed. It
+ * never emits CLAUDE.md/AGENTS.md bodies, hook command strings, or MCP
+ * command/args/env (those hold literal secrets). It is deterministic,
+ * filesystem-only, and must never throw: detection runs inside the SessionStart
+ * hook and a failure here must not break the session.
  *
  * Detection levels (contract `detectionLevels`):
  *   - Level 1 (filesystem-detectable): everything collected here.
@@ -42,9 +44,10 @@ const path = require("path");
 const { containsTier1, POLICY_VERSION } = require("./sanitizer");
 
 // Version of the emitted harness metadata contract this payload conforms to.
-// Bumped to 2.0 when identifier fields switched from `*_names_hashed` to raw
-// `*_names`; downstream otel_logs queries must select the new field names.
-const HARNESS_SCHEMA_VERSION = "2.0";
+// 2.0: identifier fields switched from `*_names_hashed` to raw `*_names`.
+// 2.1 (additive): added `skill_contents` — the body of custom (project/user)
+// skills that have no public catalog to join against.
+const HARNESS_SCHEMA_VERSION = "2.1";
 
 // Standard lifecycle hook event names. Only names on this allow-list are ever
 // reported (contract `hooks_enabled` action: enum) so an arbitrary user-authored
@@ -106,6 +109,12 @@ const SKIP_DIRS = new Set([
   "coverage",
 ]);
 const NAMES_LIMIT = 64;
+// Custom-skill CONTENT collection (SBEE-169): body of developer-authored
+// (project/user) skills with no public catalog to join against. Public/plugin
+// skills stay name-only. Size-capped defence-in-depth; the body still passes the
+// central Tier-1/Tier-2 sanitizer before egress.
+const MAX_SKILL_BODY_BYTES = 4096;
+const MAX_SKILL_CONTENTS = 50;
 
 // Coarse size buckets for the project CLAUDE.md (contract enum). Raw byte counts
 // are bucketed to avoid fingerprinting a specific file.
@@ -195,15 +204,45 @@ function collectNames(names, type, redactions) {
   return out;
 }
 
-function collectSkillNames(root, depth, acc) {
+function collectSkillNames(root, depth, acc, paths) {
   if (depth > SKILL_SCAN_MAX_DEPTH) return;
   for (const entry of safeReadDir(root)) {
     if (!entry.isDirectory()) continue;
     if (entry.name.startsWith(".")) continue;
     const dir = path.join(root, entry.name);
-    if (safeIsFile(path.join(dir, "SKILL.md"))) acc.add(entry.name);
-    collectSkillNames(dir, depth + 1, acc);
+    const md = path.join(dir, "SKILL.md");
+    if (safeIsFile(md)) {
+      acc.add(entry.name);
+      if (paths && !paths.has(entry.name)) paths.set(entry.name, md);
+    }
+    collectSkillNames(dir, depth + 1, acc, paths);
   }
+}
+
+// Read a custom skill's SKILL.md into the emittable content shape (SBEE-169):
+// `description` (from YAML frontmatter when present) + `body` (the rest,
+// size-capped). Never throws; strings are secret-scrubbed by the central
+// sanitizer before egress.
+function readSkillContent(name, mdPath) {
+  let text;
+  try {
+    text = fs.readFileSync(mdPath, "utf8");
+  } catch {
+    return null;
+  }
+  const bytes = Buffer.byteLength(text, "utf8");
+  let description = "";
+  let body = text;
+  const fm = text.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?([\s\S]*)$/);
+  if (fm) {
+    body = fm[2];
+    const d = fm[1].match(/^description:\s*(.+)$/m);
+    if (d) description = d[1].trim().replace(/^["']|["']$/g, "");
+  }
+  body = body.trim();
+  const truncated = body.length > MAX_SKILL_BODY_BYTES;
+  if (truncated) body = body.slice(0, MAX_SKILL_BODY_BYTES);
+  return { name, description, body, bytes, truncated };
 }
 
 function collectMarkdownNames(root, depth, maxDepth, prefix, acc) {
@@ -389,6 +428,8 @@ function detectHarness(cwd, options = {}) {
     skills_count: 0,
     skill_source_counts: { project: 0, user: 0, plugin: 0 },
     skill_names: [],
+    // Custom (project/user) skill bodies for semantic analysis (SBEE-169).
+    skill_contents: [],
 
     // ---- Subagents ----
     subagents_present: false,
@@ -473,10 +514,12 @@ function detectHarness(cwd, options = {}) {
 
     const skillNames = new Set();
     const seenSkillScopes = { project: new Set(), user: new Set(), plugin: new Set() };
+    // name -> SKILL.md path, for custom (project/user) skills — bodies collected.
+    const customSkillPaths = new Map();
     for (const { scope, dir } of skillRoots) {
       if (!safeIsDir(dir)) continue;
       const names = new Set();
-      collectSkillNames(dir, 1, names);
+      collectSkillNames(dir, 1, names, customSkillPaths);
       for (const n of names) {
         skillNames.add(n);
         seenSkillScopes[scope].add(n);
@@ -494,6 +537,15 @@ function detectHarness(cwd, options = {}) {
       "skill_name",
       harness.redactions
     );
+    // Custom-skill CONTENT (SBEE-169): body of each project/user skill that
+    // survived the Tier-1 name check. Secret-scrubbed by the central sanitizer.
+    const emittedSkillNames = new Set(harness.skill_names);
+    for (const name of [...customSkillPaths.keys()].sort()) {
+      if (harness.skill_contents.length >= MAX_SKILL_CONTENTS) break;
+      if (!emittedSkillNames.has(name)) continue;
+      const content = readSkillContent(name, customSkillPaths.get(name));
+      if (content) harness.skill_contents.push(content);
+    }
 
     // ---- Subagents (.codex/agents/*.md) ----
     const agentRoots = [];
