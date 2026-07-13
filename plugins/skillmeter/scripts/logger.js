@@ -365,9 +365,10 @@ const INGEST_ROUTE = "/logs/codex";
 // out of the license JWT rather than configured separately):
 //   1. SKILLMETER_BACKEND_URL env var (full ingest URL; dev/test bypass that
 //      skips the JWT entirely — point it at a fake server without a token).
-//   2. JWT-derived per-tenant endpoint: the `telemetry_endpoint` claim of the
+//   2. JWT-derived per-tenant endpoint: the `aud` (audience) claim of the
 //      license JWT, with the /logs/codex route appended. This routes each
 //      tenant's traffic to its own meter host without per-tenant plugin builds.
+//      (The legacy `telemetry_endpoint` claim is deprecated and no longer read.)
 //      The claim is read even from an expired token (allow-expired) so a drain
 //      still reaches the right host while a refresh is pending — the collector
 //      accepts unauthenticated uploads, and routing is not an auth decision.
@@ -377,10 +378,10 @@ const INGEST_ROUTE = "/logs/codex";
 // trusted-domain allow-list; the JWT endpoint (2) is server-minted and trusted
 // as-is (see lib/jwt.js).
 // Prod telemetry lives on the greenfield skillbench.ai zone: the activation
-// Lambda mints per-tenant `telemetry_endpoint` claims of the form
+// Lambda mints the per-tenant meter URL into the `aud` claim, of the form
 // https://{slug}.meter.skillbench.ai (prod) / https://{slug}.meter.dev.skillbench.com
-// (dev), per the infra telemetry_endpoint_url_template. This default is only the
-// unauthenticated fallback — real routing comes from the JWT claim.
+// (dev). This default is only the unauthenticated fallback — real routing comes
+// from the JWT claim.
 const DEFAULT_BACKEND_URL = "https://api.meter.skillbench.ai/logs/codex";
 
 // Trusted domain patterns for backend URL validation. Prod tenants are on
@@ -422,7 +423,7 @@ function getBackendUrl() {
   }
 
   // Per-tenant routing: a signed-in user's license JWT carries the tenant's
-  // meter host in its `telemetry_endpoint` claim. Prefer a fresh token, but fall
+  // meter host in its `aud` (audience) claim. Prefer a fresh token, but fall
   // back to the claim of an expired one (allow-expired) so a drain still reaches
   // the correct tenant host while a refresh is pending. Append the Codex ingest
   // route, then fall through to the prod default when there's no usable token —
