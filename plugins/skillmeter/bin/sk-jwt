@@ -4,7 +4,7 @@
  * human-readable form. Never prints the raw token body. Shows:
  *   - org identifiers derived from the `org` claim
  *   - GitHub user id from the `github_id` claim
- *   - the telemetry_endpoint claim used for per-tenant routing
+ *   - the telemetry endpoint (the `aud` audience claim) used for per-tenant routing
  *   - iat / exp in ISO form, and whether the token is currently valid
  *   - the device id stored alongside the JWT
  *
@@ -64,7 +64,7 @@ line("Org id", payload.org && payload.org.id);
 line("Org login", payload.org && payload.org.login);
 line("Org URL", payload.org && payload.org.url);
 line("GitHub user id", payload.github_id);
-line("Telemetry endpoint", getEndpointFromToken(token) || payload.telemetry_endpoint);
+line("Telemetry endpoint", getEndpointFromToken(token) || payload.aud);
 if (typeof payload.iat === "number") {
   line("Issued at", new Date(payload.iat * 1000).toISOString());
 }

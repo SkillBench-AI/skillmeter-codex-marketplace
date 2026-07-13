@@ -38,9 +38,11 @@ function isJwtExpired(token) {
 
 /**
  * Resolve the per-tenant telemetry endpoint baked into the license JWT. The
- * activation Lambda mints a `telemetry_endpoint` claim into every JWT (resolved
- * against the tenant slug at issuance), so each tenant's traffic routes to its
- * own meter hostname without per-tenant plugin builds.
+ * activation Lambda mints the tenant's meter URL into the standard JWT `aud`
+ * (audience) claim — the token's intended recipient IS the tenant's meter host
+ * — so each tenant's traffic routes to its own meter hostname without per-tenant
+ * plugin builds. (The legacy `telemetry_endpoint` claim is deprecated and no
+ * longer consulted.)
  *
  * Returns the claim host (no trailing slash) or null when no endpoint can be
  * resolved — when the token is absent, already expired, or the claim is missing
@@ -72,17 +74,23 @@ function getEndpointFromTokenAllowExpired(token) {
   return readEndpointClaim(token);
 }
 
-// Shared claim extraction. The claim is server-minted, but reject anything that
-// isn't a plain https origin so a malformed claim can't redirect traffic to a
-// non-TLS host.
+// Shared claim extraction. The endpoint is read from the standard `aud`
+// (audience) claim, which per RFC 7519 may be a string or an array of strings —
+// we take the first https origin. The claim is server-minted, but reject
+// anything that isn't a plain https origin so a malformed claim can't redirect
+// traffic to a non-TLS host. The legacy `telemetry_endpoint` claim is no longer
+// consulted.
 function readEndpointClaim(token) {
   const payload = decodeJwtPayload(token);
   if (!payload) return null;
-  const endpoint = payload.telemetry_endpoint;
-  if (typeof endpoint !== "string") return null;
-  const trimmed = endpoint.trim();
-  if (!/^https:\/\//i.test(trimmed)) return null;
-  return trimmed.replace(/\/+$/, "");
+  const auds = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
+  for (const aud of auds) {
+    if (typeof aud !== "string") continue;
+    const trimmed = aud.trim();
+    if (!/^https:\/\//i.test(trimmed)) continue;
+    return trimmed.replace(/\/+$/, "");
+  }
+  return null;
 }
 
 module.exports = {

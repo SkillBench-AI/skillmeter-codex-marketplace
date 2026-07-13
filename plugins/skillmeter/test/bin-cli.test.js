@@ -71,7 +71,7 @@ test("sk-jwt renders claims for a valid token without leaking the raw token", ()
     sub: "user-1",
     org: { id: "42", login: "acme", url: "https://github.com/acme" },
     github_id: "99",
-    telemetry_endpoint: "https://acme.meter.skillbench.com",
+    aud: "https://acme.meter.skillbench.com",
     iat: now,
     exp: now + 3600,
   });
@@ -88,7 +88,7 @@ test("sk-jwt renders claims for a valid token without leaking the raw token", ()
 
 test("sk-jwt flags an expired token", () => {
   const now = Math.floor(Date.now() / 1000);
-  const jwt = makeJwt({ sub: "u", telemetry_endpoint: "https://x.meter.skillbench.com", exp: now - 3600 });
+  const jwt = makeJwt({ sub: "u", aud: "https://x.meter.skillbench.com", exp: now - 3600 });
   const home = makeHome({ device_id: "DEV-1", hash_salt: "abcd", license_jwt: jwt });
   const res = run("sk-jwt", [], home);
   assert.match(res.stdout, /EXPIRED/i);

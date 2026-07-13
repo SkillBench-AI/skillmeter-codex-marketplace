@@ -96,15 +96,25 @@ test("isJwtExpired reflects the exp claim", () => {
   assert.equal(jwt.isJwtExpired(makeJwt({ exp: PAST })), true);
 });
 
-test("getEndpointFromToken returns the telemetry_endpoint of a valid token", () => {
-  const token = makeJwt({ exp: FUTURE, telemetry_endpoint: "https://acme.meter.skillbench.com/" });
+test("getEndpointFromToken returns the `aud` endpoint of a valid token", () => {
+  const token = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com/" });
   assert.equal(jwt.getEndpointFromToken(token), "https://acme.meter.skillbench.com");
 });
 
+test("getEndpointFromToken reads an array `aud`, taking the first https origin", () => {
+  const token = makeJwt({ exp: FUTURE, aud: ["skillbench", "https://acme.meter.skillbench.com"] });
+  assert.equal(jwt.getEndpointFromToken(token), "https://acme.meter.skillbench.com");
+});
+
+test("getEndpointFromToken ignores the legacy telemetry_endpoint claim — `aud` only", () => {
+  const token = makeJwt({ exp: FUTURE, aud: "just-an-audience", telemetry_endpoint: "https://legacy.meter.skillbench.com" });
+  assert.equal(jwt.getEndpointFromToken(token), null);
+});
+
 test("getEndpointFromToken rejects expired tokens, missing/non-https claims", () => {
-  assert.equal(jwt.getEndpointFromToken(makeJwt({ exp: PAST, telemetry_endpoint: "https://acme.meter.skillbench.com" })), null);
+  assert.equal(jwt.getEndpointFromToken(makeJwt({ exp: PAST, aud: "https://acme.meter.skillbench.com" })), null);
   assert.equal(jwt.getEndpointFromToken(makeJwt({ exp: FUTURE })), null);
-  assert.equal(jwt.getEndpointFromToken(makeJwt({ exp: FUTURE, telemetry_endpoint: "http://insecure.example.com" })), null);
+  assert.equal(jwt.getEndpointFromToken(makeJwt({ exp: FUTURE, aud: "http://insecure.example.com" })), null);
   assert.equal(jwt.getEndpointFromToken(null), null);
 });
 
@@ -179,7 +189,7 @@ test("setLicenseToken('') clears the stored token", () => {
 
 test("getBackendUrl routes to the JWT per-tenant endpoint with /logs/codex", () => {
   credstore.markEngaged();
-  credstore.setLicenseToken(makeJwt({ exp: FUTURE, telemetry_endpoint: "https://acme.meter.skillbench.com" }));
+  credstore.setLicenseToken(makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com" }));
   // tmpHome has no .codex/settings.local.json, so settings don't interfere.
   assert.equal(logger.getBackendUrl(tmpHome), "https://acme.meter.skillbench.com/logs/codex");
 });

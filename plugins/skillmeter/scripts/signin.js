@@ -11,7 +11,7 @@
  *   3. The poll exchanges the GitHub access token + device_id at the SkillMeter
  *      activation endpoint, fetches the user's GitHub identities, and stores the
  *      license JWT + orgs in credstore. Once a license is present, every hook
- *      upload routes to the JWT's per-tenant `telemetry_endpoint` and is
+ *      upload routes to the JWT's per-tenant `aud` (audience) endpoint and is
  *      authenticated with the JWT.
  *
  * Run directly:  node scripts/signin.js
