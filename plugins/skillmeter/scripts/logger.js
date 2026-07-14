@@ -11,7 +11,7 @@
  */
 
 const crypto = require("crypto");
-const { spawn, spawnSync } = require("child_process");
+const { spawn } = require("child_process");
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
@@ -1519,12 +1519,15 @@ function readStdin() {
 
 // ---------------------------------------------------------------------------
 // Telemetry opt-in management
+//
+// Consent is collected entirely in-context: an explicit per-project opt-in
+// (`telemetry.js enable/disable`, stored in `.codex/settings.local.json`) plus
+// owned-org auto-enable, so a repo owned by an allowed org captures without any
+// prompt. There is deliberately no OS-native dialog — Codex hooks usually run
+// without a TTY, and a system pop-up reads as spyware, fatigues users across
+// repos, and can't render on headless/SSH/CI. This matches the Claude Code
+// plugin and the VS Code extension, so consent is consistent across products.
 // ---------------------------------------------------------------------------
-
-const TELEMETRY_CONSENT_MESSAGE =
-  "Enable SkillMeter telemetry for this Codex project?\n\n" +
-  "Telemetry helps improve SkillMeter by collecting anonymous usage data. " +
-  "You can change this per-project setting at any time.";
 
 function telemetryCliCommand(action) {
   return `node ${JSON.stringify(path.join(PLUGIN_ROOT, "scripts", "telemetry.js"))} ${action}`;
@@ -1556,117 +1559,10 @@ function saveTelemetryOptIn(cwd, value) {
   fs.writeFileSync(settingsPath, JSON.stringify(content, null, 2) + "\n");
 }
 
-function runConsentCommand(command, args, options = {}) {
-  const result = spawnSync(command, args, {
-    encoding: "utf8",
-    env: options.env || process.env,
-    stdio: ["ignore", "pipe", "pipe"],
-    timeout: options.timeout || 30_000,
-    windowsHide: true,
-  });
-  return {
-    status: result.status,
-    stdout: result.stdout || "",
-    stderr: result.stderr || "",
-    error: result.error || null,
-  };
-}
-
-function parseMacOsConsentResult(result) {
-  if (!result || result.error || result.status !== 0) return null;
-  const output = `${result.stdout}\n${result.stderr}`;
-  if (output.includes("button returned:Yes")) return true;
-  if (output.includes("button returned:No")) return false;
-  return null;
-}
-
-function parseWindowsConsentResult(result) {
-  if (!result || result.error || result.status !== 0) return null;
-  const output = `${result.stdout}\n${result.stderr}`.trim();
-  if (/\bYes\b/i.test(output)) return true;
-  if (/\bNo\b/i.test(output)) return false;
-  return null;
-}
-
-function parseLinuxConsentResult(result) {
-  if (!result || result.error) return null;
-  if (result.status === 0) return true;
-  if (result.status === 1) return false;
-  return null;
-}
-
-function resolveTelemetryConsent(platform, options = {}) {
-  const env = options.env || process.env;
-  const runner = options.runConsentCommand || runConsentCommand;
-
-  if (platform === "darwin") {
-    return parseMacOsConsentResult(
-      runner("osascript", [
-        "-e",
-        `display dialog ${JSON.stringify(TELEMETRY_CONSENT_MESSAGE)} with title "SkillMeter" buttons {"No", "Yes"} default button "Yes"`,
-      ], { env })
-    );
-  }
-
-  if (platform === "win32") {
-    const script = [
-      "Add-Type -AssemblyName System.Windows.Forms",
-      `$result = [System.Windows.Forms.MessageBox]::Show(${JSON.stringify(TELEMETRY_CONSENT_MESSAGE)}, "SkillMeter", [System.Windows.Forms.MessageBoxButtons]::YesNo, [System.Windows.Forms.MessageBoxIcon]::Question)`,
-      "[Console]::Out.WriteLine($result)",
-    ].join("; ");
-
-    for (const command of ["powershell.exe", "pwsh"]) {
-      const decision = parseWindowsConsentResult(
-        runner(command, [
-          "-NoProfile",
-          "-NonInteractive",
-          "-ExecutionPolicy",
-          "Bypass",
-          "-Command",
-          script,
-        ], { env })
-      );
-      if (decision !== null) return decision;
-    }
-    return null;
-  }
-
-  if (platform === "linux") {
-    if (!env.DISPLAY && !env.WAYLAND_DISPLAY) return null;
-
-    const candidates = [
-      {
-        command: "zenity",
-        args: [
-          "--question",
-          "--title=SkillMeter",
-          `--text=${TELEMETRY_CONSENT_MESSAGE}`,
-          "--ok-label=Yes",
-          "--cancel-label=No",
-        ],
-      },
-      {
-        command: "kdialog",
-        args: [
-          "--title",
-          "SkillMeter",
-          "--yesno",
-          TELEMETRY_CONSENT_MESSAGE,
-        ],
-      },
-    ];
-
-    for (const candidate of candidates) {
-      const decision = parseLinuxConsentResult(
-        runner(candidate.command, candidate.args, { env })
-      );
-      if (decision !== null) return decision;
-    }
-  }
-
-  return null;
-}
-
+// In-context consent notice: printed to a Codex hook's stderr channel when a
+// project has no explicit opt-in and isn't owned-org auto-enabled. No decision
+// is saved — the project stays "not configured" until the user runs
+// `telemetry.js enable|disable`.
 function writeTelemetryConsentFallback(cwd, stream = process.stderr) {
   stream.write(
     [
@@ -1680,19 +1576,45 @@ function writeTelemetryConsentFallback(cwd, stream = process.stderr) {
   );
 }
 
-function promptTelemetryOptIn(cwd, options = {}) {
-  // Codex hooks usually run without a controlling TTY, so consent is collected
-  // through platform-native GUI prompts when available. Headless environments
-  // get an explicit in-Codex command flow and remain "not configured" until the
-  // user chooses enable/disable.
-  const decision = resolveTelemetryConsent(options.platform || process.platform, options);
-  if (decision !== null) {
-    saveTelemetryOptIn(cwd, decision);
-    return decision;
-  }
+/**
+ * Resolve the per-project telemetry gate, combining the explicit opt-in setting
+ * with owned-org auto-enable (parity with the Claude Code plugin):
+ *
+ *   - explicit `false` → off  (user opted out; always respected)
+ *   - explicit `true`  → on   (subject to the repo-scope gate downstream)
+ *   - unset (`null`)   → on **only when the repo is owned by an allowed org**
+ *                        ("auto_org"); otherwise off ("not_enabled")
+ *
+ * Pure function — no I/O — so the policy can be reasoned about and tested
+ * directly.
+ *
+ * @param {boolean|null} optIn - getTelemetryOptIn(cwd) result
+ * @param {boolean} repoOrgOwned - repoScopeDecision.allowed
+ * @returns {{capture: boolean, mode: "opted_out"|"opted_in"|"auto_org"|"not_enabled"}}
+ */
+function resolveTelemetryGate(optIn, repoOrgOwned) {
+  if (optIn === false) return { capture: false, mode: "opted_out" };
+  if (optIn === true) return { capture: true, mode: "opted_in" };
+  if (repoOrgOwned === true) return { capture: true, mode: "auto_org" };
+  return { capture: false, mode: "not_enabled" };
+}
 
-  writeTelemetryConsentFallback(cwd, options.stderr || process.stderr);
-  return false;
+// Default stderr messaging for the resolved gate, used by every hook that
+// doesn't supply an onGate reactor (i.e. every hook except SessionStart).
+function defaultGateMessaging(eventName, gate) {
+  if (!gate.capture) {
+    const reason =
+      gate.mode === "opted_out"
+        ? "telemetry disabled for this project"
+        : "telemetry not enabled";
+    console.error(`[skillmeter] ${eventName}: skipped (${reason})`);
+    return;
+  }
+  if (gate.mode === "auto_org") {
+    console.error(
+      `[skillmeter] ${eventName}: telemetry auto-enabled (repo owned by allowed org; run \`${telemetryCliCommand("disable")}\` to opt out)`
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1706,7 +1628,9 @@ function promptTelemetryOptIn(cwd, options = {}) {
  * @param {function} buildData - (input, ctx) => event-specific data
  * @param {object} [options]
  * @param {function} [options.beforeStdin] - Called after device id resolves, before stdin
- * @param {function} [options.checkOptIn] - Custom opt-in: (cwd, input) => bool
+ * @param {function} [options.onGate] - Gate reactor: ({ gate, repoScopeDecision, cwd, input, eventName }) => void.
+ *   Runs after the gate is resolved (for banners/side-effects). The capture decision stays central —
+ *   runHook exits when gate.capture is false regardless. Without it, default stderr messaging is used.
  * @param {function} [options.afterSkip] - Hook for repo-scope-rejected case
  * @param {function} [options.afterLog] - Called after logInfo (e.g. flush)
  * @param {boolean} [options.requireJsonStdout] - If true, write `{}` to stdout
@@ -1748,14 +1672,22 @@ async function runHook(eventName, buildData, options = {}) {
 
   const cwd = input.cwd || process.cwd();
 
-  if (options.checkOptIn) {
-    if (!options.checkOptIn(cwd, input)) return exit(0);
+  // Resolve repo ownership up front: it both gates capture (below) and, for
+  // projects with no explicit opt-in, decides whether telemetry auto-enables.
+  const repoScopeDecision = getRepoScopeDecision(cwd);
+
+  // Single per-project gate combining the explicit opt-in with owned-org
+  // auto-enable. Callers REACT via onGate (banners/side-effects); the capture
+  // decision stays central — runHook exits below when gate.capture is false.
+  // Hooks without an onGate get the default stderr messaging. (Replaces the
+  // former OS consent dialog + per-hook checkOptIn override.)
+  const gate = resolveTelemetryGate(getTelemetryOptIn(cwd), repoScopeDecision.allowed);
+  if (options.onGate) {
+    options.onGate({ gate, repoScopeDecision, cwd, input, eventName });
   } else {
-    if (getTelemetryOptIn(cwd) !== true) {
-      console.error(`[skillmeter] ${eventName}: skipped (telemetry not enabled)`);
-      return exit(0);
-    }
+    defaultGateMessaging(eventName, gate);
   }
+  if (!gate.capture) return exit(0);
 
   const sessionId = input.session_id || "unknown";
   const hashSalt = getOrCreateHashSalt();
@@ -1764,7 +1696,8 @@ async function runHook(eventName, buildData, options = {}) {
     return exit(0);
   }
 
-  const repoScopeDecision = getRepoScopeDecision(cwd);
+  // Hard repo-scope block: only opted_in projects can reach here on a repo not
+  // owned by an allowed org (auto_org requires allowed=true). Drop those events.
   if (!repoScopeDecision.allowed) {
     console.error(
       `[skillmeter] ${eventName}: skipped (${repoScopeDecision.classification})`
@@ -1894,9 +1827,9 @@ module.exports = {
   cleanupStaleFiles,
   getTelemetryOptIn,
   saveTelemetryOptIn,
-  resolveTelemetryConsent,
   writeTelemetryConsentFallback,
-  promptTelemetryOptIn,
+  resolveTelemetryGate,
+  defaultGateMessaging,
   getRepoScopeDecision,
   getRepoScopeOrgFilter,
   runHook,
