@@ -315,12 +315,14 @@ node "$PLUGIN_ROOT/scripts/telemetry.js" enable --global
 While globally disabled, hooks do not record new events and durable queues are
 left on disk instead of being uploaded.
 
-The very first `SessionStart` in a project asks for consent with the native
-desktop prompt for your platform: macOS uses `osascript`, Windows uses
-PowerShell + Windows Forms, and Linux uses `zenity` or `kdialog` when a desktop
-session is available. Headless sessions print the same enable/disable/status
-commands in Codex output and leave the project in "not configured" state until
-you choose.
+Consent is collected **in-context — there is no OS pop-up**. When a project has
+no explicit opt-in, telemetry **auto-enables only if the repo is owned by one of
+your allowed GitHub orgs** (owned-org auto-enable, matching the Claude Code
+plugin); a passive `(telemetry auto-enabled — repo owned by allowed org)` notice
+prints and you can opt out any time with `telemetry.js disable`. For any other
+project the first `SessionStart` prints the enable/disable/status commands and
+leaves it "not configured" until you choose. This works identically on
+headless/SSH/CI sessions — nothing is ever gated behind a desktop dialog.
 
 
 ## Identity & authentication
