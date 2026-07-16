@@ -61,6 +61,24 @@ function shutdown(reason, code = 0) {
   process.exit(code);
 }
 
+// Proactively rotate the license JWT while a long session runs, off the hot
+// SessionStart hook path. tryRefreshLicense short-circuits with no network when
+// the cheap local isLicenseTokenExpired check says the token is still
+// comfortably valid (outside the 5-min expiry skew), so a healthy token costs
+// nothing here. On a session that outlives its token, the ~120s sweep keeps the
+// JWT inside the /refresh sliding window, so uploads stay authenticated without
+// the user re-signing in. Best-effort: any failure is logged and swallowed so
+// it never aborts the sweep or the drain below — the next sweep retries.
+async function maybeRefreshLicense() {
+  try {
+    const deviceId = logger.getDeviceId();
+    if (!deviceId) return;
+    await logger.tryRefreshLicense(deviceId);
+  } catch (err) {
+    log(`license refresh error: ${err && err.message ? err.message : err}`);
+  }
+}
+
 async function sweep() {
   // If another daemon has taken over the lock, stand down.
   if (!logger.ownsRetryDaemonLock()) {
@@ -68,6 +86,9 @@ async function sweep() {
     return;
   }
   logger.refreshRetryDaemonLock();
+
+  // Refresh before draining so the drain uploads with the freshest token.
+  await maybeRefreshLicense();
 
   let queued = 0;
   try {
@@ -112,12 +133,16 @@ async function main() {
   }
 }
 
-for (const sig of ["SIGTERM", "SIGINT"]) {
-  process.on(sig, () => shutdown(`received ${sig}`));
+if (require.main === module) {
+  for (const sig of ["SIGTERM", "SIGINT"]) {
+    process.on(sig, () => shutdown(`received ${sig}`));
+  }
+
+  main().catch((err) => {
+    log(`fatal: ${err && err.message ? err.message : err}`);
+    logger.clearRetryDaemonLock();
+    process.exit(1);
+  });
 }
 
-main().catch((err) => {
-  log(`fatal: ${err && err.message ? err.message : err}`);
-  logger.clearRetryDaemonLock();
-  process.exit(1);
-});
+module.exports = { sweep, maybeRefreshLicense, main };
