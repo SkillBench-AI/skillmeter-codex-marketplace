@@ -389,8 +389,17 @@ node "$PLUGIN_ROOT/bin/sk-telemetry" status
 
 - **Proactive refresh.** `SessionStart` rotates a missing or near-expiry JWT via
   the activation Lambda's `/refresh` endpoint (no GitHub round-trip), falling
-  back to the silent `gh` path on `410`/`404`/network errors. Best-effort and
-  non-blocking.
+  back to the silent `gh` path on `410`/`404`/network errors. The long-running
+  retry monitor repeats the same rotation on its ~120s sweep, so a session that
+  outlives its token stays inside the `/refresh` sliding window without a
+  re-sign-in. Best-effort and non-blocking.
+- **Silent re-mint after the window lapses.** `/refresh` enforces a sliding
+  window against the token's `original_iat`; once it closes, `/refresh` returns
+  `410` and a full re-activation is required. The silent `gh` fallback covers
+  this **only if the local `gh` CLI token carries the `read:org` scope** — it
+  fetches your org memberships during activation, so a token without that scope
+  fails the silent path and drops to the interactive device flow. See
+  [Testing](#testing) for how to arm this for unattended runs.
 - **Expiry guard.** A JWT past its `exp` is dropped before a request is sent
   rather than sent and rejected.
 - **401/403 handling.** If the backend rejects the `Authorization` header, the
@@ -587,6 +596,26 @@ shared `~/.skillbench/credentials.json` is never touched) and seeds a device id
 repo-scope privacy posture, poison-batch durability, pre-upload secret/PII
 redaction (plus boundary/idempotency edge cases), path hashing and ingest-URL
 resolution (`logger.test.js`), the verified Codex hook catalog
-(`hook-surface.test.js`), the cross-platform consent prompts, Level 1 harness
+(`hook-surface.test.js`), the proactive license refresh + daemon lifecycle
+(`retry-daemon.test.js`), the cross-platform consent prompts, Level 1 harness
 detection, and the `bin/` auth/debug CLIs.
+
+### Unattended / long-running sessions (zero-code re-mint)
+
+Manual and long-lived test sessions can outlive both the license `exp` and the
+`/refresh` sliding window. To keep them authenticated with **no interactive
+sign-in**, authenticate the `gh` CLI once with the `read:org` scope:
+
+```bash
+gh auth login -s read:org          # fresh login
+gh auth refresh -h github.com -s read:org   # add the scope to an existing login
+```
+
+With that scope present, `trySilentGhActivate` can re-mint a fresh license
+silently once `/refresh` returns `410` (window lapsed) — the plugin fetches your
+org memberships and re-activates without prompting, so a continuous session (or
+a repeated test loop) never stalls on a device-flow login. Without `read:org`,
+the silent path fails and the run falls back to the interactive device flow. Run
+`node "$PLUGIN_ROOT/bin/sk-refresh"` to force this path on demand and confirm the
+silent re-mint works in your environment.
 
