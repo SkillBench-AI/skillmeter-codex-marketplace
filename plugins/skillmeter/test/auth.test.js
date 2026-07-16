@@ -313,3 +313,88 @@ test("transferEventLog drops an expired JWT before sending (no auth header)", as
     await srv.close();
   }
 });
+
+// --- SessionStart awaits the refresh before the first event -----------------
+
+test("prepareSession refreshes an expired token so the current session is authenticated", async () => {
+  const sessionStart = require("../scripts/session_start");
+
+  // Seed an expired license JWT — the state that used to leave the triggering
+  // session unauthenticated when the refresh ran fire-and-forget from afterLog.
+  const expired = makeJwt({ exp: PAST });
+  const fresh = makeJwt({ exp: FUTURE });
+  credstore.setLicenseToken(expired);
+  assert.equal(credstore.isLicenseTokenExpired(expired), true);
+
+  // Stub the /refresh round-trip. refreshExpiredJwt POSTs via global fetch and
+  // persists payload.token; with fetch mocked, getRefreshUrl's domain gate is
+  // irrelevant because nothing touches the network.
+  const realFetch = global.fetch;
+  let refreshCalls = 0;
+  global.fetch = async () => {
+    refreshCalls += 1;
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({ token: fresh }),
+      text: async () => "",
+    };
+  };
+
+  try {
+    await sessionStart.prepareSession();
+  } finally {
+    global.fetch = realFetch;
+  }
+
+  assert.equal(refreshCalls, 1, "prepareSession awaits exactly one /refresh");
+  assert.equal(
+    credstore.getLicenseToken(),
+    fresh,
+    "the rotated token is persisted before the SessionStart event is built"
+  );
+  assert.equal(credstore.isLicenseTokenExpired(fresh), false);
+
+  // End-to-end: the current session's own SessionStart event now uploads
+  // authenticated with the freshly rotated token instead of being dropped as
+  // expired (the transferEventLog "drops an expired JWT" path above).
+  let sawAuth = null;
+  const srv = await startServer((req, res) => {
+    sawAuth = req.headers["authorization"] || null;
+    res.writeHead(200);
+    res.end("ok");
+  });
+  const logFile = tmpLogFile('{"event":"SessionStart"}\n');
+  try {
+    await logger.transferEventLog(logFile, `${srv.url}/logs/codex`, 5000);
+    assert.equal(
+      sawAuth,
+      `Bearer ${fresh}`,
+      "SessionStart uploads with the refreshed token"
+    );
+    assert.equal(fs.existsSync(`${logFile}.sent`), true);
+  } finally {
+    await srv.close();
+  }
+});
+
+test("prepareSession is a no-op (no /refresh) when telemetry is globally disabled", async () => {
+  const sessionStart = require("../scripts/session_start");
+  credstore.setLicenseToken(makeJwt({ exp: PAST }));
+
+  const realFetch = global.fetch;
+  let refreshCalls = 0;
+  global.fetch = async () => {
+    refreshCalls += 1;
+    return { ok: true, status: 200, json: async () => ({ token: makeJwt({ exp: FUTURE }) }), text: async () => "" };
+  };
+
+  logger.setTelemetryGloballyDisabled(true);
+  try {
+    await sessionStart.prepareSession();
+    assert.equal(refreshCalls, 0, "globally-disabled telemetry never rotates the token");
+  } finally {
+    logger.setTelemetryGloballyDisabled(false);
+    global.fetch = realFetch;
+  }
+});
