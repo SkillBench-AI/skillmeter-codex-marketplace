@@ -90,10 +90,32 @@ const TIER1_DETECTORS = [
   { type: "api_key", re: /\bsk-(?:proj-|ant-)?[A-Za-z0-9_-]{16,}\b/g, value: "whole" },
   // Google API key.
   { type: "api_key", re: /\bAIza[0-9A-Za-z_-]{35}\b/g, value: "whole" },
+  // Google OAuth client id.
+  { type: "google_oauth_client", re: /\b[0-9]+-[0-9A-Za-z_]{32}\.apps\.googleusercontent\.com\b/g, value: "whole" },
+  // GitLab personal access token.
+  { type: "gitlab_pat", re: /\bglpat-[0-9A-Za-z_-]{20}\b/g, value: "whole" },
+  // Stripe secret / restricted key.
+  { type: "stripe_key", re: /\b(?:sk|rk)_(?:test|live|prod)_[0-9A-Za-z]{10,99}\b/g, value: "whole" },
+  // Twilio API key (SK + 32 hex).
+  { type: "twilio_key", re: /\bSK[0-9a-fA-F]{32}\b/g, value: "whole" },
+  // SendGrid API key.
+  { type: "sendgrid_key", re: /\bSG\.[A-Za-z0-9_-]{22}\.[A-Za-z0-9_-]{43}\b/g, value: "whole" },
+  // Mailgun API key.
+  { type: "mailgun_key", re: /\bkey-[0-9a-zA-Z]{32}\b/g, value: "whole" },
+  // npm access token.
+  { type: "npm_token", re: /\bnpm_[0-9A-Za-z]{36}\b/g, value: "whole" },
+  // PyPI upload token.
+  { type: "pypi_token", re: /\bpypi-AgEIcHlwaS[A-Za-z0-9_-]{50,}\b/g, value: "whole" },
+  // DigitalOcean token.
+  { type: "digitalocean_token", re: /\bdo[oprv]_v1_[a-f0-9]{64}\b/g, value: "whole" },
+  // HashiCorp Vault token.
+  { type: "hashicorp_vault_token", re: /\bhv[bs]\.[A-Za-z0-9_-]{90,}\b/g, value: "whole" },
   // AWS access key id.
   { type: "aws_access_key", re: /\bA(?:KIA|SIA|IDA|GPA|ROA|NPA|NVA)[A-Z0-9]{16}\b/g, value: "whole" },
   // Slack tokens.
   { type: "slack_token", re: /\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, value: "whole" },
+  // Slack incoming webhook URL.
+  { type: "slack_webhook", re: /https:\/\/hooks\.slack\.com\/(?:services|workflows|triggers)\/[A-Za-z0-9+/]{43,60}/g, value: "whole" },
   // JSON Web Tokens (header.payload.signature, base64url).
   {
     type: "jwt",
@@ -104,6 +126,13 @@ const TIER1_DETECTORS = [
   {
     type: "database_url",
     re: /\b(?:postgres|postgresql|mysql|mongodb(?:\+srv)?|redis|rediss|amqp|amqps):\/\/[^\s:/@]+:[^\s:/@]+@[^\s'"]+/g,
+    value: "whole",
+  },
+  // Any URL with embedded basic-auth credentials (user:pass@host). Runs before
+  // the Tier-2 email pass so the whole credential URL is redacted wholesale.
+  {
+    type: "basic_auth_url",
+    re: /\bhttps?:\/\/[^\s:/@]+:[^\s:/@]+@[^\s'"]+/g,
     value: "whole",
   },
   // Authorization / Proxy-Authorization headers carrying a Bearer/Basic/token
