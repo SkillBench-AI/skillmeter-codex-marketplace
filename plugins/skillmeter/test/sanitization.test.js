@@ -347,3 +347,30 @@ for (const f of SECRET_CORPUS.fixtures) {
     assert.equal(value.includes(secret), false, `${f.id}: raw secret survived sanitization`);
   });
 }
+
+// --- Key-name forced redaction (scrubDeep parity) --------------------------
+// A string under a secret-labelled key must be redacted even when it matches
+// no detector, matching the Claude / session-collector sanitizers.
+test("redactDeep forces redaction on a secret-labelled object key", () => {
+  const { value } = sanitizer.sanitizeEventData({
+    mcp: { env: { API_KEY: "someRealLookingValue123" } },
+  });
+  assert.equal(value.mcp.env.API_KEY, "[REDACTED_SECRET]");
+});
+
+test("redactDeep leaves obvious placeholder values under secret keys in place", () => {
+  const { value } = sanitizer.sanitizeEventData({ token: "example" });
+  assert.equal(value.token, "example");
+});
+
+test("redactDeep forces redaction through arrays under a secret key", () => {
+  const { value } = sanitizer.sanitizeEventData({
+    tokens: ["plainButUnderTokenKey123", "anotherOpaqueValue456"],
+  });
+  assert.deepEqual(value.tokens, ["[REDACTED_SECRET]", "[REDACTED_SECRET]"]);
+});
+
+test("non-secret keys are not force-redacted", () => {
+  const { value } = sanitizer.sanitizeEventData({ description: "deploy the api gateway" });
+  assert.equal(value.description, "deploy the api gateway");
+});
