@@ -174,3 +174,31 @@ test("consent revoked during a 409 prevents reset staging and upload", async () 
   assert.equal(cursor.seq, 1);
   assert.equal(fs.existsSync(file), true);
 });
+
+test("a corrupt queue does not block other authorized transcripts", async () => {
+  stage();
+  const secondSource = path.join(root, "second.jsonl");
+  fs.writeFileSync(secondSource, line("healthy second transcript"));
+  logger.stageTranscriptForUpload(secondSource, { cwd: repo });
+  const directories = queue.queueDirectories(logger.TRANSCRIPT_CHUNKS_DIR);
+  const damaged = directories[0];
+  const cursor = path.join(damaged, "cursor.json");
+  const retained = queue.pendingFiles(damaged)[0];
+  fs.writeFileSync(cursor, "invalid synthetic cursor");
+  let calls = 0;
+  global.fetch = async () => { calls++; return { ok: true }; };
+  await logger.drainPendingTranscripts("https://collector.invalid/logs/codex", 1000);
+  assert.equal(calls, 1);
+  assert.equal(fs.existsSync(retained), true);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(damaged, "diagnostic.json"))).code, "queue-unavailable");
+});
+
+test("failed transcript upload counts as queued work for the retry monitor", async () => {
+  const file = stage();
+  global.fetch = async () => ({ ok: false, status: 503 });
+  assert.equal(await logger.drainPendingTranscripts("https://collector.invalid/logs/codex", 1000), 1);
+  assert.equal(fs.existsSync(file), true);
+  global.fetch = async () => ({ ok: true });
+  assert.equal(await logger.drainPendingTranscripts("https://collector.invalid/logs/codex", 1000), 1);
+  assert.equal(await logger.drainPendingTranscripts("https://collector.invalid/logs/codex", 1000), 0);
+});

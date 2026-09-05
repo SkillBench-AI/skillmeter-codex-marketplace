@@ -47,9 +47,18 @@ function acquireLock(file, depth = 0) {
   catch (e) {
     fs.unlinkSync(ownerFile);
     if (e.code !== "EEXIST") throw e;
-    const st = fs.statSync(file);
+    let st;
+    try { st = fs.statSync(file); }
+    catch (error) {
+      if (error.code === "ENOENT") return acquireLock(file, depth + 1);
+      throw error;
+    }
     let owner;
-    try { owner = readJson(file); } catch { return null; }
+    try { owner = readJson(file); }
+    catch (error) {
+      if (error.code === "ENOENT") return acquireLock(file, depth + 1);
+      return null; // malformed ownership cannot be safely reclaimed
+    }
     if (alive(owner.pid)) return null;
     const releaseReaper = acquireLock(`${file}.reap-${st.ino}`, depth + 1);
     if (!releaseReaper) return null;
@@ -139,6 +148,7 @@ function stage(root, source, scope, salt, options = {}) {
     if (!reset) {
       rawPrefix = prefix(fd, offset, salt);
       reset = rawPrefix.digest("hex") !== cursor.prefix;
+      if (!reset && stat.size === offset) return { status: "unchanged", files: [], partial: false };
       if (!reset) rawPrefix = prefix(fd, offset, salt);
     }
     if (reset) { offset = 0; rawPrefix = prefix(fd, 0, salt); }

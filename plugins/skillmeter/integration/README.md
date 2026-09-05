@@ -35,3 +35,18 @@ The adapter substitutes for API Gateway and omits JWT verification. No actual
 backend ingest/read, model service, installed CLI/desktop hook, or dashboard is
 exercised. All fixture state is temporary; only content-free evidence is written
 to `--out`. No real credentials or user transcripts are used.
+
+The stored transcript is also compared against fixture-authored expectations
+independent of staged bytes, including redaction canaries. With `--pipeline`,
+canonical messages and tool blocks must match the pre-implementation golden.
+
+Measure capture cost without network or credentials:
+
+```sh
+node plugins/skillmeter/integration/measure_capture.cjs
+```
+
+This creates and removes a synthetic 64 MiB source. It reports bytes read and
+warm-cache elapsed time for unchanged and appended captures. It is an observation,
+not a platform-independent performance threshold; prefix verification remains
+linear in source size.

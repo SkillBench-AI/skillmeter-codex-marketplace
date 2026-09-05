@@ -60,3 +60,12 @@ release, review whether any of those edits must be carried forward.
 Git HTTPS/SSH transport was unavailable. Connector-created remote commits are
 content-identical backups with different commit metadata; do not assume local
 and remote commit SHAs match. Compare tree SHAs before advancing remote branches.
+
+## Review and hardening checkpoint
+
+See `docs/codex-telemetry-review.md` for five reproduced defects and fixes,
+SIGKILL recovery tests, independent record/canonical expectations, and the measured
+64 MiB capture cost. Current plugin suite: 229 passed. Pipeline parser: 128 passed;
+analyzer: 308 passed. All original code/scoping boundaries remain preserved.
+Ready-for-review is recommended after updated CI; ready-to-merge/release is not
+claimed. Existing PRs stay draft until the user requests the status change.

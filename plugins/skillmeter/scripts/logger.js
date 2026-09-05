@@ -660,9 +660,8 @@ function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVE
 // ---------------------------------------------------------------------------
 // Transcript staging + upload
 //
-// The filesystem is the source of truth. We sanitize the transcript and write
-// it to TRANSCRIPTS_PENDING_DIR before any network call, so a failed upload
-// leaves a retryable snapshot on disk for the detached drain / retry monitor.
+// Immutable sanitized chunks and their cursor commit before any network call.
+// Legacy TRANSCRIPTS_PENDING_DIR snapshots remain available for selected recovery.
 // ---------------------------------------------------------------------------
 
 function transcriptScope(cwd) {
@@ -1040,9 +1039,7 @@ async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
   return "retry";
 }
 
-// Upload a staged transcript with poison protection. Transcripts aren't
-// timestamped in their names, so the max-age give-up uses the file mtime (which
-// is refreshed on every re-stage); permanent rejections are quarantined at once.
+// Compatibility entry point for callers holding a durable gzip chunk path.
 async function processPendingTranscript(pendingPath, deviceId, backendUrl, timeoutMs) {
   return uploadPendingTranscript(pendingPath, deviceId, backendUrl, timeoutMs);
 }
@@ -1064,17 +1061,16 @@ async function drainFailedLogs(backendUrl = getBackendUrl(process.cwd()), timeou
 // One bounded recovery attempt per sweep. The durable reset request survives
 // process death, a missing raw source, consent changes and network failures.
 async function drainTranscriptDirectory(dir, send) {
-  let count = await transcriptQueue.drainDirectory(dir, send);
+  await transcriptQueue.drainDirectory(dir, send);
   const request = path.join(dir, "reset-request.json"), cursorFile = path.join(dir, "cursor.json");
   if (fs.existsSync(request) && fs.existsSync(cursorFile)) {
     const cursor = JSON.parse(fs.readFileSync(cursorFile, "utf8"));
     const reset = JSON.parse(fs.readFileSync(request, "utf8"));
     if (reset.baseline >= cursor.baseline && cursor.source && scopeStillAllowed(cursor.scope)) {
       const staged = stageTranscriptForUpload(cursor.source, { cwd: cursor.scope.cwd, scope: cursor.scope });
-      if (staged) count += await transcriptQueue.drainDirectory(dir, send);
+      if (staged) await transcriptQueue.drainDirectory(dir, send);
     }
   }
-  return count;
 }
 
 async function drainPendingTranscripts(backendUrl, timeoutMs) {
@@ -1082,7 +1078,20 @@ async function drainPendingTranscripts(backendUrl, timeoutMs) {
   stageRequestedTranscripts();
   let count = 0;
   for (const dir of transcriptQueue.queueDirectories(TRANSCRIPT_CHUNKS_DIR)) {
-    count += await drainTranscriptDirectory(dir, (meta, body) => sendTranscriptChunk({ ...meta, queueDir: dir }, body, backendUrl, timeoutMs));
+    try {
+      // The retry monitor needs work found, including failed uploads. Counting
+      // only acknowledgments would make an outage look like an idle queue.
+      count += transcriptQueue.pendingFiles(dir).length;
+      await drainTranscriptDirectory(dir, (meta, body) => sendTranscriptChunk({ ...meta, queueDir: dir }, body, backendUrl, timeoutMs));
+    } catch {
+      console.error("[skillmeter] Transcript queue unavailable; retained while other queues continue");
+      try {
+        transcriptQueue.writeDurable(path.join(dir, "diagnostic.json"),
+          JSON.stringify({ code: "queue-unavailable", at: new Date().toISOString() }));
+      } catch {
+        console.error("[skillmeter] Could not persist transcript queue diagnostic");
+      }
+    }
   }
   return count;
 }

@@ -131,15 +131,12 @@ Privacy notes:
 ```text
 Codex lifecycle event
   -> ${PLUGIN_ROOT}/scripts/<event>.js
-  -> append NDJSON entry to ${PLUGIN_DATA}/logs/events.jsonl
-  -> lifecycle capture hint + Stop / SubagentStop / SessionEnd event sealing
-  -> detached drain (drain_once.js): sanitize complete raw lines, commit immutable
-     chunks + cursor, then gzip + POST
-     to the resolved backend (default https://api.meter.skillbench.ai/logs/codex)
-  -> SkillBench Codex collector lambda
-  -> OTel Collector
-  -> ClickHouse skillmeter.otel_logs
-  -> skillbench-pipelines AI-usage analyzer -> existing report store/dashboard
+  -> sanitized events.jsonl -> sealed event batch -> detached POST /logs/codex
+     -> collector -> OTel -> ClickHouse skillmeter.otel_logs
+  -> transcript capture hint -> detached staging of complete raw lines
+     -> sanitized immutable gzip chunks + durable cursor
+     -> POST /logs/codex/transcript -> collector -> S3 transcript object
+     -> skillbench-pipelines AI-usage analyzer -> existing report store/dashboard
 ```
 
 
@@ -199,9 +196,10 @@ the entire plugin data directory; drain with the repaired client after validatio
 or keep the data for explicit recovery. Do not relabel chunks as legacy snapshots
 or run an older cleanup routine against retained transcript queues.
 
-The source repair is not release validation. Multi-day storage continuity,
-recorded/live analyzer execution and correct-user dashboard evidence remain
-required. No release artifact or deployment is produced by these changes.
+The synthetic integration verifies multi-day storage continuity and the existing
+analyzer with scripted model responses. Real model execution, backend ingest/read,
+installed CLI/desktop behavior and correct-user dashboard evidence remain required.
+No release artifact or deployment is produced by these changes.
 
 
 ## Install
@@ -626,4 +624,3 @@ a repeated test loop) never stalls on a device-flow login. Without `read:org`,
 the silent path fails and the run falls back to the interactive device flow. Run
 `node "$PLUGIN_ROOT/bin/sk-refresh"` to force this path on demand and confirm the
 silent re-mint works in your environment.
-
