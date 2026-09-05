@@ -1,0 +1,38 @@
+"use strict";
+// Invoked only by the local contract runner, never through installed hooks.
+const fs=require("node:fs"),path=require("node:path"),zlib=require("node:zlib");
+const {execFileSync}=require("node:child_process");
+const root=process.argv[2],url=process.argv[3];
+if(!url.startsWith("http://127.0.0.1:")) throw Error("localhost collector required");
+process.env.HOME=root;process.env.USERPROFILE=root;process.env.PLUGIN_DATA=path.join(root,"data");
+delete process.env.SKILLMETER_REPO_SCOPE_ORGS;
+const repo=path.join(root,"repo");execFileSync("git",["init","--quiet",repo]);
+execFileSync("git",["-C",repo,"remote","add","origin","https://github.com/synthetic/repo.git"]);
+fs.mkdirSync(path.join(root,".skillbench"));
+const jwt="e30."+Buffer.from(JSON.stringify({sub:"synthetic-user",exp:4102444800})).toString("base64url")+".fixture";
+fs.writeFileSync(path.join(root,".skillbench/credentials.json"),JSON.stringify({device_id:"SYNTHETIC-DEVICE",hash_salt:"fixture-salt",license_jwt:jwt,allowed_github_orgs:["synthetic"]}));
+const logger=require("../scripts/logger"),queue=require("../scripts/lib/transcript-delta");
+const source=path.join(root,"synthetic.jsonl");
+const records=fs.readFileSync(path.join(__dirname,"../test/fixtures/codex-m0.jsonl"),"utf8").trim().split("\n").map(JSON.parse);
+for(const r of records) if(r.payload?.cwd) r.payload.cwd=repo;
+const repeated={type:"response_item",timestamp:"2026-09-04T12:00:02Z",payload:{type:"message",role:"user",content:[{type:"input_text",text:"A real repeated synthetic request"}]}};
+records.push(repeated,repeated);
+fs.writeFileSync(source,records.map(JSON.stringify).join("\n")+"\n");
+(async()=>{
+ const first=logger.stageTranscriptForUpload(source,{cwd:repo});if(!first)throw Error("no chunk");
+ const initial=zlib.gunzipSync(fs.readFileSync(first));
+ const attempts=[];const fetchOriginal=global.fetch;
+ global.fetch=async(u,o)=>{attempts.push({seq:o.headers["X-Chunk-Seq"],reset:o.headers["X-Chunk-Reset"],body:Buffer.from(o.body).toString("base64")});return fetchOriginal(u,o)};
+ const lost=await logger.processPendingTranscript(first,"SYNTHETIC-DEVICE",url,2000);
+ if(lost!=="retry"||!fs.existsSync(first))throw Error("response-loss retention failed");
+ const next={...repeated,payload:{...repeated.payload,role:"assistant",content:[{type:"output_text",text:"Synthetic continuation after lost response"}]}};
+ fs.appendFileSync(source,JSON.stringify(next)+"\n");
+ const second=logger.stageTranscriptForUpload(source,{cwd:repo});
+ const expected=Buffer.concat([initial,zlib.gunzipSync(fs.readFileSync(second))]);
+ await logger.processPendingTranscript(first,"SYNTHETIC-DEVICE",url,2000);
+ if(logger.listPendingTranscripts().length)throw Error("queue did not drain");
+ if(JSON.stringify(attempts[0])!==JSON.stringify(attempts[1]))throw Error("retry mutated request");
+ fs.writeFileSync(path.join(root,"expected.jsonl"),expected);
+ fs.writeFileSync(path.join(root,"attempts.json"),JSON.stringify(attempts.map(({seq,reset})=>({seq,reset}))));
+ console.log(JSON.stringify({records:expected.toString().trim().split("\n").length,attempts:attempts.map(a=>a.seq)}));
+})().catch(e=>{console.error(e);process.exitCode=1});

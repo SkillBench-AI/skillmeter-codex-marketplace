@@ -16,12 +16,14 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
-const { sanitizeTranscript, sanitizeEventData } = require("./sanitizer");
+const { sanitizeEventData } = require("./sanitizer");
 const credstore = require("./credstore");
+const transcriptQueue = require("./lib/transcript-delta");
 const {
   getEndpointFromToken,
   getEndpointFromTokenAllowExpired,
   isJwtExpired,
+  decodeJwtPayload,
 } = require("./lib/jwt");
 const { trySilentGhActivate, refreshExpiredJwt } = require("./lib/license-activation");
 const { resolveOrgScope } = require("./lib/org-scope");
@@ -48,6 +50,9 @@ const CODEX_SESSIONS_DIR = path.join(CODEX_HOME, "sessions");
 // before any network call so a failed upload can be retried from disk by the
 // detached drain / retry monitor instead of being lost when the hook exits.
 const TRANSCRIPTS_PENDING_DIR = path.join(LOG_DIR, "transcripts", "pending");
+
+const TRANSCRIPT_CHUNKS_DIR = path.join(LOG_DIR, "transcripts", "chunks-v1");
+const TRANSCRIPT_CAPTURES_DIR = path.join(LOG_DIR, "transcripts", "captures-v1");
 
 const AGENT_NAME = "codex";
 
@@ -660,132 +665,122 @@ function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVE
 // leaves a retryable snapshot on disk for the detached drain / retry monitor.
 // ---------------------------------------------------------------------------
 
-function stageTranscriptForUpload(transcriptPath) {
-  if (getTelemetryGloballyDisabled()) {
-    console.error(`[skillmeter] Transcript staging skipped (telemetry globally disabled)`);
-    return null;
-  }
+function transcriptScope(cwd) {
+  credstore.refreshFromDisk?.();
+  if (getTelemetryGloballyDisabled() || credstore.getSignedOut()) return null;
+  const token = getLicenseToken();
+  if (!token || isJwtExpired(token)) return null;
+  const decision = getRepoScopeDecision(cwd);
+  if (!decision.allowed || !resolveTelemetryGate(getTelemetryOptIn(cwd), true).capture) return null;
+  const salt = getOrCreateHashSalt(), deviceId = getDeviceId();
+  if (!salt || !deviceId) return null;
+  const claims = decodeJwtPayload(token);
+  const identity = claims.sub || claims.user_alt_id || claims.github_id;
+  // Tokens without a stable principal can stage, but rotation requires a new
+  // capture. Never deliver one principal's queued transcript as another user.
+  const owner = transcriptQueue.hmac(salt, JSON.stringify([claims.iss, claims.aud, identity || token]));
+  return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner };
+}
+function scopeStillAllowed(scope) {
+  const current = transcriptScope(scope.cwd);
+  return current && ["repoRoot", "org", "deviceId", "owner"].every(k => current[k] === scope[k]);
+}
+function stageTranscriptForUpload(transcriptPath, context = {}) {
+  const cwd = context.cwd || process.cwd();
+  const scope = transcriptScope(cwd);
+  if (!scope || (context.scope && !scopeStillAllowed(context.scope))) return null;
   if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
-
   try {
-    fs.mkdirSync(TRANSCRIPTS_PENDING_DIR, { recursive: true });
-  } catch (err) {
-    console.error(`[skillmeter] Transcript staging failed (mkdir): ${err.message}`);
-    return null;
-  }
-
-  const transcriptId = path.basename(transcriptPath);
-  const pendingPath = path.join(TRANSCRIPTS_PENDING_DIR, transcriptId);
-
-  try {
-    const hashSalt = getOrCreateHashSalt();
-    if (!hashSalt) {
-      console.error(`[skillmeter] Transcript staging failed: no hash salt`);
-      return null;
-    }
-    const sanitized = sanitizeTranscript(transcriptPath, hashSalt);
-    // Overwrite previous snapshots of the same transcript — a long session
-    // re-stages on every Stop and we always want the latest lines. Write
-    // atomically so a crash mid-stage can't leave a truncated transcript that a
-    // concurrent drain would then upload (and the server reject) as poison.
-    atomicWriteFileSync(pendingPath, sanitized);
-    return pendingPath;
-  } catch (err) {
-    console.error(`[skillmeter] Transcript staging failed: ${err.message}`);
+    const result = transcriptQueue.stage(TRANSCRIPT_CHUNKS_DIR, transcriptPath, scope, getOrCreateHashSalt(), {
+      authorizeRecord: record => {
+        if (!["session_meta", "turn_context"].includes(record.type) || !record.payload?.cwd) return true;
+        const sourceScope = transcriptScope(record.payload.cwd);
+        return sourceScope && sourceScope.repoRoot === scope.repoRoot && sourceScope.owner === scope.owner;
+      },
+    });
+    return result.files[0] || null;
+  } catch {
+    console.error("[skillmeter] Transcript staging failed; source/cursor retained, see queue diagnostic");
     return null;
   }
 }
 
-// Upload one staged transcript. Resolves to the same outcome vocabulary as
-// transferEventLog ("sent" / "poison" / "retry" / "skip"); on 2xx the pending
-// file is removed. processPendingTranscript uses the outcome to quarantine
-// permanently-rejected transcripts instead of retrying them indefinitely.
-function uploadPendingTranscript(
-  pendingPath,
-  deviceId,
-  backendUrl = getBackendUrl(),
-  timeoutMs = TRANSCRIPT_TIMEOUT
-) {
-  if (!pendingPath || !fs.existsSync(pendingPath)) return Promise.resolve("skip");
-  if (getTelemetryGloballyDisabled()) {
-    console.error(`[skillmeter] Transcript transfer skipped (telemetry globally disabled)`);
-    return Promise.resolve("skip");
-  }
-
-  const storedToken = getLicenseToken();
-  const initialToken = storedToken && !isJwtExpired(storedToken) ? storedToken : null;
-  if (storedToken && !initialToken) {
-    console.error(`[skillmeter] Transcript: dropping expired license JWT before send`);
-  }
-
-  const transcriptId = path.basename(pendingPath);
-  const compressed = zlib.gzipSync(fs.readFileSync(pendingPath));
-
-  const doPost = (token) =>
-    fetch(`${backendUrl}/transcript`, {
+async function sendTranscriptChunk(meta, compressed, backendUrl, timeoutMs) {
+  if (!scopeStillAllowed(meta.scope)) return "skip";
+  const token = getLicenseToken();
+  try {
+    const res = await fetch(`${backendUrl || getBackendUrl(meta.scope.cwd)}/transcript`, {
       method: "POST",
       headers: commonHeaders(token, {
-        "X-Device-ID": deviceId,
-        "X-Transcript-ID": transcriptId,
+        "X-Device-ID": meta.scope.deviceId,
+        "X-Transcript-ID": meta.transcriptId,
+        "X-Chunk-Seq": String(meta.seq),
+        "X-Chunk-Reset": String(meta.reset),
       }),
       body: compressed,
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(timeoutMs || TRANSCRIPT_TIMEOUT),
     });
-
-  const removePending = () => {
-    try { fs.unlinkSync(pendingPath); } catch {}
-  };
-
-  const classify = (status) =>
-    isPermanentHttpStatus(status) ? "poison" : "retry";
-
-  console.error(
-    `[skillmeter] Transferring transcript: ${transcriptId} (${compressed.length} bytes gzipped)`
-  );
-
-  return doPost(initialToken)
-    .then((res) => {
-      if (res.ok) {
-        console.error(`[skillmeter] Transcript transferred: ${transcriptId}`);
-        removePending();
-        return "sent";
-      }
-      if (initialToken && (res.status === 401 || res.status === 403)) {
-        console.error(
-          `[skillmeter] Transcript auth rejected (HTTP ${res.status}), clearing license and retrying without auth`
-        );
-        try { credstore.setLicenseToken(""); } catch {}
-        return doPost(null).then((res2) => {
-          if (res2.ok) {
-            console.error(`[skillmeter] Transcript transferred on retry: ${transcriptId}`);
-            removePending();
-            return "sent";
-          }
-          console.error(
-            `[skillmeter] Transcript retry failed: HTTP ${res2.status} — kept pending for retry`
-          );
-          return classify(res2.status);
-        });
-      }
-      console.error(
-        `[skillmeter] Transcript transfer failed: HTTP ${res.status} — kept pending for retry`
-      );
-      return classify(res.status);
-    })
-    .catch((err) => {
-      console.error(
-        `[skillmeter] Transcript transfer error: ${err.message} — kept pending for retry`
-      );
-      return "retry";
-    });
+    if (res.ok) return "sent";
+    // Auth rejection must not clear shared credentials or fall back to anonymous
+    // transcript upload. Keep this chunk and all later chunks for scoped retry.
+    if (meta.queueDir) transcriptQueue.writeDurable(path.join(meta.queueDir, "diagnostic.json"),
+      JSON.stringify({ code: `http-${res.status}`, seq: meta.seq, at: new Date().toISOString() }));
+    console.error(`[skillmeter] Transcript chunk ${meta.seq}: HTTP ${res.status}; retained`);
+    return (res.status === 401 || res.status === 403) ? "skip" : "retry";
+  } catch { return "retry"; }
 }
 
-// Backwards-compatible one-shot: stage then upload. Failed uploads remain in
-// the pending queue for the detached drain / retry monitor.
-function transferTranscript(transcriptPath, deviceId, backendUrl = getBackendUrl()) {
-  const pendingPath = stageTranscriptForUpload(transcriptPath);
-  if (!pendingPath) return Promise.resolve();
-  return uploadPendingTranscript(pendingPath, deviceId, backendUrl);
+async function uploadPendingTranscript(pendingPath, deviceId, backendUrl, timeoutMs) {
+  if (!pendingPath || !fs.existsSync(pendingPath)) return "skip";
+  if (!path.resolve(pendingPath).startsWith(TRANSCRIPT_CHUNKS_DIR + path.sep)) {
+    // Legacy snapshots have no sequence/scope journal. Preserve for selected
+    // recovery; never auto-migrate or quarantine historical data on startup.
+    return "skip";
+  }
+  const meta = transcriptQueue.metadata(pendingPath);
+  if (deviceId !== meta.scope.deviceId) return "skip";
+  const dir = path.dirname(path.dirname(pendingPath));
+  let outcome = "skip";
+  await transcriptQueue.drainDirectory(dir, async (chunk, body) => {
+    outcome = await sendTranscriptChunk({ ...chunk, queueDir: dir }, body, backendUrl, timeoutMs);
+    return outcome;
+  });
+  return outcome;
+}
+
+function transferTranscript(transcriptPath, deviceId, backendUrl, context = {}) {
+  const pending = stageTranscriptForUpload(transcriptPath, context);
+  return pending ? uploadPendingTranscript(pending, deviceId, backendUrl) : Promise.resolve("skip");
+}
+
+// Small durable capture hints keep all raw reading/gzip work off hook deadlines.
+// Only currently authorized lifecycle paths enter this index; it does not scan
+// historical sessions. Rechecks run again at capture and at every chunk send.
+function requestTranscriptCapture(input, options = {}) {
+  const cwd = input?.cwd || process.cwd(), scope = transcriptScope(cwd);
+  if (!scope) return 0;
+  fs.mkdirSync(TRANSCRIPT_CAPTURES_DIR, { recursive: true, mode: 0o700 });
+  const salt = getOrCreateHashSalt();
+  const cacheKey = transcriptQueue.hmac(salt, String(input.session_id || "unknown"));
+  const cachePath = path.join(TRANSCRIPT_CAPTURES_DIR, cacheKey + ".json");
+  let paths = collectTranscriptPaths(input, { ...options, discover: options.discover !== false });
+  if (!paths.length && fs.existsSync(cachePath)) {
+    const cached = JSON.parse(fs.readFileSync(cachePath, "utf8"));
+    if (scopeStillAllowed(cached.scope)) paths = cached.paths;
+  }
+  if (!paths.length) return 0;
+  transcriptQueue.writeDurable(cachePath, JSON.stringify({ scope, paths }));
+  return paths.length;
+}
+function stageRequestedTranscripts() {
+  if (!fs.existsSync(TRANSCRIPT_CAPTURES_DIR)) return;
+  for (const name of fs.readdirSync(TRANSCRIPT_CAPTURES_DIR).filter(n => /^[a-f0-9]{64}\.json$/.test(n))) {
+    try {
+      const capture = JSON.parse(fs.readFileSync(path.join(TRANSCRIPT_CAPTURES_DIR, name), "utf8"));
+      if (!scopeStillAllowed(capture.scope)) continue;
+      for (const source of capture.paths) stageTranscriptForUpload(source, { cwd: capture.scope.cwd, scope: capture.scope });
+    } catch { console.error("[skillmeter] Capture hint unavailable; retained for retry"); }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -878,20 +873,7 @@ function listSealedEventLogs() {
 }
 
 function listPendingTranscripts() {
-  if (!fs.existsSync(TRANSCRIPTS_PENDING_DIR)) return [];
-  try {
-    return fs.readdirSync(TRANSCRIPTS_PENDING_DIR)
-      // Skip in-flight atomic-write temp files (.<name>.tmp-…) and meta
-      // sidecars so a concurrent drain never tries to upload a half-written
-      // snapshot.
-      .filter((file) => !file.startsWith("."))
-      .map((file) => path.join(TRANSCRIPTS_PENDING_DIR, file))
-      .filter((filePath) => {
-        try { return fs.statSync(filePath).isFile(); } catch { return false; }
-      });
-  } catch {
-    return [];
-  }
+  return transcriptQueue.queueDirectories(TRANSCRIPT_CHUNKS_DIR).flatMap(transcriptQueue.pendingFiles);
 }
 
 // ---------------------------------------------------------------------------
@@ -1060,24 +1042,7 @@ async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
 // timestamped in their names, so the max-age give-up uses the file mtime (which
 // is refreshed on every re-stage); permanent rejections are quarantined at once.
 async function processPendingTranscript(pendingPath, deviceId, backendUrl, timeoutMs) {
-  if (!fs.existsSync(pendingPath)) return "skip";
-  if (getTelemetryGloballyDisabled()) {
-    console.error(`[skillmeter] Transcript processing skipped (telemetry globally disabled)`);
-    return "skip";
-  }
-
-  let mtimeMs = Date.now();
-  try { mtimeMs = fs.statSync(pendingPath).mtimeMs; } catch {}
-  if (Date.now() - mtimeMs > BATCH_MAX_AGE_MS) {
-    quarantineFile(pendingPath, `transcript exceeded max age (${Math.round(BATCH_MAX_AGE_MS / 86400000)}d)`);
-    return "poison";
-  }
-
-  const outcome = await uploadPendingTranscript(pendingPath, deviceId, backendUrl, timeoutMs);
-  if (outcome === "poison") {
-    quarantineFile(pendingPath, "transcript rejected by server (permanent)");
-  }
-  return outcome;
+  return uploadPendingTranscript(pendingPath, deviceId, backendUrl, timeoutMs);
 }
 
 async function drainFailedLogs(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
@@ -1094,22 +1059,14 @@ async function drainFailedLogs(backendUrl = getBackendUrl(process.cwd()), timeou
   return files.length;
 }
 
-async function drainPendingTranscripts(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
-  if (getTelemetryGloballyDisabled()) {
-    console.error(`[skillmeter] Transcript drain skipped (telemetry globally disabled)`);
-    return 0;
+async function drainPendingTranscripts(backendUrl, timeoutMs) {
+  if (getTelemetryGloballyDisabled() || credstore.getSignedOut()) return 0;
+  stageRequestedTranscripts();
+  let count = 0;
+  for (const dir of transcriptQueue.queueDirectories(TRANSCRIPT_CHUNKS_DIR)) {
+    count += await transcriptQueue.drainDirectory(dir, (meta, body) => sendTranscriptChunk({ ...meta, queueDir: dir }, body, backendUrl, timeoutMs));
   }
-  const files = listPendingTranscripts();
-  if (files.length === 0) return 0;
-
-  const deviceId = getDeviceId();
-  if (!deviceId) return 0;
-
-  console.error(`[skillmeter] Draining ${files.length} pending transcript(s)`);
-  await Promise.allSettled(
-    files.map((filePath) => processPendingTranscript(filePath, deviceId, backendUrl, timeoutMs))
-  );
-  return files.length;
+  return count;
 }
 
 /**
@@ -1122,7 +1079,7 @@ async function drainQueuesOnce(backendUrl = getBackendUrl(process.cwd()), timeou
     return 0;
   }
   const logs = await drainFailedLogs(backendUrl, timeoutMs);
-  const transcripts = await drainPendingTranscripts(backendUrl, timeoutMs);
+  const transcripts = await drainPendingTranscripts(undefined, timeoutMs);
   return logs + transcripts;
 }
 
@@ -1315,18 +1272,13 @@ function cleanupStaleFiles() {
   if (fs.existsSync(POISON_DIR)) {
     try {
       for (const f of fs.readdirSync(POISON_DIR)) {
-        candidates.push(path.join(POISON_DIR, f));
+        if (/^events\.jsonl\.\d+(?:\.meta)?$/.test(f)) candidates.push(path.join(POISON_DIR, f));
       }
     } catch {}
   }
 
-  if (fs.existsSync(TRANSCRIPTS_PENDING_DIR)) {
-    try {
-      for (const f of fs.readdirSync(TRANSCRIPTS_PENDING_DIR)) {
-        candidates.push(path.join(TRANSCRIPTS_PENDING_DIR, f));
-      }
-    } catch {}
-  }
+  // Legacy transcript snapshots/poison and new chunks require selected recovery.
+  // Never expire the only retained copy automatically during this migration.
 
   let deleted = 0;
   for (const p of candidates) {
@@ -1430,7 +1382,7 @@ function collectTranscriptPaths(input, options = {}) {
     add(input.agent_transcript_path);
     add(input.transcript_path);
 
-    if (paths.length === 0) {
+    if (paths.length === 0 && options.discover !== false) {
       add(findCodexTranscriptBySessionId(input.session_id, options.sessionsDir));
     }
   }
@@ -1446,15 +1398,8 @@ function collectTranscriptPaths(input, options = {}) {
 function sealFinalSessionArtifacts(input) {
   const sealed = sealEventLog();
 
-  const transcriptPaths = collectTranscriptPaths(input);
-  const staged = transcriptPaths
-    .map((transcriptPath) => stageTranscriptForUpload(transcriptPath))
-    .filter(Boolean);
-  if (staged.length === 0) {
-    console.error(`[skillmeter] No transcript to stage`);
-  }
-
-  if (sealed || staged.length > 0) spawnDetachedDrain();
+  const captured = requestTranscriptCapture(input, { discover: false });
+  if (sealed || captured) spawnDetachedDrain();
 }
 
 function sealEventLogAndTriggerDrain() {
@@ -1751,6 +1696,12 @@ async function runHook(eventName, buildData, options = {}) {
     `[skillmeter] ${eventName}: logged (session=${String(sessionId).slice(0, 8)}…)`
   );
 
+  try {
+    if (requestTranscriptCapture(input, { discover: !["SessionEnd", "Interrupt", "Stop", "SubagentStop"].includes(eventName) })) {
+      spawnDetachedDrain();
+    }
+  } catch { console.error("[skillmeter] Capture hint failed; next lifecycle event can retry"); }
+
   if (options.afterLog) {
     const result = options.afterLog(input, deviceId);
     if (result && typeof result.then === "function") {
@@ -1791,6 +1742,10 @@ module.exports = {
   findCodexTranscriptBySessionId,
   collectTranscriptPaths,
   stageTranscriptForUpload,
+  requestTranscriptCapture,
+  stageRequestedTranscripts,
+  TRANSCRIPT_CHUNKS_DIR,
+  TRANSCRIPT_CAPTURES_DIR,
   uploadPendingTranscript,
   // Durable queue: listing + draining
   listSealedEventLogs,

@@ -31,22 +31,18 @@ The plugin wires a handler into every Codex lifecycle hook that exists today:
 | `SubagentStart` | A subagent thread starts | `agent_id`, `agent_type` |
 | `SubagentStop` | A subagent thread stops | `agent_id`, `agent_type`, `agent_transcript_path`, `stop_hook_active`, sanitized `last_assistant_message` |
 | `Stop` | A turn stops | `stop_hook_active`, sanitized `last_assistant_message` |
+| `SessionEnd` | The main session ends | `reason`; bounded capture hint |
+| `Interrupt` | An active main-thread turn is interrupted | `turn_id`; bounded capture hint |
 
 
 Every event record also carries `session_id`, `device_id`, `agent: "codex"`,
 the current `model` and `turn_id`, hashed `cwd`/`repo_root`, and the
 `repo_scope` decision for the current project.
 
-These ten events are the **complete** post-GA Codex lifecycle hook catalog
-([OpenAI Codex hooks docs](https://developers.openai.com/codex/hooks)), so the
-plugin handles every hook Codex can emit. The Claude Code plugin additionally
-ships `Notification`, `SessionEnd`, `PermissionDenied`, `TaskCreated` /
-`TaskCompleted`, and `WorktreeCreate` / `WorktreeRemove` handlers, but **none of
-those events exist in Codex today** — `SessionEnd` is only an open upstream
-request ([openai/codex#20603](https://github.com/openai/codex/issues/20603)) and
-the rest are Claude-only. Wiring them would be dead config, so they are
-deliberately omitted; `test/hook-surface.test.js` guards this contract so the
-plugin picks any new event up the moment Codex ships it.
+These twelve events match the [official hook catalog](https://learn.chatgpt.com/docs/hooks)
+verified on 2026-09-05. `SessionEnd` and `Interrupt` have a three-second maximum.
+Their handlers save small capture hints and detach the upload work. Actual CLI
+and desktop install/canary validation remains required before release.
 
 
 ## Harness metadata
@@ -136,13 +132,14 @@ Privacy notes:
 Codex lifecycle event
   -> ${PLUGIN_ROOT}/scripts/<event>.js
   -> append NDJSON entry to ${PLUGIN_DATA}/logs/events.jsonl
-  -> Stop / SubagentStop seal events.jsonl -> events.jsonl.<ts> and stage the
-     transcript, then spawn a detached drain (drain_once.js) that gzips + POSTs
+  -> lifecycle capture hint + Stop / SubagentStop / SessionEnd event sealing
+  -> detached drain (drain_once.js): sanitize complete raw lines, commit immutable
+     chunks + cursor, then gzip + POST
      to the resolved backend (default https://api.meter.skillbench.ai/logs/codex)
   -> SkillBench Codex collector lambda
   -> OTel Collector
   -> ClickHouse skillmeter.otel_logs
-  -> backend-analyzer
+  -> skillbench-pipelines AI-usage analyzer -> existing report store/dashboard
 ```
 
 
@@ -154,46 +151,57 @@ from Claude Code while sharing the same `otel_logs` table.
 
 ### Durable uploads, background flush, and retry
 
-The on-disk queues are the source of truth, so hooks never block on the network
-and nothing is lost if an upload fails or a session crashes:
+Lifecycle hooks persist small capture hints under `logs/transcripts/captures-v1/`.
+The detached drain stages sanitized immutable gzip chunks in
+`logs/transcripts/chunks-v1/{source-key}/batch-*/`. Each transaction has a manifest,
+chunk hashes, and a ready marker. The cursor is persisted only after every chunk
+is durable; restart recovery finishes published transactions before sending.
 
-- **Sealing.** `Stop` / `SubagentStop` rename the active `events.jsonl` to a
-  sealed batch `events.jsonl.<timestamp>` and write a sanitized transcript
-  snapshot to `logs/transcripts/pending/`. No network call happens inline.
-- **Background flush (one-shot drain).** Those hooks then spawn a detached
-  `drain_once.js` that uploads every sealed log and pending transcript. On
-  success a log is renamed to `.sent` and a transcript is deleted; on failure
-  the file stays for the next attempt. A short-lived lock
-  (`.drain-once.lock`) coalesces redundant spawns.
-- **Retry monitor.** `SessionStart` launches a long-running, singleton
-  `monitors/retry_daemon.js` that re-drains the queues on an interval, so a
-  backend outage that clears mid-session still uploads without waiting for the
-  next session. It is guarded by a heartbeat lock (`.retry-daemon.lock`) and
-  self-terminates on idle or after a max lifetime (Codex has no managed monitor
-  lifecycle to stop it).
-- **Crash recovery.** `SessionStart` recovers an un-rotated `events.jsonl` left
-  behind by a crashed/abandoned session (one idle beyond
-  `SKILLMETER_ACTIVE_LOG_STALE_MS`) by sealing it into the drain queue.
-- **Atomic writes.** Event records are appended in a single `O_APPEND` write and
-  transcript snapshots / salvaged batches are written via a temp file + rename,
-  so a concurrent writer or a crash mid-write can't leave interleaved or
-  half-written ("invalid") lines that would later poison an upload.
-- **Poison-batch handling.** A batch the backend permanently rejects (a 4xx
-  other than 401/403/408/429) is never retried forever. The drain first attempts
-  a *partial-rejection salvage* — it re-parses the batch line by line, drops only
-  the malformed records, and retries the cleaned batch once. If that still fails
-  (or the payload was already well-formed) the batch is *quarantined*: moved to
-  `logs/poison/` so it stops consuming retry bandwidth while remaining available
-  for forensics.
-- **Retry & age limits.** Transient failures (5xx / 408 / 429 / network) are
-  retried with the attempt count tracked in a `.meta` sidecar; a batch is
-  quarantined once it exceeds `SKILLMETER_MAX_BATCH_RETRIES` attempts or its seal
-  time is older than `SKILLMETER_BATCH_MAX_AGE_MS`, whichever comes first.
-- **Cleanup.** Uploaded `.sent` logs, quarantined poison batches, orphaned
-  `.meta`/temp files, and staged transcripts older than 30 days are pruned so
-  disk usage stays bounded even if ingest is unavailable for weeks.
+The Codex cursor records complete raw byte position, prefix HMAC, file identity,
+sequence and reset generation. Partial final lines remain eligible on the next
+capture. Rewrites and replacements start a higher reset baseline; every later
+chunk carries that baseline so delayed old-generation appends cannot reappear.
+Records receive a transport UUID derived from raw position/content before
+sanitization, preserving separate records that redact to the same content.
 
-Hook failures never block your Codex session.
+A per-source PID lock serializes staging and draining, including concurrent hook
+processes. Live locks are never stolen by age. Retries retain the exact gzip body,
+sequence and reset header. Only acknowledged chunks are removed. Chunk splitting
+uses actual gzip/base64 size plus a 128 KiB envelope reserve, capped at 5 MiB;
+individual decoded records must stay below the collector's 32 MiB default.
+Oversized or malformed complete records preserve the cursor/source and save a
+content-free diagnostic. Deployment-specific gateway limits still need verification.
+
+Capture and each upload recheck signout, global disable, current user/device,
+allowed orgs and project consent. Source `session_meta`/`turn_context` cwd values
+must remain in the authorized repository. Queues cannot move between principals.
+A rejected/expired token retains the queue; transcript upload does not clear shared
+credentials or retry anonymously. Existing event-log handling is unchanged.
+
+`SessionStart` still recovers/seals orphaned event logs and starts the bounded
+retry monitor. Event `.sent`/poison files retain their existing cleanup policy.
+Legacy transcript pending/poison files are preserved and excluded from automatic
+upload and expiry. New transcript chunks are also retained on failure.
+
+For a content-free, read-only recovery inventory:
+
+```bash
+PLUGIN_DATA=/path/to/plugin-data node scripts/transcript_inventory.js
+```
+
+This reports counts and known diagnostics; old quarantine reasons may be unknown
+because the former client did not persist them. It never replays anything.
+Recovery must select still-authorized source files and pass them through the
+current sanitizer and scope gates. Do not bulk-replay historical queues.
+
+Rollback: the old client cannot read `chunks-v1`. Pause telemetry first and retain
+the entire plugin data directory; drain with the repaired client after validation,
+or keep the data for explicit recovery. Do not relabel chunks as legacy snapshots
+or run an older cleanup routine against retained transcript queues.
+
+The source repair is not release validation. Multi-day storage continuity,
+recorded/live analyzer execution and correct-user dashboard evidence remain
+required. No release artifact or deployment is produced by these changes.
 
 
 ## Install

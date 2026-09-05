@@ -11,6 +11,10 @@ const path = require("node:path");
 const zlib = require("node:zlib");
 
 const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "skillbench-m0-wire-"));
+const { execFileSync } = require("node:child_process");
+execFileSync("git", ["init", "--quiet", dataDir]);
+execFileSync("git", ["-C", dataDir, "remote", "add", "origin", "https://github.com/synthetic/repo.git"]);
+const token = "e30." + Buffer.from(JSON.stringify({ sub: "synthetic-user", exp: 4102444800 })).toString("base64url") + ".fixture";
 const previousData = process.env.PLUGIN_DATA;
 process.env.PLUGIN_DATA = dataDir;
 const credentialModule = require.resolve("../scripts/credstore");
@@ -22,7 +26,9 @@ require.cache[credentialModule] = {
   exports: {
     getDeviceId: () => "M0-SYNTHETIC-DEVICE",
     getOrCreateHashSalt: () => "m0-fixture-only-salt",
-    getLicenseToken: () => null,
+    getLicenseToken: () => token,
+    getSignedOut: () => false,
+    getAllowedGitHubOrgs: () => ["synthetic"],
     getTelemetryDisabled: () => false,
     setLicenseToken: () => assert.fail("Fixture must never change authentication"),
   },
@@ -39,9 +45,7 @@ after(() => {
   fs.rmSync(dataDir, { recursive: true, force: true });
 });
 
-test("M0: real staged request satisfies the collector chunk-header contract", {
-  todo: process.env.SKILLBENCH_M0_STRICT === "1" ? false : "M1: legacy snapshots omit X-Chunk-Seq",
-}, async (t) => {
+test("real staged request satisfies the collector chunk-header contract", async (t) => {
   let request;
   // Mirrors only the missing-header rule in collector processor.go:121-124.
   // This is not execution of the Go handler or an end-to-end acceptance test.
@@ -50,10 +54,13 @@ test("M0: real staged request satisfies the collector chunk-header contract", {
     const headers = new Headers(options.headers);
     return { ok: headers.has("x-chunk-seq"), status: headers.has("x-chunk-seq") ? 200 : 400 };
   };
-  const fixture = path.join(__dirname, "fixtures", "codex-m0.jsonl");
-  const pending = logger.stageTranscriptForUpload(fixture);
+  const fixture = path.join(dataDir, "codex-m0.jsonl");
+  const fixtureRecords = fs.readFileSync(path.join(__dirname, "fixtures", "codex-m0.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  for (const record of fixtureRecords) if (record.payload?.cwd) record.payload.cwd = dataDir;
+  fs.writeFileSync(fixture, fixtureRecords.map(JSON.stringify).join("\n") + "\n");
+  const pending = logger.stageTranscriptForUpload(fixture, { cwd: dataDir });
   assert.ok(pending, "actual sanitizer and staging must produce a pending file");
-  const staged = fs.readFileSync(pending);
+  const staged = zlib.gunzipSync(fs.readFileSync(pending));
   const outcome = await logger.processPendingTranscript(
     pending, "M0-SYNTHETIC-DEVICE", "https://collector.invalid/logs/codex", 1000,
   );
@@ -65,7 +72,7 @@ test("M0: real staged request satisfies the collector chunk-header contract", {
   const headers = new Headers(request.headers);
   assert.equal(headers.get("x-device-id"), "M0-SYNTHETIC-DEVICE");
   assert.equal(headers.get("x-transcript-id"), "codex-m0.jsonl");
-  assert.equal(headers.get("authorization"), null);
+  assert.equal(headers.get("authorization"), `Bearer ${token}`);
   const quarantined = fs.existsSync(path.join(logger.POISON_DIR, path.basename(pending)));
   t.diagnostic(JSON.stringify({ chunkSeq: headers.get("x-chunk-seq"), outcome, quarantined }));
   assert.match(headers.get("x-chunk-seq") || "", /^\d+$/, "collector requires X-Chunk-Seq");

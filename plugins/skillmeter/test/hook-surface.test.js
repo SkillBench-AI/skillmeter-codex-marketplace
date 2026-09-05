@@ -1,28 +1,7 @@
 "use strict";
 
-/**
- * Hook-surface parity guard (SBEE-159).
- *
- * The Codex epic flagged that SkillMeter's hook surface is smaller than the
- * Claude plugin's (no Notification, SessionEnd, task/worktree/permission-denied
- * events) and asked us to "verify against the current Codex hook catalog and
- * wire any that do" exist.
- *
- * Verification result (OpenAI Codex hooks docs — https://developers.openai.com/codex/hooks):
- * the post-GA Codex CLI exposes exactly TEN lifecycle hook events. There is no
- * SessionEnd hook (only an open upstream request — openai/codex#20603), and no
- * Notification / PermissionDenied / TaskCreated / TaskCompleted / WorktreeCreate
- * / WorktreeRemove / TeammateIdle event — those are Claude-Code-only. So there is
- * nothing additional to wire; the correct state is "all ten Codex events are
- * handled".
- *
- * This test pins that contract: it fails if hooks.json drifts away from the
- * full, verified Codex catalog (an event is dropped, a non-existent event is
- * added, or a script path goes missing), so the parity claim stays honest as
- * Codex evolves.
- *
- * Run with:  node --test plugins/skillmeter/test/hook-surface.test.js
- */
+// Catalog verified 2026-09-05 against https://learn.chatgpt.com/docs/hooks.
+// SessionEnd and Interrupt are now supported with a three-second maximum.
 
 const fs = require("fs");
 const path = require("path");
@@ -32,9 +11,11 @@ const assert = require("node:assert/strict");
 
 const PLUGIN_DIR = path.join(__dirname, "..");
 
-// The authoritative, verified Codex hook catalog (10 events).
+// The authoritative, verified Codex hook catalog (12 events).
 const CODEX_HOOK_EVENTS = [
   "SessionStart",
+  "SessionEnd",
+  "Interrupt",
   "UserPromptSubmit",
   "PreToolUse",
   "PermissionRequest",
@@ -51,7 +32,6 @@ const CODEX_HOOK_EVENTS = [
 // stay out of hooks.json until Codex actually ships them.
 const NON_CODEX_EVENTS = [
   "Notification",
-  "SessionEnd",
   "PermissionDenied",
   "TaskCreated",
   "TaskCompleted",
@@ -71,7 +51,7 @@ function loadHooks() {
   return JSON.parse(raw).hooks;
 }
 
-test("hooks.json wires exactly the verified Codex hook catalog (all 10 events)", () => {
+test("hooks.json wires exactly the verified Codex hook catalog (all 12 events)", () => {
   const wired = Object.keys(loadHooks()).sort();
   assert.deepEqual(
     wired,
@@ -106,5 +86,11 @@ test("every wired hook points at an existing handler script", () => {
         );
       }
     }
+  }
+});
+
+test("shutdown hooks use the documented three-second maximum", () => {
+  for (const event of ["SessionEnd", "Interrupt"]) {
+    assert.equal(loadHooks()[event][0].hooks[0].timeout, 3);
   }
 });
