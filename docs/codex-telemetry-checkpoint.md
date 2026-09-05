@@ -17,25 +17,40 @@ read-only legacy queue inventory. Nested Codex metadata cwd is HMAC-hashed.
 No auth configuration changes, anonymous transcript fallback, historical replay,
 release/version bump, deployment, merge, or schedule activation occurred.
 
-Evidence: `npm run check` passes 217 tests (no skips/TODOs), including the original
+Evidence: `npm run check` passes 222 tests (no skips/TODOs), including the original
 missing-header fixture, interrupted transactions, restart, competing drains,
 response loss, repeated records/redaction collisions, rewrites, scope/user/device
 changes, expired/rejected auth, legacy preservation and sub-three-second shutdown.
 Existing event/auth tests remain green. Node 22.22.3, Go 1.25.5, Python 3.14.6.
 
-The optional `plugins/skillmeter/integration/run_contract.py` drives the actual
-Node uploader, Go EventProcessor/PromptStore, HTTP S3 emulator, and shared parser.
-It passed: request attempts seq/reset `1/1, 1/1, 2/1`, exact 11 stored records,
-one canonical Codex session with five messages, both repeated messages retained.
-The helper intentionally loses a response after the S3 conditional write.
-It substitutes for API Gateway and does not verify deployed JWT authentication.
+The optional `plugins/skillmeter/integration/run_contract.py` now exercises the
+actual Node uploader, Go APIHandler/EventProcessor/PromptStore, HTTP S3 emulator,
+shared parser and existing analyzer with scripted LLM responses. With the pipeline
+substantive fixture: exact 40 stored records, one canonical session, 21 messages,
+legitimate repeats retained, and an ingest-schema-valid versioned report using the
+default ten-block minimum. API Gateway/JWT verification is outside this harness.
 
-Remaining: multi-day resume/storage continuity and duplicate-window analysis,
-long-fixture analyzer/report contract, actual backend ingest/read and dashboard,
-CLI/desktop install/upgrade/rollback smoke, GStack review and release preparation.
-This source checkpoint is not M4 or release completion. Never claim a real report
-until one controlled in-scope Codex session appears for the intended user through
-the existing dashboard. Keep PRs draft and unmerged.
+Multi-day fix: opt in with `X-Transcript-Protocol: codex-chunks-v1`. The compatible
+collector change returns 409 `transcript-baseline-missing` when its today/yesterday
+lookup lacks the requested generation. The client durably requests a higher
+sequence full reset, rechecks source scope/consent, and retains superseded queue
+files without sending them. Tests cover midnight append, three-day resume,
+response loss, missing source, consent revocation and stale generation replay.
+Deploy the compatible collector fix before installing this client. The old
+collector ignores the opt-in header and cannot protect multi-day continuity.
+
+Queue ownership binds tenant `sub` AND GitHub/user identity. `sub` alone names the
+tenant and cannot distinguish users. Tokens without a user claim fall back to
+token identity and require a new capture after rotation. Pre-release cursors
+created with the earlier owner formula stay preserved and fail closed; do not
+manually overwrite their owner fields to migrate them.
+
+Remaining: actual backend ingest/read and correct-user dashboard proof, scoped
+model/auth/deployment access, CLI/desktop install/upgrade/rollback smoke, GStack
+release review and versioned artifact preparation. Original auth/org edits need
+explicit release reconciliation. No release-ready or end-to-end claim is made.
+Keep all repair PRs draft and unmerged. Upload-day window selection remains the
+existing policy; only duplicate Codex snapshots within one window are collapsed.
 
 Runtime dependencies were installed only in the workspace. Original dirty
 checkouts, including local Codex auth/org edits, remain separate and must not be

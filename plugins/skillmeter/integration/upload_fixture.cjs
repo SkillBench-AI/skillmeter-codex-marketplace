@@ -6,23 +6,46 @@ const root=process.argv[2],url=process.argv[3];
 if(!url.startsWith("http://127.0.0.1:")) throw Error("localhost collector required");
 process.env.HOME=root;process.env.USERPROFILE=root;process.env.PLUGIN_DATA=path.join(root,"data");
 delete process.env.SKILLMETER_REPO_SCOPE_ORGS;
-const repo=path.join(root,"repo");execFileSync("git",["init","--quiet",repo]);
+const appendMode=process.argv[4]==="append";
+const repo=path.join(root,"repo");
+if(!appendMode){
+execFileSync("git",["init","--quiet",repo]);
 execFileSync("git",["-C",repo,"remote","add","origin","https://github.com/synthetic/repo.git"]);
 fs.mkdirSync(path.join(root,".skillbench"));
 const jwt="e30."+Buffer.from(JSON.stringify({sub:"synthetic-user",exp:4102444800})).toString("base64url")+".fixture";
 fs.writeFileSync(path.join(root,".skillbench/credentials.json"),JSON.stringify({device_id:"SYNTHETIC-DEVICE",hash_salt:"fixture-salt",license_jwt:jwt,allowed_github_orgs:["synthetic"]}));
+}
 const logger=require("../scripts/logger"),queue=require("../scripts/lib/transcript-delta");
 const source=path.join(root,"synthetic.jsonl");
-const records=fs.readFileSync(path.join(__dirname,"../test/fixtures/codex-m0.jsonl"),"utf8").trim().split("\n").map(JSON.parse);
-for(const r of records) if(r.payload?.cwd) r.payload.cwd=repo;
 const repeated={type:"response_item",timestamp:"2026-09-04T12:00:02Z",payload:{type:"message",role:"user",content:[{type:"input_text",text:"A real repeated synthetic request"}]}};
+if(!appendMode){
+const records=fs.readFileSync(process.argv[4] || path.join(__dirname,"../test/fixtures/codex-m0.jsonl"),"utf8").trim().split("\n").map(JSON.parse);
+for(const r of records) if(r.payload?.cwd) r.payload.cwd=repo;
+
 records.push(repeated,repeated);
 fs.writeFileSync(source,records.map(JSON.stringify).join("\n")+"\n");
+}
 (async()=>{
+ if(appendMode){
+   fs.appendFileSync(source,JSON.stringify({...repeated,payload:{...repeated.payload,content:[{type:"input_text",text:"Synthetic multi-day continuation"}]}})+"\n");
+   const file=logger.stageTranscriptForUpload(source,{cwd:repo});if(!file)throw Error("append did not stage");
+   let expected=fs.readFileSync(path.join(root,"expected.jsonl"));const attempts=[];
+   const original=global.fetch;
+   global.fetch=async(u,o)=>{
+     const response=await original(u,o);const seq=o.headers["X-Chunk-Seq"],reset=o.headers["X-Chunk-Reset"];
+     attempts.push({seq,reset,status:response.status});
+     if(response.ok){const bytes=zlib.gunzipSync(o.body);expected=seq===reset?bytes:Buffer.concat([expected,bytes]);}
+     return response;
+   };
+   await logger.processPendingTranscript(file,"SYNTHETIC-DEVICE",url,2000);
+   if(logger.listPendingTranscripts().length)throw Error("resume queue did not drain");
+   fs.writeFileSync(path.join(root,"expected.jsonl"),expected);
+   console.log(JSON.stringify({attempts}));return;
+ }
  const first=logger.stageTranscriptForUpload(source,{cwd:repo});if(!first)throw Error("no chunk");
  const initial=zlib.gunzipSync(fs.readFileSync(first));
  const attempts=[];const fetchOriginal=global.fetch;
- global.fetch=async(u,o)=>{attempts.push({seq:o.headers["X-Chunk-Seq"],reset:o.headers["X-Chunk-Reset"],body:Buffer.from(o.body).toString("base64")});return fetchOriginal(u,o)};
+ global.fetch=async(u,o)=>{attempts.push({headers:o.headers,seq:o.headers["X-Chunk-Seq"],reset:o.headers["X-Chunk-Reset"],body:Buffer.from(o.body).toString("base64")});return fetchOriginal(u,o)};
  const lost=await logger.processPendingTranscript(first,"SYNTHETIC-DEVICE",url,2000);
  if(lost!=="retry"||!fs.existsSync(first))throw Error("response-loss retention failed");
  const next={...repeated,payload:{...repeated.payload,role:"assistant",content:[{type:"output_text",text:"Synthetic continuation after lost response"}]}};
@@ -33,6 +56,7 @@ fs.writeFileSync(source,records.map(JSON.stringify).join("\n")+"\n");
  if(logger.listPendingTranscripts().length)throw Error("queue did not drain");
  if(JSON.stringify(attempts[0])!==JSON.stringify(attempts[1]))throw Error("retry mutated request");
  fs.writeFileSync(path.join(root,"expected.jsonl"),expected);
+ fs.writeFileSync(path.join(root,"stale-request.json"),JSON.stringify(attempts.at(-1)));
  fs.writeFileSync(path.join(root,"attempts.json"),JSON.stringify(attempts.map(({seq,reset})=>({seq,reset}))));
  console.log(JSON.stringify({records:expected.toString().trim().split("\n").length,attempts:attempts.map(a=>a.seq)}));
 })().catch(e=>{console.error(e);process.exitCode=1});

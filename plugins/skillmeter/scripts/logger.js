@@ -675,10 +675,10 @@ function transcriptScope(cwd) {
   const salt = getOrCreateHashSalt(), deviceId = getDeviceId();
   if (!salt || !deviceId) return null;
   const claims = decodeJwtPayload(token);
-  const identity = claims.sub || claims.user_alt_id || claims.github_id;
+  const identity = claims.github_id || claims.user_alt_id;
   // Tokens without a stable principal can stage, but rotation requires a new
   // capture. Never deliver one principal's queued transcript as another user.
-  const owner = transcriptQueue.hmac(salt, JSON.stringify([claims.iss, claims.aud, identity || token]));
+  const owner = transcriptQueue.hmac(salt, JSON.stringify([claims.iss, claims.aud, claims.sub, identity || token]));
   return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner };
 }
 function scopeStillAllowed(scope) {
@@ -714,6 +714,7 @@ async function sendTranscriptChunk(meta, compressed, backendUrl, timeoutMs) {
       headers: commonHeaders(token, {
         "X-Device-ID": meta.scope.deviceId,
         "X-Transcript-ID": meta.transcriptId,
+        "X-Transcript-Protocol": "codex-chunks-v1",
         "X-Chunk-Seq": String(meta.seq),
         "X-Chunk-Reset": String(meta.reset),
       }),
@@ -721,6 +722,7 @@ async function sendTranscriptChunk(meta, compressed, backendUrl, timeoutMs) {
       signal: AbortSignal.timeout(timeoutMs || TRANSCRIPT_TIMEOUT),
     });
     if (res.ok) return "sent";
+    if (res.status === 409 && (await res.json()).error === "transcript-baseline-missing") return "reset-required";
     // Auth rejection must not clear shared credentials or fall back to anonymous
     // transcript upload. Keep this chunk and all later chunks for scoped retry.
     if (meta.queueDir) transcriptQueue.writeDurable(path.join(meta.queueDir, "diagnostic.json"),
@@ -741,7 +743,7 @@ async function uploadPendingTranscript(pendingPath, deviceId, backendUrl, timeou
   if (deviceId !== meta.scope.deviceId) return "skip";
   const dir = path.dirname(path.dirname(pendingPath));
   let outcome = "skip";
-  await transcriptQueue.drainDirectory(dir, async (chunk, body) => {
+  await drainTranscriptDirectory(dir, async (chunk, body) => {
     outcome = await sendTranscriptChunk({ ...chunk, queueDir: dir }, body, backendUrl, timeoutMs);
     return outcome;
   });
@@ -1059,12 +1061,28 @@ async function drainFailedLogs(backendUrl = getBackendUrl(process.cwd()), timeou
   return files.length;
 }
 
+// One bounded recovery attempt per sweep. The durable reset request survives
+// process death, a missing raw source, consent changes and network failures.
+async function drainTranscriptDirectory(dir, send) {
+  let count = await transcriptQueue.drainDirectory(dir, send);
+  const request = path.join(dir, "reset-request.json"), cursorFile = path.join(dir, "cursor.json");
+  if (fs.existsSync(request) && fs.existsSync(cursorFile)) {
+    const cursor = JSON.parse(fs.readFileSync(cursorFile, "utf8"));
+    const reset = JSON.parse(fs.readFileSync(request, "utf8"));
+    if (reset.baseline >= cursor.baseline && cursor.source && scopeStillAllowed(cursor.scope)) {
+      const staged = stageTranscriptForUpload(cursor.source, { cwd: cursor.scope.cwd, scope: cursor.scope });
+      if (staged) count += await transcriptQueue.drainDirectory(dir, send);
+    }
+  }
+  return count;
+}
+
 async function drainPendingTranscripts(backendUrl, timeoutMs) {
   if (getTelemetryGloballyDisabled() || credstore.getSignedOut()) return 0;
   stageRequestedTranscripts();
   let count = 0;
   for (const dir of transcriptQueue.queueDirectories(TRANSCRIPT_CHUNKS_DIR)) {
-    count += await transcriptQueue.drainDirectory(dir, (meta, body) => sendTranscriptChunk({ ...meta, queueDir: dir }, body, backendUrl, timeoutMs));
+    count += await drainTranscriptDirectory(dir, (meta, body) => sendTranscriptChunk({ ...meta, queueDir: dir }, body, backendUrl, timeoutMs));
   }
   return count;
 }

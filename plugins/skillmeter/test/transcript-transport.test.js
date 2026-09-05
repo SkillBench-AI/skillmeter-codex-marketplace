@@ -12,7 +12,7 @@ const repo = path.join(root, "repo");
 execFileSync("git", ["init", "--quiet", repo]);
 execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://github.com/synthetic/repo.git"]);
 const store = path.join(root, ".skillbench/credentials.json"); fs.mkdirSync(path.dirname(store));
-const jwt = (sub = "synthetic-user", exp = 4102444800, extra = {}) => "e30." + Buffer.from(JSON.stringify({ sub, exp, aud: "https://synthetic.meter.skillbench.com", ...extra })).toString("base64url") + ".fixture";
+const jwt = (sub = "synthetic-user", exp = 4102444800, extra = {}) => "e30." + Buffer.from(JSON.stringify({ sub, github_id: sub, exp, aud: "https://synthetic.meter.skillbench.com", ...extra })).toString("base64url") + ".fixture";
 const credentials = { device_id: "SYNTHETIC-DEVICE", hash_salt: "fixture-salt", license_jwt: jwt(), allowed_github_orgs: ["synthetic"] };
 const save = patch => fs.writeFileSync(store, JSON.stringify({ ...credentials, ...patch }));
 save({});
@@ -111,4 +111,66 @@ test("cleanup and dry-run inventory preserve old transcript copies", () => {
   const result = require("../scripts/transcript_inventory").inventory(process.env.PLUGIN_DATA);
   assert.deepEqual(result, {dryRun:true,legacyPending:1,legacyPoisonUnknownReason:1,chunkDiagnostics:{}});
   assert.deepEqual([pending, poison].map(f => fs.readFileSync(f)), before);
+});
+
+
+test("tenant sub cannot substitute for user identity", async () => {
+  save({ license_jwt: jwt("same-tenant", 4102444800, {github_id: 101}) });
+  const file = stage(); assert.ok(file);
+  save({ license_jwt: jwt("same-tenant", 4102444800, {github_id: 202}) });
+  assert.equal(await upload(file), "skip"); assert.equal(fs.existsSync(file), true);
+});
+
+test("missing server baseline requests a durable full reset and resumes", async () => {
+  let file = stage(); global.fetch = async () => ({ok:true}); await upload(file);
+  fs.appendFileSync(source, line("resumed after three days")); file = stage();
+  const requests=[];
+  global.fetch = async (_, options) => {
+    requests.push(options);
+    return requests.length === 1 ? {ok:false,status:409,json:async()=>({error:"transcript-baseline-missing"})} : {ok:true};
+  };
+  assert.equal(await upload(file), "sent");
+  assert.deepEqual(requests.map(r=>[r.headers["X-Chunk-Seq"],r.headers["X-Chunk-Reset"]]), [["2","1"],["3","3"]]);
+  const records=require("node:zlib").gunzipSync(requests[1].body).toString().trim().split("\n");
+  assert.equal(records.length, 2);
+  assert.equal(logger.listPendingTranscripts().length, 0);
+  assert.equal(fs.existsSync(file), true, "superseded immutable chunk retained");
+});
+
+test("unrelated 409 does not replay a full snapshot", async () => {
+  const file=stage();let calls=0;
+  global.fetch=async()=>{calls++;return {ok:false,status:409,json:async()=>({error:"unrelated-conflict"})}};
+  assert.equal(await upload(file),"retry");assert.equal(calls,1);assert.equal(fs.existsSync(file),true);
+});
+
+test("reset request survives missing source and resumes when source returns", async () => {
+  const file = stage(), raw = fs.readFileSync(source);
+  fs.unlinkSync(source);
+  global.fetch = async () => ({ok:false,status:409,json:async()=>({error:"transcript-baseline-missing"})});
+  assert.equal(await upload(file), "reset-required");
+  const dir = path.dirname(path.dirname(file));
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "reset-request.json"))).baseline, 1);
+  assert.equal(fs.existsSync(file), true);
+  fs.writeFileSync(source, raw);
+  const replacement = stage();
+  global.fetch = async (_, options) => {
+    assert.equal(options.headers["X-Chunk-Seq"], "2");
+    assert.equal(options.headers["X-Chunk-Reset"], "2");
+    return {ok:true};
+  };
+  assert.equal(await upload(replacement), "sent");
+  assert.equal(logger.listPendingTranscripts().length, 0);
+});
+
+test("consent revoked during a 409 prevents reset staging and upload", async () => {
+  const file = stage(); let calls = 0;
+  global.fetch = async () => {
+    calls++; save({signed_out:true});
+    return {ok:false,status:409,json:async()=>({error:"transcript-baseline-missing"})};
+  };
+  assert.equal(await upload(file), "reset-required");
+  assert.equal(calls, 1);
+  const cursor = JSON.parse(fs.readFileSync(path.join(path.dirname(path.dirname(file)), "cursor.json")));
+  assert.equal(cursor.seq, 1);
+  assert.equal(fs.existsSync(file), true);
 });

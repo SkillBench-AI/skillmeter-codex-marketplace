@@ -134,7 +134,8 @@ function stage(root, source, scope, salt, options = {}) {
     const fileId = `${stat.dev}:${stat.ino}`;
     let offset = cursor?.offset || 0;
     let rawPrefix;
-    let reset = !cursor || cursor.fileId !== fileId || stat.size < offset;
+    const requested = fs.existsSync(path.join(dir, "reset-request.json")) ? readJson(path.join(dir, "reset-request.json")) : null;
+    let reset = !cursor || cursor.fileId !== fileId || stat.size < offset || (requested && requested.baseline >= cursor.baseline);
     if (!reset) {
       rawPrefix = prefix(fd, offset, salt);
       reset = rawPrefix.digest("hex") !== cursor.prefix;
@@ -185,7 +186,7 @@ function stage(root, source, scope, salt, options = {}) {
     let seq = cursor?.seq || 0;
     const chunks = encoded.map(({ body, records }) => ({ file: `${++seq}.gz`, seq, reset: baseline, records, sha256: digest(body) }));
     const next = { version: 1, seq, baseline, generation, offset: committed, lineCount,
-      prefix: rawPrefix.digest("hex"), fileId, scope, transcriptId: path.basename(source) };
+      prefix: rawPrefix.digest("hex"), fileId, scope, source: path.resolve(source), transcriptId: path.basename(source) };
     // Detect concurrent source rewrite before publishing any state.
     if (prefix(fd, committed, salt).digest("hex") !== next.prefix) throw new Error("source-changed-during-stage");
     const group = path.join(dir, `batch-${String(chunks[0].seq).padStart(16, "0")}-${crypto.randomUUID()}`);
@@ -214,7 +215,11 @@ function queueDirectories(root) {
   return fs.readdirSync(root).filter(n => /^[a-f0-9]{64}$/.test(n)).map(n => path.join(root, n));
 }
 function pendingFiles(dir) {
+  const cursor = fs.existsSync(path.join(dir, "cursor.json")) ? readJson(path.join(dir, "cursor.json")) : null;
   return groups(dir).flatMap(group => {
+    // A durable full reset supersedes pending older generations. Keep their
+    // immutable files for recovery, but never send them ahead of the reset.
+    if (cursor && readJson(path.join(group, "commit.json")).cursor.baseline < cursor.baseline) return [];
     if (!fs.existsSync(path.join(group, "ready"))) return [];
     return readJson(path.join(group, "commit.json")).chunks.map(c => path.join(group, c.file)).filter(f => fs.existsSync(f));
   });
@@ -235,6 +240,9 @@ async function drainDirectory(dir, send) {
       const meta = metadata(file), body = fs.readFileSync(file);
       if (digest(body) !== meta.sha256) throw new Error("chunk-integrity-failed");
       const outcome = await send(meta, body);
+      if (outcome === "reset-required") {
+        writeDurable(path.join(dir, "reset-request.json"), JSON.stringify({ baseline: meta.reset }));
+      }
       if (outcome !== "sent") break; // never advance over retry/auth/poison
       fs.unlinkSync(file); syncDir(path.dirname(file)); sent++;
     }
