@@ -331,7 +331,12 @@ function hasExplicitOrgScope() {
   return store.orgs_explicitly_set === true;
 }
 
+// Long-running transcript drains must observe another process signing out or
+// narrowing org scope. Read-only refresh; never migrate or write credentials.
+function refreshFromDisk() { _cache = readStore(); }
+
 module.exports = {
+  refreshFromDisk,
   getDeviceId,
   getOrCreateHashSalt,
   getLicenseToken,

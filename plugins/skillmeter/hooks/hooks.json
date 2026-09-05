@@ -119,6 +119,30 @@
           }
         ]
       }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/scripts/session_end.js",
+            "timeout": 3,
+            "statusMessage": "SkillMeter: saving capture hint"
+          }
+        ]
+      }
+    ],
+    "Interrupt": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node ${PLUGIN_ROOT}/scripts/interrupt.js",
+            "timeout": 3,
+            "statusMessage": "SkillMeter: saving capture hint"
+          }
+        ]
+      }
     ]
   }
 }

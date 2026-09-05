@@ -249,17 +249,12 @@ test("cleanupStaleFiles prunes old .sent logs, old poison files, and orphan meta
 
 // --- transcript staging atomicity ------------------------------------------
 
-test("stageTranscriptForUpload writes atomically with no temp leftovers", () => {
-  const src = path.join(tmpData, "rollout-1.jsonl");
-  fs.writeFileSync(src, '{"type":"message"}\n');
-
-  const pending = logger.stageTranscriptForUpload(src);
-  assert.ok(pending, "staging returns a pending path");
-  assert.equal(fs.existsSync(pending), true);
-  const leftovers = fs
-    .readdirSync(logger.TRANSCRIPTS_PENDING_DIR)
-    .filter((n) => n.includes(".tmp-"));
-  assert.deepEqual(leftovers, [], "no atomic-write temp files left behind");
+test("transcript staging without a signed-in scope retains the source and creates no queue", () => {
+  const source = path.join(tmpData, "no-consent.jsonl");
+  fs.writeFileSync(source, VALID);
+  assert.equal(logger.stageTranscriptForUpload(source), null);
+  assert.equal(fs.readFileSync(source, "utf8"), VALID);
+  assert.equal(logger.listPendingTranscripts().length, 0);
 });
 
 test("collectTranscriptPaths includes both subagent and session transcripts", () => {

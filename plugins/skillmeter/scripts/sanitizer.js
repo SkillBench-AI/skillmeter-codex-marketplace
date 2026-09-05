@@ -334,6 +334,9 @@ function sanitizeLine(obj, hashSalt) {
   if (obj && typeof obj === "object" && typeof obj.cwd === "string") {
     obj.cwd = hashHmac(obj.cwd, hashSalt);
   }
+  if (["session_meta", "turn_context"].includes(obj?.type) && typeof obj.payload?.cwd === "string") {
+    obj.payload = { ...obj.payload, cwd: hashHmac(obj.payload.cwd, hashSalt) };
+  }
   // Redact Tier 1 secrets / Tier 2 identifiers from every string in the record.
   // A Codex transcript line carries full prompt/assistant/tool-output text, so
   // path hashing alone is not enough to keep raw secrets off the wire.
