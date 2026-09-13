@@ -363,31 +363,10 @@ function getTimestamp() {
 // transcript handler.
 const INGEST_ROUTE = "/logs/codex";
 
-// The published SkillMeter Codex plugin ships pointing at the prod collector.
-// The ingest endpoint is resolved at upload time in this order (matching the
-// Claude plugin's approach — environment selection lives on the activation side
-// via `activate_url`/SKILLMETER_ACTIVATE_URL, and the upload host is read back
-// out of the license JWT rather than configured separately):
-//   1. SKILLMETER_BACKEND_URL env var (full ingest URL; dev/test bypass that
-//      skips the JWT entirely — point it at a fake server without a token).
-//   2. JWT-derived per-tenant endpoint: the `aud` (audience) claim of the
-//      license JWT, with the /logs/codex route appended. This routes each
-//      tenant's traffic to its own meter host without per-tenant plugin builds.
-//      (The legacy `telemetry_endpoint` claim is deprecated and no longer read.)
-//      The claim is read even from an expired token (allow-expired) so a drain
-//      still reaches the right host while a refresh is pending — the collector
-//      accepts unauthenticated uploads, and routing is not an auth decision.
-//   3. DEFAULT_BACKEND_URL (prod) — fallback when unauthenticated or the JWT
-//      carries no endpoint.
-// The env override (1) is user-supplied so it's validated against the
-// trusted-domain allow-list; the JWT endpoint (2) is server-minted and trusted
-// as-is (see lib/jwt.js).
-// Prod telemetry lives on the greenfield skillbench.ai zone: the activation
-// Lambda mints the per-tenant meter URL into the `aud` claim, of the form
-// https://{slug}.meter.skillbench.ai (prod) / https://{slug}.meter.dev.skillbench.com
-// (dev). This default is only the unauthenticated fallback — real routing comes
-// from the JWT claim.
-const DEFAULT_BACKEND_URL = "https://api.meter.skillbench.ai/logs/codex";
+// Resolve every delivery from the current license audience. An explicit trusted
+// development override still requires authentication; neither missing identity
+// nor invalid routing may fall through to a production destination.
+const DEFAULT_BACKEND_URL = null;
 
 // Trusted domain patterns for backend URL validation. Prod tenants are on
 // *.meter.skillbench.ai; dev/non-prod on *.meter.dev.skillbench.com (the
@@ -415,39 +394,13 @@ function isValidBackendUrl(url) {
   }
 }
 
-function getBackendUrl() {
+function getBackendUrl(_cwd, token) {
+  if (token === undefined) { credstore.refreshFromDisk?.(); token = getLicenseToken(); }
   const override = process.env.SKILLMETER_BACKEND_URL;
-  if (override) {
-    if (!isValidBackendUrl(override)) {
-      console.error(
-        `[skillmeter] SKILLMETER_BACKEND_URL rejected (untrusted domain), using default`
-      );
-      return DEFAULT_BACKEND_URL;
-    }
-    return override;
-  }
-
-  // Per-tenant routing: a signed-in user's license JWT carries the tenant's
-  // meter host in its `aud` (audience) claim. Prefer a fresh token, but fall
-  // back to the claim of an expired one (allow-expired) so a drain still reaches
-  // the correct tenant host while a refresh is pending. Append the Codex ingest
-  // route, then fall through to the prod default when there's no usable token —
-  // preserving the unauthenticated upload path.
-  const token = getLicenseToken();
-  const endpoint =
-    getEndpointFromToken(token) || getEndpointFromTokenAllowExpired(token);
-  if (endpoint) {
-    const fullUrl = `${endpoint}${INGEST_ROUTE}`;
-    if (!isValidBackendUrl(fullUrl)) {
-      console.error(
-        `[skillmeter] JWT-derived endpoint rejected (untrusted domain), using default`
-      );
-      return DEFAULT_BACKEND_URL;
-    }
-    return fullUrl;
-  }
-
-  return DEFAULT_BACKEND_URL;
+  if (override) return isValidBackendUrl(override) ? override : null;
+  const endpoint = getEndpointFromToken(token);
+  const url = endpoint ? `${endpoint}${INGEST_ROUTE}` : null;
+  return isValidBackendUrl(url) ? url : null;
 }
 
 const EVENT_TIMEOUT =
@@ -507,9 +460,7 @@ const RETRY_DAEMON_LOCK_FILE = path.join(LOG_DIR, ".retry-daemon.lock");
 const RETRY_DAEMON_LOCK_STALE_MS =
   parseInt(process.env.SKILLMETER_RETRY_DAEMON_STALE_MS || "", 10) || 5 * 60 * 1000;
 
-// Build the shared upload headers. The license JWT is passed explicitly (not
-// read here) so callers can decide whether to attach it — they drop an expired
-// token proactively and retry without auth after a 401/403.
+// Callers must authorize the queue and supply a valid token before sending.
 function commonHeaders(token, extra = {}) {
   const headers = {
     "Content-Type": "application/x-ndjson",
@@ -568,11 +519,8 @@ function atomicWriteFileSync(targetPath, data) {
 // ---------------------------------------------------------------------------
 // HTTP outcome classification
 //
-// 401/403 are handled separately (clear the token + retry without auth). Of the
-// remaining non-2xx responses we treat 408 (Request Timeout), 429 (Too Many
-// Requests), and every 5xx as transient (worth retrying) and any other 4xx as
-// permanent — the server is telling us this exact payload will never be
-// accepted, so it must not be retried forever.
+// Authentication outcomes retain queued data and never consume the poison
+// retry budget. Other 4xx responses except 408/429 are payload rejections.
 // ---------------------------------------------------------------------------
 function isPermanentHttpStatus(status) {
   if (status === 408 || status === 429) return false;
@@ -586,75 +534,29 @@ function isPermanentHttpStatus(status) {
 //   "skip"   — nothing to do (missing file).
 // Standalone callers can ignore the value; processSealedBatch uses it to decide
 // between salvage, quarantine, and a bounded retry.
-function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVENT_TIMEOUT) {
-  if (!logFile || !fs.existsSync(logFile)) return Promise.resolve("skip");
-  if (getTelemetryGloballyDisabled()) {
-    console.error(`[skillmeter] Event log transfer skipped (telemetry globally disabled)`);
-    return Promise.resolve("skip");
-  }
-
-  const storedToken = getLicenseToken();
-  // Proactive: never send a JWT we already know is past its exp. The ingest
-  // endpoint accepts unauthenticated batches, so dropping the token still lets
-  // the upload through and the next session's refresh re-authenticates.
-  const initialToken = storedToken && !isJwtExpired(storedToken) ? storedToken : null;
-  if (storedToken && !initialToken) {
-    console.error(`[skillmeter] Event log: dropping expired license JWT before send`);
-  }
-
-  const compressed = zlib.gzipSync(fs.readFileSync(logFile));
-  const baseName = path.basename(logFile);
-
-  const doPost = (token) =>
-    fetch(backendUrl, {
+async function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) {
+  if (!logFile || !fs.existsSync(logFile)) return "skip";
+  if (getTelemetryGloballyDisabled() || credstore.getSignedOut()) return "skip";
+  credstore.refreshFromDisk?.();
+  const token = getLicenseToken();
+  if (!token || isJwtExpired(token)) return "auth";
+  const destination = getBackendUrl(undefined, token);
+  if (!destination || (backendUrl && backendUrl !== destination)) return "auth";
+  try {
+    const compressed = zlib.gzipSync(fs.readFileSync(logFile));
+    const res = await fetch(destination, {
       method: "POST",
       headers: commonHeaders(token),
       body: compressed,
       signal: AbortSignal.timeout(timeoutMs),
     });
-
-  const markSent = () => {
-    try { fs.renameSync(logFile, `${logFile}.sent`); } catch {}
-  };
-
-  const classify = (status) =>
-    isPermanentHttpStatus(status) ? "poison" : "retry";
-
-  console.error(
-    `[skillmeter] Transferring event log: ${baseName} (${compressed.length} bytes gzipped)`
-  );
-
-  return doPost(initialToken)
-    .then((res) => {
-      if (res.ok) {
-        console.error(`[skillmeter] Event log transferred: ${baseName}`);
-        markSent();
-        return "sent";
-      }
-      // Reactive: the server rejected our Authorization header — clear the bad
-      // token so later requests don't reuse it, then retry once without auth.
-      if (initialToken && (res.status === 401 || res.status === 403)) {
-        console.error(
-          `[skillmeter] Event log auth rejected (HTTP ${res.status}), clearing license and retrying without auth`
-        );
-        try { credstore.setLicenseToken(""); } catch {}
-        return doPost(null).then((res2) => {
-          if (res2.ok) {
-            console.error(`[skillmeter] Event log transferred on retry: ${baseName}`);
-            markSent();
-            return "sent";
-          }
-          console.error(`[skillmeter] Event log retry failed: HTTP ${res2.status}`);
-          return classify(res2.status);
-        });
-      }
-      console.error(`[skillmeter] Event log transfer failed: HTTP ${res.status}`);
-      return classify(res.status);
-    })
-    .catch((err) => {
-      console.error(`[skillmeter] Event log transfer error: ${err.message}`);
-      return "retry";
-    });
+    if (res.ok) {
+      fs.renameSync(logFile, `${logFile}.sent`);
+      return "sent";
+    }
+    if ([401, 402, 403].includes(res.status)) return "auth";
+    return isPermanentHttpStatus(res.status) ? "poison" : "retry";
+  } catch { return "retry"; }
 }
 
 // ---------------------------------------------------------------------------
@@ -708,7 +610,9 @@ async function sendTranscriptChunk(meta, compressed, backendUrl, timeoutMs) {
   if (!scopeStillAllowed(meta.scope)) return "skip";
   const token = getLicenseToken();
   try {
-    const res = await fetch(`${backendUrl || getBackendUrl(meta.scope.cwd)}/transcript`, {
+    const destination = getBackendUrl(undefined, token);
+    if (!destination || (backendUrl && backendUrl !== destination)) return "skip";
+    const res = await fetch(`${destination}/transcript`, {
       method: "POST",
       headers: commonHeaders(token, {
         "X-Device-ID": meta.scope.deviceId,
@@ -984,6 +888,9 @@ async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
 
   const baseName = path.basename(batchPath);
 
+  credstore.refreshFromDisk?.();
+  if (credstore.getSignedOut() || isJwtExpired(getLicenseToken()) || !getBackendUrl()) return "auth";
+
   // Max-age give-up: a batch we still can't deliver after BATCH_MAX_AGE_MS is
   // treated as undeliverable, independent of why each attempt failed.
   const sealTime = batchSealTimeMs(batchPath);
@@ -995,6 +902,7 @@ async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
 
   const outcome = await transferEventLog(batchPath, backendUrl, timeoutMs);
 
+  if (outcome === "auth") return outcome;
   if (outcome === "sent" || outcome === "skip") {
     clearBatchMeta(batchPath);
     return outcome;
@@ -1007,6 +915,7 @@ async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
         `[skillmeter] Salvaged ${baseName}: dropped ${salv.dropped} invalid line(s), retrying ${salv.kept} valid`
       );
       const retryOutcome = await transferEventLog(batchPath, backendUrl, timeoutMs);
+      if (retryOutcome === "auth" || retryOutcome === "skip") return retryOutcome;
       if (retryOutcome === "sent") {
         clearBatchMeta(batchPath);
         return "sent";

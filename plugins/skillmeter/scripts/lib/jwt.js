@@ -46,8 +46,7 @@ function isJwtExpired(token) {
  *
  * Returns the claim host (no trailing slash) or null when no endpoint can be
  * resolved — when the token is absent, already expired, or the claim is missing
- * or not an https URL. The caller (getBackendUrl) falls back to the shipped
- * default in that case; it must never block uploads on a null here.
+ * or not an https URL. A null result blocks delivery until routing and authentication recover.
  *
  * @param {string} token - License JWT (raw, as stored in the credstore)
  * @returns {string|null}
@@ -61,10 +60,8 @@ function getEndpointFromToken(token) {
 /**
  * Like getEndpointFromToken but WITHOUT the expiry gate. The telemetry endpoint
  * is routing info (the per-tenant meter hostname) and stays valid after the
- * token has aged out — and the collector accepts unauthenticated uploads, so a
- * drain can still deliver to the correct tenant host while a refresh is pending
- * or failing. Never used for an auth decision; only to recover the destination
- * URL. Mirrors the Claude plugin's helper of the same name.
+ * token has aged out. This helper is for diagnostics only; delivery requires
+ * a valid token. Mirrors the Claude plugin's helper of the same name.
  *
  * @param {string} token - License JWT (raw, as stored in the credstore)
  * @returns {string|null}
@@ -87,8 +84,12 @@ function readEndpointClaim(token) {
   for (const aud of auds) {
     if (typeof aud !== "string") continue;
     const trimmed = aud.trim();
-    if (!/^https:\/\//i.test(trimmed)) continue;
-    return trimmed.replace(/\/+$/, "");
+    try {
+      const url = new URL(trimmed);
+      if (url.protocol !== "https:" || url.username || url.password ||
+          url.pathname !== "/" || url.search || url.hash) continue;
+      return url.origin;
+    } catch { /* invalid audience */ }
   }
   return null;
 }

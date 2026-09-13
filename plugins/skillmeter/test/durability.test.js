@@ -30,7 +30,7 @@ process.env.SKILLMETER_MAX_BATCH_RETRIES = "3";
 fs.mkdirSync(path.join(tmpHome, ".skillbench"), { recursive: true });
 fs.writeFileSync(
   path.join(tmpHome, ".skillbench", "credentials.json"),
-  JSON.stringify({ device_id: "TEST-DEVICE", hash_salt: "deadbeef" }) + "\n"
+  JSON.stringify({ device_id: "TEST-DEVICE", hash_salt: "deadbeef", license_jwt: "e30." + Buffer.from(JSON.stringify({ exp: 4102444800, aud: "https://acme.meter.skillbench.com" })).toString("base64url") + ".sig" }) + "\n"
 );
 
 const { test, beforeEach, afterEach } = require("node:test");

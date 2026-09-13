@@ -14,7 +14,7 @@ const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "skillbench-m0-wire-"));
 const { execFileSync } = require("node:child_process");
 execFileSync("git", ["init", "--quiet", dataDir]);
 execFileSync("git", ["-C", dataDir, "remote", "add", "origin", "https://github.com/synthetic/repo.git"]);
-const token = "e30." + Buffer.from(JSON.stringify({ sub: "synthetic-user", exp: 4102444800 })).toString("base64url") + ".fixture";
+const token = "e30." + Buffer.from(JSON.stringify({ sub: "synthetic-user", exp: 4102444800, aud: "https://synthetic.meter.skillbench.com" })).toString("base64url") + ".fixture";
 const previousData = process.env.PLUGIN_DATA;
 process.env.PLUGIN_DATA = dataDir;
 const credentialModule = require.resolve("../scripts/credstore");
@@ -62,10 +62,10 @@ test("real staged request satisfies the collector chunk-header contract", async 
   assert.ok(pending, "actual sanitizer and staging must produce a pending file");
   const staged = zlib.gunzipSync(fs.readFileSync(pending));
   const outcome = await logger.processPendingTranscript(
-    pending, "M0-SYNTHETIC-DEVICE", "https://collector.invalid/logs/codex", 1000,
+    pending, "M0-SYNTHETIC-DEVICE", "https://synthetic.meter.skillbench.com/logs/codex", 1000,
   );
   assert.ok(request, "actual uploader must issue a request to the in-memory stub");
-  assert.equal(request.url, "https://collector.invalid/logs/codex/transcript");
+  assert.equal(request.url, "https://synthetic.meter.skillbench.com/logs/codex/transcript");
   assert.equal(request.method, "POST");
   assert.deepEqual(zlib.gunzipSync(request.body), staged);
   assert.equal(staged.toString().trim().split("\n").length, 8);

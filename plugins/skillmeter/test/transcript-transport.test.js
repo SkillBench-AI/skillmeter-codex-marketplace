@@ -22,7 +22,7 @@ const realFetch = global.fetch;
 const source = path.join(root, "synthetic.jsonl");
 const line = message => JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: message } }) + "\n";
 const stage = () => logger.stageTranscriptForUpload(source, { cwd: repo });
-const upload = file => logger.processPendingTranscript(file, credentials.device_id, "https://collector.invalid/logs/codex", 1000);
+const upload = file => logger.processPendingTranscript(file, credentials.device_id, "https://synthetic.meter.skillbench.com/logs/codex", 1000);
 beforeEach(() => {
   save({}); fs.rmSync(logger.LOG_DIR, { recursive: true, force: true });
   fs.rmSync(path.join(repo, ".codex"), { recursive: true, force: true });
@@ -187,7 +187,7 @@ test("a corrupt queue does not block other authorized transcripts", async () => 
   fs.writeFileSync(cursor, "invalid synthetic cursor");
   let calls = 0;
   global.fetch = async () => { calls++; return { ok: true }; };
-  await logger.drainPendingTranscripts("https://collector.invalid/logs/codex", 1000);
+  await logger.drainPendingTranscripts("https://synthetic.meter.skillbench.com/logs/codex", 1000);
   assert.equal(calls, 1);
   assert.equal(fs.existsSync(retained), true);
   assert.equal(JSON.parse(fs.readFileSync(path.join(damaged, "diagnostic.json"))).code, "queue-unavailable");
@@ -196,9 +196,9 @@ test("a corrupt queue does not block other authorized transcripts", async () => 
 test("failed transcript upload counts as queued work for the retry monitor", async () => {
   const file = stage();
   global.fetch = async () => ({ ok: false, status: 503 });
-  assert.equal(await logger.drainPendingTranscripts("https://collector.invalid/logs/codex", 1000), 1);
+  assert.equal(await logger.drainPendingTranscripts("https://synthetic.meter.skillbench.com/logs/codex", 1000), 1);
   assert.equal(fs.existsSync(file), true);
   global.fetch = async () => ({ ok: true });
-  assert.equal(await logger.drainPendingTranscripts("https://collector.invalid/logs/codex", 1000), 1);
-  assert.equal(await logger.drainPendingTranscripts("https://collector.invalid/logs/codex", 1000), 0);
+  assert.equal(await logger.drainPendingTranscripts("https://synthetic.meter.skillbench.com/logs/codex", 1000), 1);
+  assert.equal(await logger.drainPendingTranscripts("https://synthetic.meter.skillbench.com/logs/codex", 1000), 0);
 });
