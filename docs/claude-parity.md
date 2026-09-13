@@ -33,6 +33,12 @@ paths, authenticated delivery and byte-based transcript cursors are adapters.
 The fallback data directory is persistent `STATE_DIR/codex`; no plugin-cache
 fallback or automatic historical migration remains.
 
-This candidate covers shipped behavior only. INF-177's unfinished ADR001 token
+Consented hook events include the derived clear `org/repo` in `repo_name`, as
+allowed by ADR002 decision 7. Hook-specific data cannot override repository
+identity. Offline stdin-to-queue-to-gzip tests verify the identity and fresh
+policy 3.1.0 counts, including zeros; OFF, undecided and excluded repositories
+produce no event payload. No additional transcript content is disclosed.
+
+This candidate does not yet satisfy all accepted ADR001 requirements. Its token
 lifecycle, per-file cross-repository consent (INF-195), stage-2 sanitization and
 release ownership remain separate. See the checkpoint for live-canary gates.

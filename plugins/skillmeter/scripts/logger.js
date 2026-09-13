@@ -1492,10 +1492,16 @@ async function runHook(eventName, buildData, options = {}) {
   const eventData = buildData ? buildData(input, ctx) : {};
 
   const rawData = {
+    ...eventData,
     transcript_path: getTranscriptId(input.transcript_path),
     cwd: hashHmac(cwd, hashSalt),
     repo_scope: repoScopeDecision.scope,
     repo_classification: repoScopeDecision.classification,
+    // ADR002 decision 7: clear org/repo is permitted only after the capture
+    // and repository gates above. Hook payloads cannot supply this identity.
+    repo_name: repoScopeDecision.remoteOrg && repoScopeDecision.repoName
+      ? `${repoScopeDecision.remoteOrg}/${repoScopeDecision.repoName}`
+      : undefined,
     repo_root: repoScopeDecision.repoRoot
       ? hashHmac(repoScopeDecision.repoRoot, hashSalt)
       : undefined,
@@ -1505,7 +1511,6 @@ async function runHook(eventName, buildData, options = {}) {
     permission_mode: input.permission_mode,
     model: input.model,
     turn_id: input.turn_id,
-    ...eventData,
   };
 
   // Single deterministic pre-upload sanitization boundary (SBEE-155). Every
