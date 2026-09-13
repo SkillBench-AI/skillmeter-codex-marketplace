@@ -23,7 +23,7 @@ from moto.server import ThreadedMotoServer
 from skillbench_preprocessor import JobWindow, S3Source, preprocess, structured_session
 
 
-def assert_independent_transcript(stored, fixture, root):
+def assert_independent_transcript(stored, fixture, root, startup_consent=False):
     """Fixture-authored expectations, independent of staged bytes and sanitizer."""
     expected = [json.loads(line) for line in fixture.read_text().splitlines()]
     workspace = hmac.new(
@@ -32,7 +32,8 @@ def assert_independent_transcript(stored, fixture, root):
     for record in expected:
         if "cwd" in record.get("payload", {}):
             record["payload"]["cwd"] = workspace
-    expected[0]["payload"].update(contact="[EMAIL]", api_key="[REDACTED_SECRET]")
+    if not startup_consent:
+        expected[0]["payload"].update(contact="[EMAIL]", api_key="[REDACTED_SECRET]")
     for role, text in [
         ("user", "A real repeated synthetic request"),
         ("user", "A real repeated synthetic request"),
@@ -71,7 +72,7 @@ def assert_independent_transcript(stored, fixture, root):
         payload = record.get("payload", {})
         if "cwd" in payload:
             counts["path"] += 1
-        if index == 0:
+        if index == 0 and not startup_consent:
             counts["secret"] = counts["email"] = 1
             ids = ["email", "labelled-secret"]
         if payload.get("type") == "function_call":
@@ -108,6 +109,11 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--bridge", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
+    parser.add_argument(
+        "--startup-consent",
+        action="store_true",
+        help="Observe consent after a synthetic startup prefix already exists",
+    )
     parser.add_argument(
         "--pipeline",
         type=Path,
@@ -166,7 +172,17 @@ def main():
                         )
                     )
                 result = subprocess.run(
-                    command, capture_output=True, text=True, timeout=30, check=False
+                    command,
+                    capture_output=True,
+                    text=True,
+                    timeout=30,
+                    check=False,
+                    env={
+                        **os.environ,
+                        "SKILLMETER_TEST_STARTUP_CONSENT": "1"
+                        if args.startup_consent
+                        else "0",
+                    },
                 )
                 if result.returncode:
                     raise RuntimeError(result.stderr)
@@ -251,7 +267,9 @@ def main():
                     if args.pipeline
                     else Path(__file__).parent.parent / "test/fixtures/codex-m0.jsonl"
                 )
-                workspace = assert_independent_transcript(stored, fixture, root)
+                workspace = assert_independent_transcript(
+                    stored, fixture, root, args.startup_consent
+                )
                 # Inject only the S3 client seam; Source listing/fetch, detection,
                 # Codex normalization and structured projection are actual code.
                 source = S3Source("synthetic-transcripts", client=client)
@@ -375,6 +393,7 @@ def main():
                     }
                 evidence = {
                     "syntheticOnly": True,
+                    "startupConsent": args.startup_consent,
                     "boundaries": [
                         "actual Node uploader",
                         "Go APIHandler/EventProcessor",

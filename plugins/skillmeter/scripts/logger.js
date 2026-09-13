@@ -451,6 +451,7 @@ function stageTranscriptForUpload(transcriptPath, context = {}) {
   try {
     const result = transcriptQueue.stage(TRANSCRIPT_CHUNKS_DIR, transcriptPath, scope, getOrCreateHashSalt(), {
       consent,
+      preserveSessionMetadata: true,
       authorizeCommit: () => scopeStillAllowed(scope) && consent.stamp === scope.consentStamp + JSON.stringify(telemetryStore.readPolicy().global),
       authorizeRecord: record => {
         if (!["session_meta", "turn_context"].includes(record.type) || !record.payload?.cwd) return true;

@@ -8,6 +8,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const zlib = require("node:zlib");
 const { sanitizeLine } = require("../sanitizer");
+const { sessionMetadata } = require("./session-metadata");
 
 const MAX_ENVELOPE = 5 * 1024 * 1024; // below the 6 MiB Lambda event ceiling
 const ENVELOPE_RESERVE = 128 * 1024; // headers + JSON event wrapper
@@ -204,7 +205,9 @@ function stage(root, source, scope, salt, options = {}) {
     let offset = cursor?.offset || 0;
     let rawPrefix;
     const requested = fs.existsSync(path.join(dir, "reset-request.json")) ? readJson(path.join(dir, "reset-request.json")) : null;
+    const preserveMetadata = Boolean(options.consent && options.preserveSessionMetadata);
     let reset = !cursor || cursor.fileId !== fileId || stat.size < offset ||
+      (preserveMetadata && cursor.metadataVersion !== 1) ||
       (options.consent && (cursor.consentEpoch !== options.consent.epoch || cursor.scope.consentStamp !== scope.consentStamp)) ||
       (requested && requested.baseline >= cursor.baseline);
     if (reset && cursor && options.consent && cursor.consentEpoch === options.consent.epoch &&
@@ -239,21 +242,27 @@ function stage(root, source, scope, salt, options = {}) {
         const raw = pending.subarray(0, end + 1);
         if (raw.length > MAX_RECORD) throw new Error("oversized-single-record");
         const excluded = options.consent?.excluded.some(([start, end]) => committed < end && committed + raw.length > start);
-        const text = excluded ? "" : new TextDecoder("utf-8", { fatal: true }).decode(raw).trim();
+        // Read only the first source record across the exclusion boundary, and
+        // project only its metadata. All other excluded records stay undecoded.
+        const header = preserveMetadata && committed === 0;
+        const text = excluded && !header ? "" : new TextDecoder("utf-8", { fatal: true }).decode(raw).trim();
         if (text) {
           let record;
           try { record = JSON.parse(text); } catch { throw new Error("malformed-complete-record"); }
           if (!record || Array.isArray(record) || typeof record !== "object") throw new Error("malformed-complete-record");
-          if (options.authorizeRecord && !options.authorizeRecord(record)) throw new Error("source-scope-changed");
-          // Collector merges on UUID. Identity uses raw position/content before
-          // sanitization, preserving identical authored records and redaction collisions.
-          const uuid = hmac(salt, `${id}\0${generation}\0${committed}\0${hmac(salt, raw)}`);
-          const sanitized = sanitizeLine(record, salt);
-          if (sanitized.uuid) sanitized._codex_source_uuid = sanitized.uuid;
-          sanitized.uuid = uuid;
-          const serialized = JSON.stringify(sanitized) + "\n";
-          if (Buffer.byteLength(serialized) >= MAX_RECORD) throw new Error("oversized-single-record");
-          lines.push(serialized);
+          if (header && excluded) record = sessionMetadata(record);
+          if (record) {
+            if (options.authorizeRecord && !options.authorizeRecord(record)) throw new Error("source-scope-changed");
+            // Collector merges on UUID. Identity uses raw position/content before
+            // sanitization, preserving identical authored records and redaction collisions.
+            const uuid = hmac(salt, `${id}\0${generation}\0${committed}\0${hmac(salt, raw)}`);
+            const sanitized = sanitizeLine(record, salt);
+            if (sanitized.uuid) sanitized._codex_source_uuid = sanitized.uuid;
+            sanitized.uuid = uuid;
+            const serialized = JSON.stringify(sanitized) + "\n";
+            if (Buffer.byteLength(serialized) >= MAX_RECORD) throw new Error("oversized-single-record");
+            lines.push(serialized);
+          }
         }
         rawPrefix.update(raw); committed += raw.length; lineCount++;
         pending = pending.subarray(end + 1);
@@ -267,6 +276,7 @@ function stage(root, source, scope, salt, options = {}) {
     const chunks = encoded.map(({ body, records }) => ({ file: `${++seq}.gz`, seq, reset: baseline, records, sha256: digest(body) }));
     const next = { version: 1, seq, baseline, generation, offset: committed, lineCount,
       ...(options.consent ? { consentEpoch: options.consent.epoch } : {}),
+      ...(preserveMetadata ? { metadataVersion: 1 } : {}),
       prefix: rawPrefix.digest("hex"), fileId, scope, source: path.resolve(source), transcriptId: path.basename(source) };
     // Detect concurrent source rewrite before publishing any state.
     if (prefix(fd, committed, salt).digest("hex") !== next.prefix) throw new Error("source-changed-during-stage");
@@ -286,7 +296,7 @@ function stage(root, source, scope, salt, options = {}) {
   } catch (e) {
     // Error code only. Never persist source text or arbitrary exception payloads.
     const code = ["oversized-single-record", "malformed-complete-record", "invalid-wire-budget",
-      "source-changed-during-stage", "source-truncated-during-read", "invalid-cursor", "incomplete-transaction", "source-scope-changed", "source-owner-changed", "consent-source-rewritten", "consent-changed-during-stage"].includes(e.message) ? e.message : "stage-failed";
+      "source-changed-during-stage", "source-truncated-during-read", "invalid-cursor", "incomplete-transaction", "source-scope-changed", "source-owner-changed", "consent-source-rewritten", "consent-changed-during-stage", "invalid-session-metadata", "unsupported-session-source"].includes(e.message) ? e.message : "stage-failed";
     writeDurable(path.join(dir, "diagnostic.json"), JSON.stringify({ code, at: new Date().toISOString() }));
     throw e;
   } finally { if (fd !== undefined) fs.closeSync(fd); release(); }

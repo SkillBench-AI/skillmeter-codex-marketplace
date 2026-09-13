@@ -35,6 +35,13 @@ The synthetic fixture establishes consent on an empty source before appending
 records. A test-only transport interceptor validates the licensed destination
 and bearer header, then sends to loopback. This does not prove real hook timing.
 
+Pass `--startup-consent` to reproduce the CLI startup ordering: session metadata
+and synthetic history already exist at the first consent observation. The same
+independent oracle then requires the minimal sanitized header, unchanged canonical
+session identity and workspace, and all subsequent authorized messages, while
+excluding startup instructions, history and world_state. This variant still runs
+the lost-response, multi-day reset, stale-generation and scripted-analyzer checks.
+
 The adapter substitutes for API Gateway and omits JWT verification. No actual
 backend ingest/read, model service, installed CLI/desktop hook, or dashboard is
 exercised. All fixture state is temporary; only content-free evidence is written

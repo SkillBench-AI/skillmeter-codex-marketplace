@@ -11,8 +11,10 @@ if (!url.startsWith("http://127.0.0.1:")) throw Error("localhost collector requi
 process.env.HOME = root;
 process.env.USERPROFILE = root;
 process.env.PLUGIN_DATA = path.join(root, "data");
+process.env.SKILLMETER_STATE_DIR = path.join(root, ".skillbench");
 delete process.env.SKILLMETER_REPO_SCOPE_ORGS;
 const appendMode = process.argv[4] === "append";
+const startupConsent = process.env.SKILLMETER_TEST_STARTUP_CONSENT === "1";
 const repo = path.join(root, "repo");
 const source = path.join(root, "synthetic.jsonl");
 const expectedFile = path.join(root, "expected.jsonl");
@@ -36,8 +38,10 @@ function initializeFixture() {
     license_jwt: jwt, allowed_github_orgs: ["synthetic"],
   }));
   require("../scripts/lib/telemetry-store").authorizeOrganizationRepositories("synthetic", ["synthetic/repo"], true);
-  fs.writeFileSync(source, "");
-  require("../scripts/logger").observeTranscriptConsent(source, repo);
+  if (!startupConsent) {
+    fs.writeFileSync(source, "");
+    require("../scripts/logger").observeTranscriptConsent(source, repo);
+  }
   const fixture = process.argv[4] || path.join(__dirname, "../test/fixtures/codex-m0.jsonl");
   const records = fs.readFileSync(fixture, "utf8").trim().split("\n").map(JSON.parse);
   // Synthetic canaries have independently specified expectations in Python.
@@ -47,7 +51,17 @@ function initializeFixture() {
     if (record.payload?.cwd) record.payload.cwd = repo;
   }
   records.push(repeated, repeated);
-  fs.writeFileSync(source, records.map(JSON.stringify).join("\n") + "\n");
+  if (startupConsent) {
+    const header = records.shift();
+    header.payload.instructions = "EXCLUDED-STARTUP-INSTRUCTIONS";
+    const excluded = [header,
+      {type:"response_item", payload:{type:"message", role:"user", content:"EXCLUDED-HISTORY"}},
+      {type:"world_state", payload:{text:"EXCLUDED-WORLD-STATE"}},
+    ];
+    fs.writeFileSync(source, excluded.map(JSON.stringify).join("\n") + "\n");
+    require("../scripts/logger").observeTranscriptConsent(source, repo);
+    fs.appendFileSync(source, records.map(JSON.stringify).join("\n") + "\n");
+  } else fs.writeFileSync(source, records.map(JSON.stringify).join("\n") + "\n");
 }
 
 if (!appendMode) initializeFixture();
