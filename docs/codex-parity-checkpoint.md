@@ -21,13 +21,43 @@ recorded before the fix; all pass afterward. Full `npm run check`: 240 passed.
 Existing local HTTP tests still exercise actual request handling, using a test-only
 transport interceptor for the synthetic licensed host. No live telemetry was sent.
 
-## Next
+## Completed: canonical consent and Codex queues
 
-Adopt the shipped canonical consent policy and repository queue boundaries, with
-license-org scope and durable transcript exclusions. Then port pinned sanitizer
-fixtures and rules, retaining the existing command/patch hashing policy.
+Copied Claude's `io`, `repo-scope`, `telemetry-policy` and `telemetry-store` from
+`skillmeter/scripts/lib` at the pinned reference above. The only store deviation
+is a Codex safeguard rejecting invalid/future schemas without overwriting them.
+The policy location and writer protocol match Claude. The small config adapter
+retains existing activation settings. `getLicenseOrgs` incorporates the original
+local auth change without changing that dirty checkout; the remaining original
+sign-in/auth edits still need separate reconciliation.
+
+Capture requires licensed-org eligibility and explicit organization/repository
+consent; legacy OFF survives. Queues bind canonical repository, principal, device
+and consent. Revocation retires payloads; global pause retains authorized queues.
+Event delivery is serialized per batch; poison files retain repository scope.
+State falls back to `~/.skillbench/codex`, never the plugin installation.
+
+Codex's durable byte journal excludes pre-observation and disabled intervals,
+including full-baseline recovery, partial lines and source rewrites. Hook
+observations use file stats; background recovery may verify the committed prefix.
+Malformed journals fail closed. Full `npm run check`: 250 passed; `git diff --check`
+passed. Tests use isolated synthetic credentials, policies, repositories and data.
+
+## Next and unresolved limits
+
+Port pinned sanitizer fixtures and rules, retaining command/patch hashing.
+Then review the whole candidate and open a dependent draft follow-up to PR #35.
 Keep unfinished ADR001 lifecycle work out of this candidate. Coordinate scope with
 Seungho before requesting review; check Brandon's ATLAS collector overlap.
+
+The first observation excludes the existing transcript prefix. Real Codex hook
+ordering must establish whether a newly authorized session's opening records are
+already present then. Do not claim complete session capture until verified and,
+if necessary, repaired. Auth lifecycle intervals without any hook observation
+also need validation with the eventual ADR001 refresh/signout implementation.
+A queue's first checkout path remains a validation hint; removing that checkout
+can block delivery even if another clone exists. The shared Claude writer uses
+its existing timestamp-based policy lock; its broader redesign is not included.
 
 Original dirty checkouts remain untouched. Baseline fingerprints and local test
 logs are in `reports/codex-consent-parity-2026-09-13/` at the workspace root.

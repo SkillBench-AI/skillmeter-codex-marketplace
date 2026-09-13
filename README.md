@@ -71,10 +71,11 @@ for details.
 
 ## Telemetry control
 
-Per-project opt-in and repo-scope settings live in
-`<project>/.codex/settings.local.json` under the `skillmeter` namespace. On
-macOS the first session in a project shows a native consent prompt; elsewhere,
-enable it explicitly:
+Capture requires a valid license for the repository's organization and explicit
+organization and repository consent. Decisions use canonical GitHub identity in
+`~/.skillbench/telemetry-policy.json`, shared with Claude across clones and
+worktrees. A legacy project-local OFF remains a veto until explicitly changed.
+Enable telemetry from the eligible repository:
 
 ```bash
 node "$PLUGIN_ROOT/scripts/telemetry.js" enable
@@ -94,10 +95,9 @@ Then `/plugins` → install `SkillMeter` → start a fresh thread. Codex loads l
 plugins from its plugin cache after installation, so reinstall (or refresh the
 marketplace) after changing the plugin contents.
 
-The shipped plugin uploads to prod by default. To point a project at a non-prod
-collector (e.g. the dev tenant collector) without changing the default, set
-`skillmeter.backendUrl` in that project's `.codex/settings.local.json` — see
-[`plugins/skillmeter/README.md`](plugins/skillmeter/README.md#configuration).
+Uploads require a valid token and its licensed tenant destination. There is no
+anonymous or default production delivery. See the plugin configuration section
+for scoped development overrides, which also require authentication.
 
 ## Versioning & releases
 

@@ -17,6 +17,8 @@ execFileSync("git", ["-C", dataDir, "remote", "add", "origin", "https://github.c
 const token = "e30." + Buffer.from(JSON.stringify({ sub: "synthetic-user", exp: 4102444800, aud: "https://synthetic.meter.skillbench.com" })).toString("base64url") + ".fixture";
 const previousData = process.env.PLUGIN_DATA;
 process.env.PLUGIN_DATA = dataDir;
+process.env.SKILLMETER_STATE_DIR = path.join(dataDir, "state");
+require("../scripts/lib/telemetry-store").authorizeOrganizationRepositories("synthetic", ["synthetic/repo"], true);
 const credentialModule = require.resolve("../scripts/credstore");
 const previousCredentials = require.cache[credentialModule];
 require.cache[credentialModule] = {
@@ -28,6 +30,7 @@ require.cache[credentialModule] = {
     getOrCreateHashSalt: () => "m0-fixture-only-salt",
     getLicenseToken: () => token,
     getSignedOut: () => false,
+    isLicenseTokenExpired: () => false,
     getAllowedGitHubOrgs: () => ["synthetic"],
     getTelemetryDisabled: () => false,
     setLicenseToken: () => assert.fail("Fixture must never change authentication"),
@@ -57,6 +60,8 @@ test("real staged request satisfies the collector chunk-header contract", async 
   const fixture = path.join(dataDir, "codex-m0.jsonl");
   const fixtureRecords = fs.readFileSync(path.join(__dirname, "fixtures", "codex-m0.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
   for (const record of fixtureRecords) if (record.payload?.cwd) record.payload.cwd = dataDir;
+  fs.writeFileSync(fixture, "");
+  logger.observeTranscriptConsent(fixture, dataDir);
   fs.writeFileSync(fixture, fixtureRecords.map(JSON.stringify).join("\n") + "\n");
   const pending = logger.stageTranscriptForUpload(fixture, { cwd: dataDir });
   assert.ok(pending, "actual sanitizer and staging must produce a pending file");

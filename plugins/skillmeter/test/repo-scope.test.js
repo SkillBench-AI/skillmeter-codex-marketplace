@@ -41,7 +41,7 @@ const logger = require("../scripts/logger");
 // through the same lifecycle the real signin flow uses.
 function signInWithOrgs(orgs) {
   credstore.markEngaged();
-  assert.equal(credstore.commitSignin({ jwt: "a.b.c", orgs }), true);
+  assert.equal(credstore.commitSignin({ jwt: "e30." + Buffer.from(JSON.stringify({org: {login: orgs[0]}, exp: 4102444800})).toString("base64url") + ".fixture", orgs }), true);
 }
 
 function signOut() {
@@ -152,7 +152,7 @@ function writeRepoScopeSetting(repoRoot, value) {
   );
 }
 
-test("env filter narrows multi-org account to a single org => other member org dropped", () => {
+test("licensed org excludes other legacy memberships regardless of env filter", () => {
   signInWithOrgs(["skillbench-ai", "acme"]);
   process.env.SKILLMETER_REPO_SCOPE_ORGS = "skillbench-ai";
   try {
@@ -205,7 +205,7 @@ test("filter can only narrow, never widen: a non-member org stays blocked", () =
   }
 });
 
-test("per-project repoScopeOrgs array narrows scope", () => {
+test("legacy per-project settings cannot widen the licensed org", () => {
   signInWithOrgs(["skillbench-ai", "acme"]);
   const repo = makeRepo("git@github.com:skillbench-ai/widgets.git");
   writeRepoScopeSetting(repo, ["skillbench-ai"]);
@@ -229,7 +229,7 @@ test("per-project repoScopeOrgs accepts a comma-separated string", () => {
   assert.equal(decision.classification, "github_org_match");
 });
 
-test("env filter takes precedence over the per-project setting", () => {
+test("license scope takes precedence over both legacy filters", () => {
   signInWithOrgs(["skillbench-ai", "acme"]);
   const repo = makeRepo("git@github.com:acme/widgets.git");
   // Per-project allows acme, but the env filter restricts to skillbench-ai.
@@ -244,7 +244,7 @@ test("env filter takes precedence over the per-project setting", () => {
   }
 });
 
-test("an empty/whitespace filter is ignored => all signed-in orgs allowed", () => {
+test("an empty/whitespace filter is ignored => licensed org allowed", () => {
   signInWithOrgs(["acme"]);
   process.env.SKILLMETER_REPO_SCOPE_ORGS = "   ";
   try {

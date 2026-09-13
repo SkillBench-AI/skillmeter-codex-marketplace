@@ -10,7 +10,9 @@ const os = require("os");
 // dashboards expect a single stable identity per machine. The license JWT and
 // allowed-org list are shared too: a user who signs in via either plugin is
 // authenticated for both.
-const CRED_FILE = path.join(os.homedir(), ".skillbench", "credentials.json");
+const { CRED_FILE } = require("./lib/config");
+const telemetryStore = require("./lib/telemetry-store");
+const { getLicenseOrgs } = require("./lib/jwt");
 
 const KEYCHAIN_SERVICES = {
   device_id: "com.skillbench.device-id",
@@ -239,10 +241,11 @@ function getSignedOut() {
 }
 
 function getTelemetryDisabled() {
-  return readStore().telemetry_disabled === true;
+  return readStore().telemetry_disabled === true || telemetryStore.getGlobalDisabled();
 }
 
 function setTelemetryDisabled(disabled) {
+  telemetryStore.setGlobalEnabled(!disabled);
   const store = readStore();
   if (disabled) {
     store.telemetry_disabled = true;
@@ -270,6 +273,8 @@ function signOut() {
 // the next gh attempt is unblocked.
 function markEngaged() {
   const store = readStore();
+  // Preserve an explicit legacy machine OFF when sign-in clears old flags.
+  if (store.telemetry_disabled === true && store.signed_out !== true) telemetryStore.setGlobalEnabled(false);
   delete store.signed_out;
   delete store.telemetry_disabled;
   writeStore(store);
@@ -315,10 +320,7 @@ function commitSignin({ jwt, orgs }) {
  * future repo-scope gating parity with the Claude plugin.
  */
 function getAllowedGitHubOrgs() {
-  const store = loadStore();
-  const orgs = store.allowed_github_orgs;
-  if (!Array.isArray(orgs)) return [];
-  return orgs;
+  return getLicenseOrgs(readStore().license_jwt);
 }
 
 /**

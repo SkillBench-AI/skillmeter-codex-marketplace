@@ -94,9 +94,30 @@ function readEndpointClaim(token) {
   return null;
 }
 
+function getLicenseOrgs(token) {
+  const payload = token ? decodeJwtPayload(token) : null;
+  if (!payload) return [];
+
+  const raw = Array.isArray(payload.orgs)
+    ? payload.orgs
+    : payload.org && typeof payload.org.login === "string"
+      ? [payload.org.login]
+      : [];
+  const orgs = Array.from(
+    new Set(
+      raw
+        .filter((org) => typeof org === "string")
+        .map((org) => org.trim().toLowerCase())
+        .filter(Boolean)
+    )
+  );
+  return orgs.length === 1 ? orgs : [];
+}
+
 module.exports = {
   JWT_EXPIRY_GRACE_SECONDS,
   decodeJwtPayload,
+  getLicenseOrgs,
   isJwtExpired,
   getEndpointFromToken,
   getEndpointFromTokenAllowExpired,

@@ -173,7 +173,7 @@ Capture and each upload recheck signout, global disable, current user/device,
 allowed orgs and project consent. Source `session_meta`/`turn_context` cwd values
 must remain in the authorized repository. Queues cannot move between principals.
 A rejected/expired token retains the queue; transcript upload does not clear shared
-credentials or retry anonymously. Existing event-log handling is unchanged.
+credentials or retry anonymously. Event delivery follows the same authenticated-only rule.
 
 `SessionStart` still recovers/seals orphaned event logs and starts the bounded
 retry monitor. Event `.sent`/poison files retain their existing cleanup policy.
@@ -252,10 +252,10 @@ than configured separately):
    [Identity & authentication](#identity--authentication)), with the
    `/logs/codex` route appended. The claim is read even from an expired token so
    a drain still reaches the right tenant host while a refresh is pending.
-3. built-in default (prod): `https://api.meter.skillbench.ai/logs/codex`
+3. no valid destination: retain the queue without sending
 
 Step 1 is user-supplied, so it's validated against a trusted-domain allow-list.
-Step 2 is server-minted at sign-in and trusted as-is.
+Step 2 must be a valid HTTPS origin without credentials, path, query or fragment.
 
 There is no `backendUrl` settings key. To run against a non-default
 environment, point activation at that environment (`activate_url` /
@@ -264,20 +264,12 @@ environment, point activation at that environment (`activate_url` /
 See [Pointing at a non-default environment](#pointing-at-a-non-default-environment).
 
 
-Per-project opt-in lives in `<project>/.codex/settings.local.json`:
-
-
-```json
-{
-  "skillmeter": {
-    "telemetry": true,
-    "activate_url": "https://api.dev.skillbench.com/activate"
-  }
-}
-```
-
-Repo scope is **not** configured here — it derives from the GitHub identities of
-the signed-in user (see [Repo-scoped filtering](#repo-scoped-filtering)).
+Consent is shared with Claude in `~/.skillbench/telemetry-policy.json`, keyed by
+canonical GitHub organization/repository. Both organization and repository must
+be explicitly enabled. Legacy local `telemetry: false` remains a veto;
+`telemetry: true` alone does not authorize capture. The telemetry CLI changes the
+canonical decision and clears that legacy key only for an explicit command.
+Repository eligibility comes exclusively from the single licensed organization.
 
 ### Pointing at a non-default environment
 
@@ -298,7 +290,7 @@ together when activating against dev; once the license JWT is cached, telemetry
 routing is read straight from its `telemetry_endpoint` claim, so uploads follow
 the same environment without a separate `backendUrl`. (`SKILLMETER_BACKEND_URL`
 remains available only as a local-dev bypass that points uploads at a fake
-server without a token.)
+server with a valid synthetic development token.)
 
 
 You can toggle telemetry per-project with the bundled CLI:
@@ -321,15 +313,17 @@ node "$PLUGIN_ROOT/scripts/telemetry.js" enable --global
 While globally disabled, hooks do not record new events and durable queues are
 left on disk instead of being uploaded.
 
-Consent is collected **in-context — there is no OS pop-up**. When a project has
-no explicit opt-in, telemetry **auto-enables only if the repo is owned by one of
-your allowed GitHub orgs** (owned-org auto-enable, matching the Claude Code
-plugin); a passive `(telemetry auto-enabled — repo owned by allowed org)` notice
-prints and you can opt out any time with `telemetry.js disable`. For any other
-project the first `SessionStart` prints the enable/disable/status commands and
-leaves it "not configured" until you choose. This works identically on
-headless/SSH/CI sessions — nothing is ever gated behind a desktop dialog.
+Consent is collected in context, with no OS dialog or automatic organization
+opt-in. Repository OFF removes its queued event/transcript payloads. Global OFF
+pauses delivery and preserves already authorized payloads. A Codex byte cursor
+excludes pre-consent and observed disabled intervals, including during server
+baseline recovery. Historical snapshots are never automatically migrated.
 
+Events are stored in queues bound to repository, principal, device and consent
+identity. Without a host data directory, Codex uses `~/.skillbench/codex` rather
+than its versioned installation directory. `SKILLMETER_STATE_DIR` supports
+isolated development. See `docs/codex-parity-checkpoint.md` in the repository for
+current validation limits and the required installed-client canary.
 
 ## Identity & authentication
 
@@ -462,48 +456,12 @@ Events are dropped — even in projects where you ran `telemetry.js enable` — 
 To refresh the allowed identity list (e.g. after joining a new org), run the
 `signin` skill again.
 
-#### Narrowing scope to specific orgs
+#### License scope
 
-By default every signed-in org is in scope. If your account belongs to several
-orgs but you only want to capture telemetry for some of them (for example, only
-`skillbench-ai`), narrow it. Narrowing is intersected with your signed-in orgs,
-so it can only restrict the captured set — never widen it (a repo in an org you
-are not a member of stays blocked).
-
-**At sign-in (recommended)** — scope which orgs are even persisted. Useful when
-the silent `gh` path would otherwise enroll every org your account belongs to:
-
-```bash
-node "$PLUGIN_ROOT/scripts/signin.js" --org skillbench-ai
-```
-
-`--org` is repeatable and accepts comma-separated values. If you are already
-signed in, re-running with `--org` re-scopes the stored org list in place
-(no full re-auth needed). Re-expanding later requires sign-out + sign-in.
-
-**At runtime** — narrow the repo-scope gate without touching the stored org
-list. Resolution order (env var wins, mirroring the backend-URL resolver):
-
-1. `SKILLMETER_REPO_SCOPE_ORGS` — comma- or space-separated env var, applied to
-   every project on the machine. Useful for a single-org workstation:
-
-   ```bash
-   export SKILLMETER_REPO_SCOPE_ORGS="skillbench-ai"
-   ```
-
-2. `skillmeter.repoScopeOrgs` in `<project>/.codex/settings.local.json` — an
-   array (or comma-separated string), scoped to that project:
-
-   ```json
-   { "skillmeter": { "repoScopeOrgs": ["skillbench-ai"] } }
-   ```
-
-Org names are matched case-insensitively. Leaving everything unset preserves the
-default "all signed-in orgs" behavior. The same `SKILLMETER_REPO_SCOPE_ORGS` /
-`skillmeter.repoScopeOrgs` values are also honored at sign-in (precedence:
-`--org` > env > setting), so a configured scope narrows the persisted org list
-even on the silent `gh` path.
-
+Capture uses only the single organization in the license JWT. Legacy membership
+lists and scope-filter settings never widen it. Legacy sign-in options remain
+for compatibility while the separate auth/lifecycle changes are reconciled;
+they do not override the licensed organization or explicit telemetry consent.
 
 ## Bundled skills
 

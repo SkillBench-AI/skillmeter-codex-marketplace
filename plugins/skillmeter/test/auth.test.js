@@ -19,6 +19,7 @@ const http = require("http");
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "sk-auth-home-"));
 process.env.HOME = tmpHome;
 process.env.USERPROFILE = tmpHome;
+process.env.PLUGIN_DATA = path.join(tmpHome, "plugin-data");
 delete process.env.SKILLMETER_BACKEND_URL;
 delete process.env.SKILLMETER_ACTIVATE_URL;
 delete process.env.SKILLMETER_GITHUB_CLIENT_ID;
@@ -75,10 +76,10 @@ function startServer(handler) {
 }
 
 function tmpLogFile(contents) {
-  const p = path.join(
-    fs.mkdtempSync(path.join(os.tmpdir(), "sk-auth-log-")),
-    "events.jsonl.1700000000000"
-  );
+  let dir;
+  try { dir = require("../testing/authorized-queue").authorizedQueue(logger).root; }
+  catch { dir = fs.mkdtempSync(path.join(os.tmpdir(), "sk-auth-log-")); }
+  const p = path.join(dir, "events.jsonl." + Date.now());
   fs.writeFileSync(p, contents);
   return p;
 }
@@ -125,12 +126,12 @@ test("getEndpointFromToken rejects expired tokens, missing/non-https claims", ()
 
 // --- credstore lifecycle ---------------------------------------------------
 
-test("commitSignin stores the license + normalized orgs; signOut clears them", () => {
-  const token = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com" });
+test("commitSignin scope comes from the license, ignoring legacy memberships", () => {
+  const token = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
   const ok = credstore.commitSignin({ jwt: token, orgs: ["Acme", "acme", " Beta ", ""] });
   assert.equal(ok, true);
   assert.equal(credstore.getLicenseToken(), token);
-  assert.deepEqual(credstore.getAllowedGitHubOrgs(), ["acme", "beta"]);
+  assert.deepEqual(credstore.getAllowedGitHubOrgs(), ["acme"]);
   assert.equal(credstore.getSignedOut(), false);
   assert.equal(credstore.getTelemetryDisabled(), false);
 
@@ -194,7 +195,7 @@ test("setLicenseToken('') clears the stored token", () => {
 
 test("getBackendUrl routes to the JWT per-tenant endpoint with /logs/codex", () => {
   credstore.markEngaged();
-  credstore.setLicenseToken(makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com" }));
+  credstore.setLicenseToken(makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} }));
   // tmpHome has no .codex/settings.local.json, so settings don't interfere.
   assert.equal(logger.getBackendUrl(tmpHome), "https://acme.meter.skillbench.com/logs/codex");
 });
@@ -249,7 +250,7 @@ test("an untrusted activation override falls back to the prod default", () => {
 // --- authenticated upload + 401/403 clear-and-retry ------------------------
 
 test("transferEventLog attaches the JWT and marks the batch .sent on 2xx", async () => {
-  const token = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com" });
+  const token = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
   credstore.setLicenseToken(token);
 
   let sawAuth = null;
@@ -271,7 +272,7 @@ test("transferEventLog attaches the JWT and marks the batch .sent on 2xx", async
 });
 
 test("transferEventLog retains the license and batch after one authenticated 401", async () => {
-  const token = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com" });
+  const token = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
   credstore.setLicenseToken(token);
 
   const seen = [];
@@ -326,7 +327,7 @@ test("prepareSession refreshes an expired token so the current session is authen
   // Seed an expired license JWT — the state that used to leave the triggering
   // session unauthenticated when the refresh ran fire-and-forget from afterLog.
   const expired = makeJwt({ exp: PAST });
-  const fresh = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com" });
+  const fresh = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
   credstore.setLicenseToken(expired);
   assert.equal(credstore.isLicenseTokenExpired(expired), true);
 

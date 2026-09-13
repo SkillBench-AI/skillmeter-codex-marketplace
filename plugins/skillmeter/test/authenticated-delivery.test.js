@@ -26,7 +26,7 @@ beforeEach(() => {
   save(token());
   require("../scripts/credstore").refreshFromDisk();
   fs.mkdirSync(logger.LOG_DIR, { recursive: true });
-  file = path.join(logger.LOG_DIR, "events.jsonl." + Date.now());
+  file = path.join(require("../testing/authorized-queue").authorizedQueue(logger, "synthetic").root, "events.jsonl." + Date.now());
   fs.writeFileSync(file, '{"synthetic":true}\n');
   global.fetch = async () => assert.fail("unexpected network");
 });

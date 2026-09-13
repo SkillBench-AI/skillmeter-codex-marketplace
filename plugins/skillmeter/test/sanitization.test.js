@@ -230,9 +230,14 @@ function runHookEndToEnd(script, input) {
       device_id: "TEST-DEVICE",
       hash_salt: "deadbeefsalt",
       allowed_github_orgs: ["acme"],
+      license_jwt: "e30." + Buffer.from(JSON.stringify({exp:4102444800, github_id:123, org:{login:"acme"}, aud:"https://acme.meter.skillbench.com"})).toString("base64url") + ".fixture",
     }) + "\n"
   );
 
+  fs.writeFileSync(path.join(home, ".skillbench/telemetry-policy.json"), JSON.stringify({
+    schema_version: 1, revision: 1, global: {enabled:true}, organizations: {acme:{enabled:true}},
+    repositories: {"github.com/acme/widgets":{enabled:true}},
+  }));
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "sk-sani-repo-"));
   fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
   fs.writeFileSync(
@@ -261,8 +266,8 @@ function runHookEndToEnd(script, input) {
   const logDir = path.join(pluginData, "logs");
   const records = [];
   if (fs.existsSync(logDir)) {
-    for (const f of fs.readdirSync(logDir)) {
-      if (!/^events\.jsonl(\.\d+)?$/.test(f)) continue;
+    for (const f of fs.readdirSync(logDir, { recursive: true })) {
+      if (!/^events\.jsonl(\.\d+)?$/.test(path.basename(f))) continue;
       const raw = fs.readFileSync(path.join(logDir, f), "utf8");
       for (const line of raw.split("\n")) {
         if (line.trim()) {
