@@ -182,3 +182,11 @@ test("corrupt consent offsets cannot stage or silently re-authorize history", t 
   assert.throws(() => f.stage({consent:state}), /invalid-consent-journal/);
   assert.deepEqual(queue.pendingFiles(f.root), []);
 });
+test("a consent change during staging cannot publish a cursor or payload", t => {
+  const f = fixture(t);
+  fs.writeFileSync(f.source, line("synthetic"));
+  assert.throws(() => f.stage({authorizeCommit:() => false}), /consent-changed-during-stage/);
+  const dir = queue.queueDirectories(f.root)[0];
+  assert.equal(fs.existsSync(path.join(dir, "cursor.json")), false);
+  assert.equal(fs.readdirSync(dir).some(name => name.startsWith("batch-")), false);
+});

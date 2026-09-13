@@ -144,3 +144,30 @@ test("quarantine stays repository-bound and OFF removes quarantined payloads", (
   logger.saveTelemetryOptIn(b, false);
   assert.equal(fs.existsSync(poison), false);
 });
+test("explicit disable makes a legacy local veto canonical for other clones", () => {
+  const logger = require("../scripts/logger");
+  logger.saveTelemetryOptIn(a, true);
+  fs.mkdirSync(path.join(a, ".codex"));
+  fs.writeFileSync(path.join(a, ".codex/settings.local.json"), '{"skillmeter":{"telemetry":false}}');
+  logger.saveTelemetryOptIn(a, false);
+  assert.equal(policy.getRepositoryOverride("synthetic/shared"), false);
+  assert.equal(logger.captureGate(b).capture, false);
+});
+test("a credential rotation during validation cannot send a queue under another principal", async () => {
+  const logger = require("../scripts/logger");
+  const creds = require("../scripts/credstore");
+  logger.saveTelemetryOptIn(a, true);
+  logger.logInfo("UserPromptSubmit", "synthetic-session", {}, "SYNTHETIC", logger.transcriptScope(a));
+  const file = logger.sealEventLog(a);
+  const other = "e30." + Buffer.from(JSON.stringify({exp:4102444800, aud:"https://synthetic.meter.skillbench.ai", github_id:456, org:{login:"synthetic"}})).toString("base64url") + ".fixture";
+  const originalToken = creds.getLicenseToken, realFetch = global.fetch;
+  let reads = 0, sends = 0;
+  // Simulate an old token captured just before the persisted sign-in changes.
+  creds.getLicenseToken = (...args) => ++reads === 1 ? other : originalToken(...args);
+  global.fetch = async () => { sends++; return {ok:true}; };
+  try {
+    assert.equal(await logger.transferEventLog(file), "skip");
+    assert.equal(sends, 0);
+    assert.equal(fs.existsSync(file), true);
+  } finally { creds.getLicenseToken = originalToken; global.fetch = realFetch; }
+});

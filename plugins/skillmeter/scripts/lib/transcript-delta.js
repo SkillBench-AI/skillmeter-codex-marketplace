@@ -270,6 +270,7 @@ function stage(root, source, scope, salt, options = {}) {
       prefix: rawPrefix.digest("hex"), fileId, scope, source: path.resolve(source), transcriptId: path.basename(source) };
     // Detect concurrent source rewrite before publishing any state.
     if (prefix(fd, committed, salt).digest("hex") !== next.prefix) throw new Error("source-changed-during-stage");
+    if (options.authorizeCommit && !options.authorizeCommit()) throw new Error("consent-changed-during-stage");
     const group = path.join(dir, `batch-${String(chunks[0].seq).padStart(16, "0")}-${crypto.randomUUID()}`);
     const temp = path.join(dir, `.stage-${crypto.randomUUID()}`);
     fs.mkdirSync(temp, { mode: 0o700 });
@@ -285,7 +286,7 @@ function stage(root, source, scope, salt, options = {}) {
   } catch (e) {
     // Error code only. Never persist source text or arbitrary exception payloads.
     const code = ["oversized-single-record", "malformed-complete-record", "invalid-wire-budget",
-      "source-changed-during-stage", "source-truncated-during-read", "invalid-cursor", "incomplete-transaction", "source-scope-changed", "source-owner-changed", "consent-source-rewritten"].includes(e.message) ? e.message : "stage-failed";
+      "source-changed-during-stage", "source-truncated-during-read", "invalid-cursor", "incomplete-transaction", "source-scope-changed", "source-owner-changed", "consent-source-rewritten", "consent-changed-during-stage"].includes(e.message) ? e.message : "stage-failed";
     writeDurable(path.join(dir, "diagnostic.json"), JSON.stringify({ code, at: new Date().toISOString() }));
     throw e;
   } finally { if (fd !== undefined) fs.closeSync(fd); release(); }

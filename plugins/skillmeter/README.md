@@ -170,7 +170,7 @@ Oversized or malformed complete records preserve the cursor/source and save a
 content-free diagnostic. Deployment-specific gateway limits still need verification.
 
 Capture and each upload recheck signout, global disable, current user/device,
-allowed orgs and project consent. Source `session_meta`/`turn_context` cwd values
+the licensed organization and canonical consent. Source `session_meta`/`turn_context` cwd values
 must remain in the authorized repository. Queues cannot move between principals.
 A rejected/expired token retains the queue; transcript upload does not clear shared
 credentials or retry anonymously. Event delivery follows the same authenticated-only rule.
@@ -385,7 +385,7 @@ node "$PLUGIN_ROOT/bin/sk-refresh"        # force a fresh activation
 node "$PLUGIN_ROOT/bin/sk-telemetry" status
 ```
 
-### JWT refresh & token-clear-and-retry
+### JWT refresh and authenticated retries
 
 - **Proactive refresh.** `SessionStart` rotates a missing or near-expiry JWT via
   the activation Lambda's `/refresh` endpoint (no GitHub round-trip), falling
@@ -403,8 +403,8 @@ node "$PLUGIN_ROOT/bin/sk-telemetry" status
 - **Expiry guard.** A JWT past its `exp` is dropped before a request is sent
   rather than sent and rejected.
 - **401/403 handling.** If the backend rejects the `Authorization` header, the
-  stored license is cleared and the upload is retried once unauthenticated, so a
-  revoked/rotated token can't permanently wedge the durable queue.
+  queued payload and stored identity are retained. There is no anonymous retry.
+  Event 401/402/403 responses do not consume the poison-payload retry budget.
 
 ## Privacy
 
@@ -413,48 +413,28 @@ node "$PLUGIN_ROOT/bin/sk-telemetry" status
   `~/.skillbench/credentials.json` (mode `0600`, written atomically) and shared
   with the SkillMeter Claude Code plugin so the SkillBench analyzer sees one
   device per machine and one sign-in across agents.
-- **Paths** (`cwd`, `repo_root`, `tool_input.file_path`, `command`, `patch`)
-  are HMAC-SHA256 hashed with the per-machine salt before they leave the
-  session.
-- **Raw content is scrubbed before upload.** Every event — the submitted
-  `prompt`, `last_assistant_message`, approval `description`, tool arguments,
-  tool output, and the staged session transcript — passes through a single
-  deterministic sanitization boundary (`scripts/sanitizer.js`) before it is
-  written to the durable queue or uploaded. The boundary is fail-closed for
-  Tier 1 secrets: API keys, GitHub/Slack tokens, JWTs, AWS access keys, PEM/SSH
-  private keys, `Authorization` headers, database URLs with credentials, and
-  `*_KEY=`/`*_TOKEN=`/`PASSWORD=`/`SECRET=` style assignments are replaced with
-  `[REDACTED_SECRET]`, and emails are replaced with `[EMAIL]`. Only the count
-  and detector types of any redactions travel with the event (under
-  `_sanitization`); the original sensitive values are never stored or logged.
-  This is deterministic, not LLM-based, and runs centrally in `runHook` so a new
-  hook field cannot bypass it. It is a best-effort secret/PII filter, not a
-  guarantee of complete PII removal — see `SANITIZATION_EPIC.md` for the full
-  tiered model.
-- **Repo scope filtering** stops uploads from repos outside the GitHub orgs the
-  signed-in user belongs to (see below). The default posture is closed: with no
-  signed-in orgs, every event is dropped at the hook rather than uploaded.
+- **Sanitizer policy 3.1.0** uses Claude's pinned rules and path vocabulary.
+  Secrets and typed PII are redacted; home prefixes and directory fields are
+  hashed. File fields preserve shared technical vocabulary, hierarchy and
+  extensions while hashing private segments. Commands, patches and custom tool
+  input remain opaque in Codex. Tool names and call IDs remain available.
+- **Per-record metadata** reports `policyVersion`, `secrets`, `pii`, `counts`
+  (including paths) and detector `ids`. Raw records cannot supply a trusted
+  sanitization marker. Known JSON-encoded function arguments receive structured
+  sanitization; unsupported arguments are hashed with an explicit format marker.
+- **Repository eligibility** requires the licensed organization and canonical
+  organization/repository consent. A membership list never widens that scope.
+
 - **Trust review.** Codex skips plugin-bundled hooks until you review and
   trust the current hook definition via `/hooks`. Changing this plugin's hooks
   invalidates the trust and requires re-review.
 
 ### Repo-scoped filtering
 
-Telemetry is gated to repositories owned by GitHub identities the signed-in user
-controls — their own login plus every org returned by `GET /user/orgs`. The list
-is captured at signin (using the same OAuth token that exchanges for the
-SkillMeter license) and stored in `~/.skillbench/credentials.json` next to the
-device ID and license JWT.
-
-Events are dropped — even in projects where you ran `telemetry.js enable` — for:
-
-- a machine that is not signed in (no allowed orgs cached → `not_activated`)
-- directories that are not inside a Git repository
-- repositories without a recognizable GitHub remote
-- repositories whose remote belongs to an org the user is not a member of
-
-To refresh the allowed identity list (e.g. after joining a new org), run the
-`signin` skill again.
+Telemetry requires a Git repository with an unambiguous canonical GitHub remote
+in the single licensed organization. Missing/expired identity, unsupported remotes,
+personal repositories outside that organization, or missing explicit consent
+block capture. Use `telemetry.js status` from the checkout to see the actual gate.
 
 #### License scope
 

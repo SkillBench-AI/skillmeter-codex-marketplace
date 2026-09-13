@@ -387,7 +387,7 @@ async function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) 
   const context = repositoryQueue.forFile(REPOSITORIES_LOG_DIR, logFile);
   if (!context) return "skip";
   if (repositoryQueue.disposition(context.scope) === "delete") { repositoryQueue.purge(context); return "skip"; }
-  if (!scopeStillAllowed(context.scope)) return "skip";
+  if (!scopeStillAllowed(context.scope, token)) return "skip";
   const destination = getBackendUrl(undefined, token);
   if (!destination || (backendUrl && backendUrl !== destination)) return "auth";
   try {
@@ -414,10 +414,10 @@ async function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) 
 // Legacy TRANSCRIPTS_PENDING_DIR snapshots remain available for selected recovery.
 // ---------------------------------------------------------------------------
 
-function transcriptScope(cwd, requireConsent = true) {
+function transcriptScope(cwd, requireConsent = true, requestToken) {
   credstore.refreshFromDisk?.();
   if (requireConsent && credstore.getSignedOut()) return null;
-  const token = getLicenseToken();
+  const token = requestToken === undefined ? getLicenseToken() : requestToken;
   if (!token || (requireConsent && isJwtExpired(token))) return null;
   const decision = getRepoScopeDecision(cwd);
   if (!decision.allowed || (requireConsent && !captureGate(cwd).capture)) return null;
@@ -431,8 +431,8 @@ function transcriptScope(cwd, requireConsent = true) {
   const scope = { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, repoKey: decision.repoKey, deviceId, owner };
   return { ...scope, consentStamp: repositoryQueue.consentStamp(scope) };
 }
-function scopeStillAllowed(scope) {
-  const current = transcriptScope(scope.cwd);
+function scopeStillAllowed(scope, requestToken) {
+  const current = transcriptScope(scope.cwd, true, requestToken);
   return current && ["repoKey", "org", "deviceId", "owner", "consentStamp"].every(k => current[k] === scope[k]);
 }
 function observeTranscriptConsent(source, cwd, verifyReplacement = false) {
@@ -451,6 +451,7 @@ function stageTranscriptForUpload(transcriptPath, context = {}) {
   try {
     const result = transcriptQueue.stage(TRANSCRIPT_CHUNKS_DIR, transcriptPath, scope, getOrCreateHashSalt(), {
       consent,
+      authorizeCommit: () => scopeStillAllowed(scope) && consent.stamp === scope.consentStamp + JSON.stringify(telemetryStore.readPolicy().global),
       authorizeRecord: record => {
         if (!["session_meta", "turn_context"].includes(record.type) || !record.payload?.cwd) return true;
         const sourceScope = transcriptScope(record.payload.cwd);
@@ -471,8 +472,9 @@ function stageTranscriptForUpload(transcriptPath, context = {}) {
 }
 
 async function sendTranscriptChunk(meta, compressed, backendUrl, timeoutMs) {
-  if (!scopeStillAllowed(meta.scope)) return "skip";
+  credstore.refreshFromDisk?.();
   const token = getLicenseToken();
+  if (!scopeStillAllowed(meta.scope, token)) return "skip";
   try {
     const destination = getBackendUrl(undefined, token);
     if (!destination || (backendUrl && backendUrl !== destination)) return "skip";
@@ -1353,7 +1355,8 @@ function saveTelemetryOptIn(cwd, value) {
   const scope = getRepoScopeDecision(cwd);
   if (!scope.allowed) throw new Error("An eligible repository in the licensed organization is required.");
   if (typeof value !== "boolean") throw new Error("Telemetry consent must be boolean.");
-  if (getTelemetryOptIn(cwd) === value && (value === false || telemetryStore.getOrganizationConsent(scope.remoteOrg) === true)) return;
+  if (telemetryStore.getRepositoryOverride(scope.repoKey) === value &&
+      (value === false || (getTelemetryOptIn(cwd) === true && telemetryStore.getOrganizationConsent(scope.remoteOrg) === true))) return;
   // Explicit enable authorizes this organization and this repository only.
   // Observe known active sources before changing consent, including OFF/ON
   // transitions with no intervening Codex hooks. No historical directory scan.
@@ -1511,11 +1514,11 @@ async function runHook(eventName, buildData, options = {}) {
   // identifiers before it is ever written to the durable queue or uploaded.
   // Running it centrally means a new hook field can't accidentally bypass the
   // sanitizer, and the redaction counts/types travel with the event.
-  const { value: data, meta } = sanitizeEventData(rawData);
-  if (meta.tier1 > 0 || meta.tier2 > 0) {
+  const { value: data, meta } = sanitizeEventData(rawData, hashSalt);
+  if (meta.secrets > 0 || meta.pii > 0) {
     data._sanitization = meta;
     console.error(
-      `[skillmeter] ${eventName}: redacted ${meta.tier1} secret(s) and ${meta.tier2} identifier(s) before upload`
+      `[skillmeter] ${eventName}: redacted ${meta.secrets} secret(s) and ${meta.pii} identifier(s) before upload`
     );
   }
 

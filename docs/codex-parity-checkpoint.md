@@ -43,10 +43,30 @@ observations use file stats; background recovery may verify the committed prefix
 Malformed journals fail closed. Full `npm run check`: 250 passed; `git diff --check`
 passed. Tests use isolated synthetic credentials, policies, repositories and data.
 
+## Completed: sanitizer and synthetic boundary
+
+The pinned Claude 3.1 engine, rules and vocabulary are reused with a small Codex
+adapter. All 67 PII fixtures run through the Codex boundary. Commands/patches
+remain opaque, function arguments retain structure, and every record receives
+fresh metadata. `docs/claude-parity.md` records source hashes and deviations.
+The initial parity run reproduced 39 failures; final `npm run check`: 400 pass.
+
+An author-performed checklist review also fixed a token/queue ownership race,
+a consent change during staging, and a legacy-local-OFF command that did not
+write canonical OFF. This is not independent engineering approval.
+
+The updated independent cross-repository oracle passes with the real uploader,
+collector Go handler/storage, HTTP S3 emulator, repaired shared preprocessor and
+existing analyzer using scripted model responses. It preserves 40 records,
+21 canonical messages, tool links and legitimate repeats across lost responses,
+midnight, three-day baseline reset and delayed stale chunks. The existing report
+ingest schema validates. No model service, backend persistence/read or dashboard
+was exercised. The old pipeline/collector worktrees were tested, not changed;
+current-main reconciliation remains a later step.
+
 ## Next and unresolved limits
 
-Port pinned sanitizer fixtures and rules, retaining command/patch hashing.
-Then review the whole candidate and open a dependent draft follow-up to PR #35.
+Back up the final commit and keep the dependent follow-up to PR #35 draft.
 Keep unfinished ADR001 lifecycle work out of this candidate. Coordinate scope with
 Seungho before requesting review; check Brandon's ATLAS collector overlap.
 

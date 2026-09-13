@@ -1,37 +1,14 @@
 ---
 name: check-repo-scope
-description: Check whether the current repo belongs in the user's allowed GitHub org scope.
+description: Check the current repository against the license organization and shared telemetry consent.
 ---
 
-Use this skill when the user wants to know whether a workspace should be
-included in SkillBench collection.
+Use the plugin's `scripts/telemetry.js status` from the current repository.
+It resolves canonical GitHub identity using the same gate as capture, including
+clones/worktrees, organization consent, repository consent and legacy local OFF.
+Explain the reported gate without printing the JWT or credentials file.
 
-Workflow:
-
-1. Inspect the nearest Git repository for the current workspace.
-2. Resolve the best available Git remote and extract the GitHub org when
-   possible.
-3. Compare that org with any allowed-org list the user provides.
-4. Explain one of the following outcomes clearly:
-   - approved GitHub org match
-   - GitHub repo outside the allowed org list
-   - no Git repository
-   - no recognizable GitHub remote
-5. If the user wants to proceed with collection, suggest or run the matching
-   `skillbench collect --allowed-orgs ...` command.
-
-If the user belongs to several orgs but only wants some of them collected,
-point them at the narrowing allow-list (intersected with their signed-in orgs,
-so it can only restrict scope):
-
-- `signin --org skillbench-ai` — narrows the orgs persisted at sign-in (also
-  re-scopes an existing sign-in in place).
-- `SKILLMETER_REPO_SCOPE_ORGS="skillbench-ai"` — env var, machine-wide.
-- `{ "skillmeter": { "repoScopeOrgs": ["skillbench-ai"] } }` in
-  `<project>/.codex/settings.local.json` — per-project.
-
-Guardrails:
-
-- Keep the explanation concrete and repo-specific.
-- If the remote is not GitHub-backed, explain that SkillBench will treat it as
-  out of scope for GitHub-org filtering.
+Only the single organization in the current license establishes eligibility.
+User-supplied membership lists and legacy scope settings cannot authorize capture.
+If the user requests capture, use the existing telemetry enable command from the
+eligible repository. Do not infer consent from membership or sign-in alone.
