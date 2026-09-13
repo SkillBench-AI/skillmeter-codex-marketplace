@@ -49,7 +49,7 @@ The pinned Claude 3.1 engine, rules and vocabulary are reused with a small Codex
 adapter. All 67 PII fixtures run through the Codex boundary. Commands/patches
 remain opaque, function arguments retain structure, and every record receives
 fresh metadata. `docs/claude-parity.md` records source hashes and deviations.
-The initial parity run reproduced 39 failures; final `npm run check`: 400 pass.
+The initial parity run reproduced 39 failures; final `npm run check`: 401 pass.
 
 An author-performed checklist review also fixed a token/queue ownership race,
 a consent change during staging, and a legacy-local-OFF command that did not
@@ -87,3 +87,8 @@ Release still requires a real installed Codex CLI/desktop session, explicit cons
 scoped delivery/storage, shared preprocessing, the existing real AI-usage analyzer,
 and the matching report for the correct user on the existing dashboard. Production
 deployment, schedules, historical replay and publication are not authorized here.
+
+Final shared-state fix: an explicit Codex global toggle now retires the legacy
+credentials OFF flag and writes the shared policy only. A Claude policy resume
+therefore resumes Codex too. Pre-existing legacy OFF remains respected until an
+explicit toggle or migration. The cross-client regression and CLI assertions pass.

@@ -247,11 +247,9 @@ function getTelemetryDisabled() {
 function setTelemetryDisabled(disabled) {
   telemetryStore.setGlobalEnabled(!disabled);
   const store = readStore();
-  if (disabled) {
-    store.telemetry_disabled = true;
-  } else {
-    delete store.telemetry_disabled;
-  }
+  // An explicit toggle adopts the shared policy. Retaining a second OFF here
+  // would prevent another client from resuming that canonical decision.
+  delete store.telemetry_disabled;
   writeStore(store);
   _cache = store;
 }

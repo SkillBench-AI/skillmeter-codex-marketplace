@@ -22,7 +22,7 @@ Fixed findings:
 
 Evidence: `consent-parity.test.js`, `transcript-delta.test.js`,
 `sanitizer-parity.test.js`, copied Claude tests/corpora and the independent
-Python record/canonical oracle. Final local check: 400 passed. The old tests were
+Python record/canonical oracle. Final local check: 401 passed. The old tests were
 updated for deliberate policy contracts, not disabled: metadata uses secrets/PII
 and ids, malformed local export now errors, and a short invalid fake PAT uses the
 shared 82-character fixture. Commands/patches remain hashes; the analyzer fixture
@@ -46,3 +46,8 @@ Open release gates (confirmed, not speculative test failures):
 
 No new service, package release, version bump, deployment, shared auth config,
 schedule or history replay is included. See the checkpoint for the live sequence.
+
+Final shared-state fix: an explicit Codex global toggle now retires the legacy
+credentials OFF flag and writes the shared policy only. A Claude policy resume
+therefore resumes Codex too. Pre-existing legacy OFF remains respected until an
+explicit toggle or migration. The cross-client regression and CLI assertions pass.

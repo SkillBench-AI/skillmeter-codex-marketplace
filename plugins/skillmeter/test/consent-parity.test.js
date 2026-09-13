@@ -171,3 +171,10 @@ test("a credential rotation during validation cannot send a queue under another 
     assert.equal(fs.existsSync(file), true);
   } finally { creds.getLicenseToken = originalToken; global.fetch = realFetch; }
 });
+test("a global pause made by Codex can be resumed through Claude's shared policy", () => {
+  const creds = require("../scripts/credstore");
+  creds.setTelemetryDisabled(true);
+  assert.equal(creds.getTelemetryDisabled(), true);
+  policy.setGlobalEnabled(true); // the shared writer used by Claude
+  assert.equal(creds.getTelemetryDisabled(), false);
+});
