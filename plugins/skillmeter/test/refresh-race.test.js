@@ -167,6 +167,42 @@ test("writers read current state after waiting for the shared lock", async () =>
   assert.equal(readStore().telemetry_disabled, true);
 });
 
+// A pid does not identify a process incarnation: after a crash inside the
+// critical section the OS can hand that number to an unrelated long-lived
+// process. Without the age backstop the lock would then look held for as long
+// as that process runs, and every credential write would fail permanently.
+test("a stale lock naming a live unrelated process is still reaped", () => {
+  const lock = `${credentialPath}.lock.pid-reuse`;
+  // process.pid is unquestionably alive and has nothing to do with this lock.
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid }));
+  const old = Date.now() - 120_000;
+  fs.utimesSync(lock, old / 1000, old / 1000);
+
+  const release = acquireLock(lock);
+  assert.equal(typeof release, "function", "the stale owner was reaped");
+  release();
+  assert.equal(fs.existsSync(lock), false);
+});
+
+test("an unparseable owner file is reaped once stale instead of wedging forever", () => {
+  const lock = `${credentialPath}.lock.garbage`;
+  fs.writeFileSync(lock, "not json");
+  const old = Date.now() - 120_000;
+  fs.utimesSync(lock, old / 1000, old / 1000);
+
+  const release = acquireLock(lock);
+  assert.equal(typeof release, "function");
+  release();
+});
+
+test("a fresh lock naming a live process is still respected", () => {
+  const lock = `${credentialPath}.lock.fresh`;
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid }));
+
+  assert.equal(acquireLock(lock), null, "a live owner is never evicted early");
+  fs.unlinkSync(lock);
+});
+
 test("a crashed writer's lock can be recovered without evicting a live owner", () => {
   const lock = `${credentialPath}.lock`;
   childProcess.execFileSync(process.execPath, ["-e", `

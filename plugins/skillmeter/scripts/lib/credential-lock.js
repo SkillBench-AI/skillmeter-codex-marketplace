@@ -9,8 +9,32 @@ function alive(pid) {
   catch (error) { return error.code !== "ESRCH"; }
 }
 
+// A lock still held after this long is broken by definition: the critical
+// section is a synchronous read/modify/write of one small JSON file, and
+// mutateStore itself gives up waiting after 1s.
+const STALE_MS = 60_000;
+
+// Whether the existing owner should be respected.
+//
+// PID liveness is the primary signal — a writer that is genuinely mid-write
+// must never be evicted. But a PID does not identify a process *incarnation*:
+// if a writer crashes inside the critical section the OS can later hand that
+// number to an unrelated long-lived process, and the lock then looks held for
+// as long as that process runs. An owner file we cannot read a pid out of has
+// the same effect, since an unknown owner is assumed live. Either way every
+// writer — sign-in, sign-out, refresh, the telemetry toggle — would fail with
+// `credential-store-busy` indefinitely, with no path back.
+//
+// Age is therefore the backstop that bounds that failure instead of leaving it
+// permanent. It is deliberately three orders of magnitude above the critical
+// section, so it can only fire on an owner that is already broken.
+function heldByLiveOwner(owner, stat) {
+  if (Date.now() - stat.mtimeMs > STALE_MS) return false;
+  return alive(owner?.pid);
+}
+
 // Same owner-file protocol as PR #37's transcript-delta.acquireLock.
-// Publish a complete owner atomically; never evict a live writer by age.
+// Publish a complete owner atomically; never evict a live writer by age alone.
 function acquireLock(file, depth = 0) {
   if (depth > 8) return null;
   const ownerFile = `${file}.owner-${crypto.randomUUID()}`;
@@ -30,13 +54,15 @@ function acquireLock(file, depth = 0) {
       if (err.code === "ENOENT") return acquireLock(file, depth + 1);
       throw err;
     }
-    let owner;
+    let owner = null;
     try { owner = JSON.parse(fs.readFileSync(file, "utf8")); }
     catch (err) {
       if (err.code === "ENOENT") return acquireLock(file, depth + 1);
-      return null;
+      // Unparseable owner: treat as an unknown (assumed live) owner so the age
+      // backstop can still reap it, instead of failing forever.
+      owner = null;
     }
-    if (alive(owner?.pid)) return null;
+    if (heldByLiveOwner(owner, stat)) return null;
     const releaseReaper = acquireLock(`${file}.reap-${stat.ino}`, depth + 1);
     if (!releaseReaper) return null;
     try {
