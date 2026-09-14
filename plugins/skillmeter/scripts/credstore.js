@@ -201,23 +201,39 @@ function loadStore(logDir) {
   return _cache;
 }
 
-function getDeviceId(logDir) {
+// Create-if-absent under the writer lock. A busy lock here almost always means
+// a sibling hook is creating the very same field — several fire at once on a
+// machine's first session — so we re-read instead of propagating the timeout.
+// getDeviceId/getOrCreateHashSalt are called on the hot hook path, where a
+// throw would fail the hook outright; every other writer keeps fail-fast.
+function ensureIdentityField(logDir, key, create) {
   const store = loadStore(logDir);
-  if (store.device_id) return store.device_id;
+  if (store[key]) return store[key];
+  try {
+    mutateStore(current => {
+      if (!current[key]) current[key] = create();
+    });
+  } catch (err) {
+    if (err && err.message === "credential-store-busy") {
+      const fresh = readStore();
+      _cache = fresh;
+      if (fresh[key]) return fresh[key];
+    }
+    throw err;
+  }
+  return _cache[key];
+}
 
-  mutateStore(current => {
-    if (!current.device_id) current.device_id = crypto.randomUUID().toUpperCase();
-  });
-  return _cache.device_id;
+function getDeviceId(logDir) {
+  return ensureIdentityField(logDir, "device_id", () =>
+    crypto.randomUUID().toUpperCase()
+  );
 }
 
 function getOrCreateHashSalt(logDir) {
-  const store = loadStore(logDir);
-  if (store.hash_salt) return store.hash_salt;
-  mutateStore(current => {
-    if (!current.hash_salt) current.hash_salt = crypto.randomBytes(16).toString("hex");
-  });
-  return _cache.hash_salt;
+  return ensureIdentityField(logDir, "hash_salt", () =>
+    crypto.randomBytes(16).toString("hex")
+  );
 }
 
 function getLicenseToken(logDir) {

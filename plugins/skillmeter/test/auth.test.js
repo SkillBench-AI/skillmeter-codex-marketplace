@@ -374,7 +374,9 @@ test("an authenticated rejection forces the next refresh to rotate", async () =>
     await logger.transferEventLog(logFile, `${srv.url}/logs/codex`, 5000);
     assert.equal(logger.isLicenseRejected(), true, "a refresh is now owed");
 
-    const fresh = makeJwt({ exp: FUTURE });
+    // Must differ from `token`: an identical payload would let the assertion
+    // pass even if the rejected credential were returned unchanged.
+    const fresh = makeJwt({ exp: FUTURE, jti: "rotated" });
     const realFetch = global.fetch;
     let refreshCalls = 0;
     global.fetch = async () => {
@@ -390,6 +392,8 @@ test("an authenticated rejection forces the next refresh to rotate", async () =>
       const rotated = await logger.tryRefreshLicense("TEST-DEVICE");
       assert.equal(refreshCalls, 1, "the rejection defeats the freshness short-circuit");
       assert.equal(rotated, fresh);
+      assert.notEqual(rotated, token, "the rejected credential is not reused");
+      assert.equal(credstore.getLicenseTokenUncached(), fresh, "rotation is persisted");
     } finally {
       global.fetch = realFetch;
     }
