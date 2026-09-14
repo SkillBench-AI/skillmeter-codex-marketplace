@@ -77,6 +77,13 @@ function getLicenseToken() {
   return credstore.getLicenseToken(LOG_DIR);
 }
 
+// Uncached read for the upload path. The retry daemon can outlive several
+// sign-ins, so it must see a token another process refreshed rather than the
+// snapshot credstore cached when this process started.
+function getLicenseTokenUncached() {
+  return credstore.getLicenseTokenUncached(LOG_DIR);
+}
+
 function getTelemetryGloballyDisabled() {
   return credstore.getTelemetryDisabled();
 }
@@ -563,12 +570,22 @@ function atomicWriteFileSync(targetPath, data) {
 // ---------------------------------------------------------------------------
 // HTTP outcome classification
 //
-// 401/403 are handled separately (clear the token + retry without auth). Of the
-// remaining non-2xx responses we treat 408 (Request Timeout), 429 (Too Many
-// Requests), and every 5xx as transient (worth retrying) and any other 4xx as
-// permanent — the server is telling us this exact payload will never be
+// 401 / 402 / 403 are auth outcomes, never poison. Both ingest routes sit
+// behind the meter JWT authorizer, so an unauthenticated or stale-token request
+// is rejected at the edge and the collector never sees the payload — the batch
+// itself is still perfectly deliverable and only needs a valid license. We keep
+// it queued for the next refreshed session instead of spending the retry budget
+// (or quarantining it) over something the payload had nothing to do with.
+//
+// Of the remaining non-2xx responses we treat 408 (Request Timeout), 429 (Too
+// Many Requests), and every 5xx as transient (worth retrying) and any other 4xx
+// as permanent — the server is telling us this exact payload will never be
 // accepted, so it must not be retried forever.
 // ---------------------------------------------------------------------------
+function isAuthHttpStatus(status) {
+  return status === 401 || status === 402 || status === 403;
+}
+
 function isPermanentHttpStatus(status) {
   if (status === 408 || status === 429) return false;
   return status >= 400 && status < 500;
@@ -578,6 +595,8 @@ function isPermanentHttpStatus(status) {
 //   "sent"   — 2xx; the file was renamed to `.sent`.
 //   "poison" — permanent server rejection; the payload will never be accepted.
 //   "retry"  — transient failure (5xx / 408 / 429 / network / timeout).
+//   "auth"   — no valid license, or the edge rejected the token (401/402/403);
+//              the batch stays queued and its retry budget is untouched.
 //   "skip"   — nothing to do (missing file).
 // Standalone callers can ignore the value; processSealedBatch uses it to decide
 // between salvage, quarantine, and a bounded retry.
@@ -588,63 +607,55 @@ function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVE
     return Promise.resolve("skip");
   }
 
-  const storedToken = getLicenseToken();
-  // Proactive: never send a JWT we already know is past its exp. The ingest
-  // endpoint accepts unauthenticated batches, so dropping the token still lets
-  // the upload through and the next session's refresh re-authenticates.
-  const initialToken = storedToken && !isJwtExpired(storedToken) ? storedToken : null;
-  if (storedToken && !initialToken) {
-    console.error(`[skillmeter] Event log: dropping expired license JWT before send`);
+  const baseName = path.basename(logFile);
+
+  // A valid (non-expired) license JWT is REQUIRED — the ingest route is behind
+  // the meter JWT authorizer and does not accept unauthenticated batches. No
+  // valid token → leave the batch queued for the next refreshed session rather
+  // than spend it on a request that cannot succeed. Read uncached so the
+  // long-lived retry daemon sees a token another process just refreshed.
+  const token = getLicenseTokenUncached();
+  if (!token || isJwtExpired(token)) {
+    console.error(
+      `[skillmeter] Event log: no valid license JWT — ${baseName} kept queued`
+    );
+    return Promise.resolve("auth");
   }
 
   const compressed = zlib.gzipSync(fs.readFileSync(logFile));
-  const baseName = path.basename(logFile);
-
-  const doPost = (token) =>
-    fetch(backendUrl, {
-      method: "POST",
-      headers: commonHeaders(token),
-      body: compressed,
-      signal: AbortSignal.timeout(timeoutMs),
-    });
 
   const markSent = () => {
     try { fs.renameSync(logFile, `${logFile}.sent`); } catch {}
   };
 
-  const classify = (status) =>
-    isPermanentHttpStatus(status) ? "poison" : "retry";
-
   console.error(
     `[skillmeter] Transferring event log: ${baseName} (${compressed.length} bytes gzipped)`
   );
 
-  return doPost(initialToken)
+  return fetch(backendUrl, {
+    method: "POST",
+    headers: commonHeaders(token),
+    body: compressed,
+    signal: AbortSignal.timeout(timeoutMs),
+  })
     .then((res) => {
       if (res.ok) {
         console.error(`[skillmeter] Event log transferred: ${baseName}`);
         markSent();
         return "sent";
       }
-      // Reactive: the server rejected our Authorization header — clear the bad
-      // token so later requests don't reuse it, then retry once without auth.
-      if (initialToken && (res.status === 401 || res.status === 403)) {
+      // The edge rejected our token. Never clear it here: the credential file
+      // is shared with the Claude Code plugin, so dropping the JWT would sign
+      // the whole machine out of both agents. Rotation is the refresh /
+      // activation path's job; we just leave the batch queued for it.
+      if (isAuthHttpStatus(res.status)) {
         console.error(
-          `[skillmeter] Event log auth rejected (HTTP ${res.status}), clearing license and retrying without auth`
+          `[skillmeter] Event log auth rejected (HTTP ${res.status}) — license kept, ${baseName} kept queued`
         );
-        try { credstore.setLicenseToken(""); } catch {}
-        return doPost(null).then((res2) => {
-          if (res2.ok) {
-            console.error(`[skillmeter] Event log transferred on retry: ${baseName}`);
-            markSent();
-            return "sent";
-          }
-          console.error(`[skillmeter] Event log retry failed: HTTP ${res2.status}`);
-          return classify(res2.status);
-        });
+        return "auth";
       }
       console.error(`[skillmeter] Event log transfer failed: HTTP ${res.status}`);
-      return classify(res.status);
+      return isPermanentHttpStatus(res.status) ? "poison" : "retry";
     })
     .catch((err) => {
       console.error(`[skillmeter] Event log transfer error: ${err.message}`);
@@ -697,7 +708,7 @@ function stageTranscriptForUpload(transcriptPath) {
 }
 
 // Upload one staged transcript. Resolves to the same outcome vocabulary as
-// transferEventLog ("sent" / "poison" / "retry" / "skip"); on 2xx the pending
+// transferEventLog ("sent" / "poison" / "retry" / "auth" / "skip"); on 2xx the pending
 // file is removed. processPendingTranscript uses the outcome to quarantine
 // permanently-rejected transcripts instead of retrying them indefinitely.
 function uploadPendingTranscript(
@@ -712,65 +723,56 @@ function uploadPendingTranscript(
     return Promise.resolve("skip");
   }
 
-  const storedToken = getLicenseToken();
-  const initialToken = storedToken && !isJwtExpired(storedToken) ? storedToken : null;
-  if (storedToken && !initialToken) {
-    console.error(`[skillmeter] Transcript: dropping expired license JWT before send`);
+  const transcriptId = path.basename(pendingPath);
+
+  // Same contract as the event log: the transcript route is behind the same
+  // JWT authorizer, so without a valid license the upload cannot succeed and
+  // the staged snapshot stays pending instead.
+  const token = getLicenseTokenUncached();
+  if (!token || isJwtExpired(token)) {
+    console.error(
+      `[skillmeter] Transcript: no valid license JWT — ${transcriptId} kept pending`
+    );
+    return Promise.resolve("auth");
   }
 
-  const transcriptId = path.basename(pendingPath);
   const compressed = zlib.gzipSync(fs.readFileSync(pendingPath));
-
-  const doPost = (token) =>
-    fetch(`${backendUrl}/transcript`, {
-      method: "POST",
-      headers: commonHeaders(token, {
-        "X-Device-ID": deviceId,
-        "X-Transcript-ID": transcriptId,
-      }),
-      body: compressed,
-      signal: AbortSignal.timeout(timeoutMs),
-    });
 
   const removePending = () => {
     try { fs.unlinkSync(pendingPath); } catch {}
   };
 
-  const classify = (status) =>
-    isPermanentHttpStatus(status) ? "poison" : "retry";
-
   console.error(
     `[skillmeter] Transferring transcript: ${transcriptId} (${compressed.length} bytes gzipped)`
   );
 
-  return doPost(initialToken)
+  return fetch(`${backendUrl}/transcript`, {
+    method: "POST",
+    headers: commonHeaders(token, {
+      "X-Device-ID": deviceId,
+      "X-Transcript-ID": transcriptId,
+    }),
+    body: compressed,
+    signal: AbortSignal.timeout(timeoutMs),
+  })
     .then((res) => {
       if (res.ok) {
         console.error(`[skillmeter] Transcript transferred: ${transcriptId}`);
         removePending();
         return "sent";
       }
-      if (initialToken && (res.status === 401 || res.status === 403)) {
+      // As above: the shared credential file is never cleared from the upload
+      // path, whatever the edge says about our token.
+      if (isAuthHttpStatus(res.status)) {
         console.error(
-          `[skillmeter] Transcript auth rejected (HTTP ${res.status}), clearing license and retrying without auth`
+          `[skillmeter] Transcript auth rejected (HTTP ${res.status}) — license kept, ${transcriptId} kept pending`
         );
-        try { credstore.setLicenseToken(""); } catch {}
-        return doPost(null).then((res2) => {
-          if (res2.ok) {
-            console.error(`[skillmeter] Transcript transferred on retry: ${transcriptId}`);
-            removePending();
-            return "sent";
-          }
-          console.error(
-            `[skillmeter] Transcript retry failed: HTTP ${res2.status} — kept pending for retry`
-          );
-          return classify(res2.status);
-        });
+        return "auth";
       }
       console.error(
         `[skillmeter] Transcript transfer failed: HTTP ${res.status} — kept pending for retry`
       );
-      return classify(res.status);
+      return isPermanentHttpStatus(res.status) ? "poison" : "retry";
     })
     .catch((err) => {
       console.error(
@@ -1017,6 +1019,12 @@ async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
     return outcome;
   }
 
+  // Rejected at the authorizer (or never sent for want of a license): the
+  // payload was never judged, so the batch keeps its place in the queue and its
+  // attempt counter is left untouched. A signed-out week must not quarantine a
+  // batch the collector would happily accept.
+  if (outcome === "auth") return "auth";
+
   if (outcome === "poison") {
     const salv = salvageBatch(batchPath);
     if (salv.rewrote) {
@@ -1028,8 +1036,10 @@ async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
         clearBatchMeta(batchPath);
         return "sent";
       }
-      if (retryOutcome === "retry") {
-        return "retry";
+      if (retryOutcome === "retry" || retryOutcome === "auth") {
+        // The salvaged batch was never judged on its merits — a transient
+        // failure, or the license aged out between the two posts. Keep it.
+        return retryOutcome;
       }
       quarantineFile(batchPath, "still rejected after partial-rejection salvage");
       clearBatchMeta(batchPath);
@@ -1765,6 +1775,7 @@ module.exports = {
   getDeviceId,
   getOrCreateHashSalt,
   getLicenseToken,
+  getLicenseTokenUncached,
   getTelemetryGloballyDisabled,
   setTelemetryGloballyDisabled,
   tryRefreshLicense,
@@ -1801,6 +1812,7 @@ module.exports = {
   // Poison-batch handling + atomic writes
   atomicAppendLine,
   atomicWriteFileSync,
+  isAuthHttpStatus,
   isPermanentHttpStatus,
   salvageBatch,
   quarantineFile,

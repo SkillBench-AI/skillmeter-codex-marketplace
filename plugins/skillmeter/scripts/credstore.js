@@ -170,6 +170,21 @@ function getLicenseToken(logDir) {
   return store.license_jwt || null;
 }
 
+/**
+ * Read the license JWT straight from disk, bypassing the in-process cache.
+ *
+ * The retry daemon lives for hours and can outlast several sign-ins and token
+ * rotations performed by other processes. The cached read would pin it to the
+ * token that existed when it started, so the upload path uses this instead.
+ * Falls back to the cached/migrating read so a Keychain-only license from a
+ * pre-migration install is still found.
+ */
+function getLicenseTokenUncached(logDir) {
+  const stored = readStore().license_jwt;
+  if (stored) return stored;
+  return getLicenseToken(logDir);
+}
+
 function setLicenseToken(jwt) {
   const store = readStore();
   if (jwt) {
@@ -335,6 +350,7 @@ module.exports = {
   getDeviceId,
   getOrCreateHashSalt,
   getLicenseToken,
+  getLicenseTokenUncached,
   setLicenseToken,
   isLicenseTokenExpired,
   getAllowedGitHubOrgs,
