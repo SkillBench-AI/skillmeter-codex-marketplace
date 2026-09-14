@@ -183,6 +183,25 @@ test("a holder can tell that its lock was reaped", () => {
   replacement();
 });
 
+// An inode is recycled the moment the old file is unlinked, so a replacement
+// owner can land on the same inode number — routinely on Linux. Rewriting the
+// owner file in place reproduces exactly that, deterministically, on any
+// filesystem: same inode, different owner.
+test("a replacement owner is not mistaken for us when the inode is recycled", () => {
+  const lock = `${credentialPath}.lock.recycled`;
+  const release = acquireLock(lock);
+  assert.equal(release.stillHeld(), true);
+  const inode = fs.statSync(lock).ino;
+
+  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid, token: "someone-else" }));
+  assert.equal(fs.statSync(lock).ino, inode, "same inode, different owner");
+  assert.equal(release.stillHeld(), false, "ownership is by token, not inode");
+
+  release();
+  assert.equal(fs.existsSync(lock), true, "we must not unlink another owner's lock");
+  fs.unlinkSync(lock);
+});
+
 test("a mutation preempted mid-flight retries on the newer state instead of clobbering", () => {
   writeStore({ ...baseline });
   let calls = 0;

@@ -33,59 +33,79 @@ function heldByLiveOwner(owner, stat) {
   return alive(owner?.pid);
 }
 
+function readOwner(file) {
+  try { return JSON.parse(fs.readFileSync(file, "utf8")); }
+  catch { return null; }
+}
+
 // Same owner-file protocol as PR #37's transcript-delta.acquireLock.
 // Publish a complete owner atomically; never evict a live writer by age alone.
+//
+// Ownership is identified by a per-acquisition token carried inside the owner
+// file, not by the lock file's inode: an inode is recycled the moment the old
+// file is unlinked (readily observable on Linux), so a replacement owner can
+// land on the same inode number and make a previous holder believe it is still
+// the owner — which would defeat both the release guard and mutateStore's
+// pre-write fence.
 function acquireLock(file, depth = 0) {
   if (depth > 8) return null;
-  const ownerFile = `${file}.owner-${crypto.randomUUID()}`;
+  const token = crypto.randomUUID();
+  const ownerFile = `${file}.owner-${token}`;
   const fd = fs.openSync(ownerFile, "wx", 0o600);
   try {
-    fs.writeFileSync(fd, JSON.stringify({ pid: process.pid }));
+    fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, token }));
     fs.fsyncSync(fd);
   } finally { fs.closeSync(fd); }
-  const inode = fs.statSync(ownerFile).ino;
+
   try { fs.linkSync(ownerFile, file); fs.unlinkSync(ownerFile); }
   catch (error) {
     fs.unlinkSync(ownerFile);
     if (error.code !== "EEXIST") throw error;
+
     let stat;
     try { stat = fs.statSync(file); }
     catch (err) {
       if (err.code === "ENOENT") return acquireLock(file, depth + 1);
       throw err;
     }
-    let owner = null;
-    try { owner = JSON.parse(fs.readFileSync(file, "utf8")); }
-    catch (err) {
-      if (err.code === "ENOENT") return acquireLock(file, depth + 1);
-      // Unparseable owner: treat as an unknown (assumed live) owner so the age
-      // backstop can still reap it, instead of failing forever.
-      owner = null;
-    }
-    if (heldByLiveOwner(owner, stat)) return null;
-    const releaseReaper = acquireLock(`${file}.reap-${stat.ino}`, depth + 1);
+    if (heldByLiveOwner(readOwner(file), stat)) return null;
+
+    // Serialize reapers so two of them cannot unlink successive owners.
+    const releaseReaper = acquireLock(`${file}.reap`, depth + 1);
     if (!releaseReaper) return null;
     try {
-      try { if (fs.statSync(file).ino === stat.ino) fs.unlinkSync(file); }
-      catch (err) { if (err.code !== "ENOENT") throw err; }
+      // Re-judge under the reaper lock rather than acting on the earlier
+      // observation: the owner may have been replaced in between, and a
+      // replacement is fresh by construction, so it fails the staleness test
+      // and survives.
+      let stale;
+      try { stale = !heldByLiveOwner(readOwner(file), fs.statSync(file)); }
+      catch (err) {
+        if (err.code !== "ENOENT") throw err;
+        stale = false; // already gone; just retry the acquire
+      }
+      if (stale) {
+        try { fs.unlinkSync(file); }
+        catch (err) { if (err.code !== "ENOENT") throw err; }
+      }
     } finally { releaseReaper(); }
+
     return acquireLock(file, depth + 1);
   }
-  const release = () => {
-    try { if (fs.statSync(file).ino === inode) fs.unlinkSync(file); }
-    catch (error) { if (error.code !== "ENOENT") throw error; }
-  };
 
   // Whether this handle is still the owner. The age backstop above means a
   // holder can be reaped while it is paused (SIGSTOP, swap, a suspended VM),
   // after which a replacement writer may commit. A holder that is about to
   // persist must therefore re-check ownership rather than assume it, or it
   // would roll the replacement's write back.
-  release.stillHeld = () => {
-    try { return fs.statSync(file).ino === inode; }
-    catch { return false; }
-  };
+  const ownedByUs = () => readOwner(file)?.token === token;
 
+  const release = () => {
+    if (!ownedByUs()) return;
+    try { fs.unlinkSync(file); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+  };
+  release.stillHeld = ownedByUs;
   return release;
 }
 
