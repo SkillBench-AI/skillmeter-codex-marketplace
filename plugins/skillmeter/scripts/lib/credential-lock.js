@@ -71,10 +71,22 @@ function acquireLock(file, depth = 0) {
     } finally { releaseReaper(); }
     return acquireLock(file, depth + 1);
   }
-  return () => {
+  const release = () => {
     try { if (fs.statSync(file).ino === inode) fs.unlinkSync(file); }
     catch (error) { if (error.code !== "ENOENT") throw error; }
   };
+
+  // Whether this handle is still the owner. The age backstop above means a
+  // holder can be reaped while it is paused (SIGSTOP, swap, a suspended VM),
+  // after which a replacement writer may commit. A holder that is about to
+  // persist must therefore re-check ownership rather than assume it, or it
+  // would roll the replacement's write back.
+  release.stillHeld = () => {
+    try { return fs.statSync(file).ino === inode; }
+    catch { return false; }
+  };
+
+  return release;
 }
 
 module.exports = { acquireLock };

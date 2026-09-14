@@ -167,6 +167,43 @@ test("writers read current state after waiting for the shared lock", async () =>
   assert.equal(readStore().telemetry_disabled, true);
 });
 
+// The age backstop can reap a holder that was paused long enough, so a writer
+// must re-check ownership before it persists rather than assume the lock it
+// took is the lock it still has.
+test("a holder can tell that its lock was reaped", () => {
+  const lock = `${credentialPath}.lock.fence`;
+  const release = acquireLock(lock);
+  assert.equal(release.stillHeld(), true);
+
+  fs.unlinkSync(lock); // the age backstop reaps us while we are paused
+  assert.equal(release.stillHeld(), false);
+
+  const replacement = acquireLock(lock); // someone else takes over
+  assert.equal(release.stillHeld(), false, "the replacement owner is not us");
+  replacement();
+});
+
+test("a mutation preempted mid-flight retries on the newer state instead of clobbering", () => {
+  writeStore({ ...baseline });
+  let calls = 0;
+
+  const outcome = credstore.mutateStore(store => {
+    calls += 1;
+    if (calls === 1) {
+      // Simulate being paused past the staleness ceiling: our lock is reaped
+      // and a replacement writer commits a newer credential.
+      fs.unlinkSync(`${credentialPath}.lock`);
+      writeStore({ ...readStore(), license_jwt: tokenB });
+    }
+    store.telemetry_disabled = true;
+  });
+
+  assert.equal(outcome, true);
+  assert.equal(calls, 2, "the preempted attempt was retried, not persisted");
+  assert.equal(readStore().telemetry_disabled, true, "our change landed");
+  assert.equal(readStore().license_jwt, tokenB, "the other writer's change survived");
+});
+
 // A pid does not identify a process incarnation: after a crash inside the
 // critical section the OS can hand that number to an unrelated long-lived
 // process. Without the age backstop the lock would then look held for as long

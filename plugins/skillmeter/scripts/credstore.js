@@ -53,9 +53,18 @@ function writeStore(data) {
   }
 }
 
-// All Codex writers participate in the same read/modify/write lock. Other
-// clients must adopt this protocol too for cross-client serialization.
-function mutateStore(fn) {
+// Raw file text, for detecting an interleaved write byte-for-byte. null when
+// the file is absent or unreadable.
+function readRaw() {
+  try { return fs.readFileSync(CRED_FILE, "utf8"); }
+  catch { return null; }
+}
+
+const PREEMPTED = Symbol("credential-store-preempted");
+
+// One locked read/modify/write attempt. Returns PREEMPTED when the state we
+// based the mutation on is no longer the state on disk.
+function mutateStoreOnce(fn) {
   fs.mkdirSync(path.dirname(CRED_FILE), { recursive: true, mode: 0o700 });
   const { acquireLock } = require("./lib/credential-lock");
   const deadline = Date.now() + 1000;
@@ -65,13 +74,36 @@ function mutateStore(fn) {
     Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
   }
   try {
+    const baseline = readRaw();
     const store = readStore();
     const result = fn(store);
     if (result === false) return false;
+    // Fence before persisting. Holding the lock is not by itself proof that we
+    // still hold it: the age backstop reaps a holder that was paused long
+    // enough (SIGSTOP, swap, a suspended VM), and a replacement writer may have
+    // committed in the meantime. Writing our pre-pause snapshot would roll that
+    // back silently — the shared file has no other guard, since commitSignin's
+    // `expected` check is optional and signin.js omits it.
+    if (!release.stillHeld() || readRaw() !== baseline) return PREEMPTED;
     writeStore(store);
     _cache = store;
     return result === undefined ? true : result;
   } finally { release(); }
+}
+
+// All Codex writers participate in the same read/modify/write lock. Other
+// clients must adopt this protocol too for cross-client serialization.
+//
+// A preempted attempt is retried rather than failed: `fn` is a transform over
+// whatever the store currently holds, so re-running it against the newer state
+// is exactly the intended outcome — our change lands on top of theirs instead
+// of replacing it.
+function mutateStore(fn) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const outcome = mutateStoreOnce(fn);
+    if (outcome !== PREEMPTED) return outcome;
+  }
+  throw new Error("credential-store-busy");
 }
 
 // Snapshot disk state before a network exchange, never the process cache.
@@ -422,6 +454,9 @@ module.exports = {
   recoverySnapshot,
   isRecoveryCurrent,
   commitRefresh,
+  // The locked read/modify/write primitive every writer above goes through.
+  // Exported so the race suite can drive a preemption from inside a mutation.
+  mutateStore,
   isLicenseTokenExpired,
   getAllowedGitHubOrgs,
   hasExplicitOrgScope,
