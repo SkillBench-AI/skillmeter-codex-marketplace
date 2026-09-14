@@ -91,10 +91,13 @@ function getRefreshUrl() {
  * error, endpoint not yet deployed). The caller is expected to fall back to
  * silent gh /activate on null.
  *
- * On success the new token is written to credstore atomically.
+ * A response superseded by another sign-in/rotation/sign-out is discarded.
+ * The caller must recheck its snapshot before attempting silent activation.
  */
-async function refreshExpiredJwt(jwt, deviceId) {
+async function refreshExpiredJwt(jwt, deviceId, expected = credstore.recoverySnapshot()) {
   if (!jwt || !deviceId) return null;
+  if (expected.token !== jwt || expected.deviceId !== deviceId ||
+      !credstore.isRecoveryCurrent(expected)) return null;
 
   const url = getRefreshUrl();
 
@@ -145,7 +148,10 @@ async function refreshExpiredJwt(jwt, deviceId) {
     return null;
   }
 
-  credstore.setLicenseToken(newJwt);
+  if (!credstore.commitRefresh(newJwt, expected)) {
+    console.error("[skillmeter] license refresh discarded: credentials changed during refresh");
+    return null;
+  }
   console.error("[skillmeter] license refresh: rotated successfully");
   return newJwt;
 }
@@ -170,6 +176,8 @@ async function trySilentGhActivate(deviceId, options = {}) {
     console.error("[skillmeter] gh activation skipped: signed out (run the skillmeter signin flow to re-enable)");
     return null;
   }
+  const expected = options.expected || credstore.recoverySnapshot();
+  if (expected.deviceId !== deviceId || !credstore.isRecoveryCurrent(expected)) return null;
 
   let ghToken;
   try {
@@ -256,8 +264,8 @@ async function trySilentGhActivate(deviceId, options = {}) {
   // Repo-local or env-based scope is used for local evaluation only, so silent
   // refreshes don't shrink allowed_github_orgs for other repos.
   const orgsToWrite = options.orgScope ? scopedOrgs : orgs;
-  if (!credstore.commitSignin({ jwt, orgs: orgsToWrite })) {
-    console.error("[skillmeter] gh activation discarded: signed out during issuance");
+  if (!credstore.commitSignin({ jwt, orgs: orgsToWrite, expected })) {
+    console.error("[skillmeter] gh activation discarded: credentials changed during issuance");
     return null;
   }
   console.error(`[skillmeter] gh activation succeeded (allowed orgs: ${orgsToWrite.length} persisted)`);

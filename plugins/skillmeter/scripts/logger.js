@@ -104,7 +104,12 @@ function setTelemetryGloballyDisabled(disabled) {
 // ---------------------------------------------------------------------------
 
 async function tryRefreshLicense(deviceId) {
-  const current = getLicenseToken();
+  // Preserve legacy migration, then snapshot the shared file rather than the
+  // token this daemon cached before another process signed in or out.
+  getLicenseTokenUncached();
+  const expected = credstore.recoverySnapshot();
+  if (expected.signedOut || !deviceId || expected.deviceId !== deviceId) return null;
+  const current = expected.token;
   // A token that still looks fresh is normally left alone — the local expiry
   // check is the whole point of the cheap short-circuit. The exception is a
   // token the edge has actually rejected: `exp` says nothing about revocation
@@ -113,22 +118,22 @@ async function tryRefreshLicense(deviceId) {
   if (current && !credstore.isLicenseTokenExpired(current) && !isLicenseRejected()) {
     return current;
   }
-  if (!deviceId) return null;
-  if (credstore.getSignedOut()) return null;
-
   // /refresh first when we have a token to rotate. refreshExpiredJwt returns
   // null on 410 (sliding window), 404 (endpoint not deployed), 401 (bad
   // signature), or any network/parse error — falling through to gh in all cases.
   if (current) {
-    const fresh = await refreshExpiredJwt(current, deviceId);
+    const fresh = await refreshExpiredJwt(current, deviceId, expected);
     if (fresh) {
       clearLicenseRejected();
       return fresh;
     }
   }
 
+  // A discarded refresh must not fall through to activation and undo the
+  // newer sign-in, token rotation, or sign-out that caused the discard.
+  if (!credstore.isRecoveryCurrent(expected)) return null;
   try {
-    const activated = await trySilentGhActivate(deviceId);
+    const activated = await trySilentGhActivate(deviceId, { expected });
     if (activated) clearLicenseRejected();
     return activated;
   } catch {

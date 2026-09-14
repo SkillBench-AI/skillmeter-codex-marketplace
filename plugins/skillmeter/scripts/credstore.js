@@ -53,6 +53,57 @@ function writeStore(data) {
   }
 }
 
+// All Codex writers participate in the same read/modify/write lock. Other
+// clients must adopt this protocol too for cross-client serialization.
+function mutateStore(fn) {
+  fs.mkdirSync(path.dirname(CRED_FILE), { recursive: true, mode: 0o700 });
+  const { acquireLock } = require("./lib/credential-lock");
+  const deadline = Date.now() + 1000;
+  let release;
+  while (!(release = acquireLock(`${CRED_FILE}.lock`))) {
+    if (Date.now() >= deadline) throw new Error("credential-store-busy");
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+  try {
+    const store = readStore();
+    const result = fn(store);
+    if (result === false) return false;
+    writeStore(store);
+    _cache = store;
+    return result === undefined ? true : result;
+  } finally { release(); }
+}
+
+// Snapshot disk state before a network exchange, never the process cache.
+// The generation also detects sign-out/sign-in cycles that reuse a JWT.
+function recoverySnapshot() {
+  const store = readStore();
+  return {
+    token: store.license_jwt || null,
+    generation: store.auth_generation || null,
+    deviceId: store.device_id || null,
+    signedOut: store.signed_out === true,
+  };
+}
+
+function snapshotMatches(store, expected) {
+  return !expected.signedOut && store.signed_out !== true &&
+    (store.license_jwt || null) === expected.token &&
+    (store.auth_generation || null) === expected.generation &&
+    (store.device_id || null) === expected.deviceId;
+}
+
+function isRecoveryCurrent(expected) {
+  return snapshotMatches(readStore(), expected);
+}
+
+function commitRefresh(jwt, expected) {
+  return mutateStore(store => {
+    if (!snapshotMatches(store, expected)) return false;
+    store.license_jwt = jwt;
+  });
+}
+
 function readKeychain(service) {
   const account = process.env.USER || process.env.USERNAME || "";
   if (!account) return null;
@@ -82,11 +133,16 @@ function migrateFromKeychain() {
   }
 
   if (migrated) {
-    writeStore(store);
+    mutateStore(current => {
+      for (const key of Object.keys(KEYCHAIN_SERVICES)) {
+        if (key === "license_jwt" && current.signed_out) continue;
+        if (!current[key] && store[key]) current[key] = store[key];
+      }
+    });
     console.error("[skillmeter] Migrated credentials from Keychain to ~/.skillbench/credentials.json");
   }
 
-  return store;
+  return readStore();
 }
 
 function migrateFromFallbackFiles(logDir) {
@@ -118,11 +174,15 @@ function migrateFromFallbackFiles(logDir) {
   }
 
   if (migrated) {
-    writeStore(store);
+    mutateStore(current => {
+      for (const key of Object.keys(legacyMap)) {
+        if (!current[key] && store[key]) current[key] = store[key];
+      }
+    });
     console.error("[skillmeter] Migrated credentials from legacy fallback files");
   }
 
-  return store;
+  return readStore();
 }
 
 let _cache = null;
@@ -145,24 +205,19 @@ function getDeviceId(logDir) {
   const store = loadStore(logDir);
   if (store.device_id) return store.device_id;
 
-  const newId = crypto.randomUUID().toUpperCase();
-  store.device_id = newId;
-  writeStore(store);
-  _cache = store;
-  console.error("[skillmeter] New device ID created");
-  return newId;
+  mutateStore(current => {
+    if (!current.device_id) current.device_id = crypto.randomUUID().toUpperCase();
+  });
+  return _cache.device_id;
 }
 
 function getOrCreateHashSalt(logDir) {
   const store = loadStore(logDir);
   if (store.hash_salt) return store.hash_salt;
-
-  const newSalt = crypto.randomBytes(16).toString("hex");
-  store.hash_salt = newSalt;
-  writeStore(store);
-  _cache = store;
-  console.error("[skillmeter] New hash salt created");
-  return newSalt;
+  mutateStore(current => {
+    if (!current.hash_salt) current.hash_salt = crypto.randomBytes(16).toString("hex");
+  });
+  return _cache.hash_salt;
 }
 
 function getLicenseToken(logDir) {
@@ -196,16 +251,11 @@ function getLicenseTokenUncached(logDir) {
 }
 
 function setLicenseToken(jwt) {
-  const store = readStore();
-  if (jwt) {
-    store.license_jwt = jwt;
-  } else {
-    // Empty/falsey clears the stored token (used by the 401/403 retry path
-    // and force-refresh) without touching device identity.
-    delete store.license_jwt;
-  }
-  writeStore(store);
-  _cache = store;
+  mutateStore(store => {
+    if (jwt) store.license_jwt = jwt;
+    else delete store.license_jwt;
+    store.auth_generation = crypto.randomUUID();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -268,37 +318,30 @@ function getTelemetryDisabled() {
 }
 
 function setTelemetryDisabled(disabled) {
-  const store = readStore();
-  if (disabled) {
-    store.telemetry_disabled = true;
-  } else {
-    delete store.telemetry_disabled;
-  }
-  writeStore(store);
-  _cache = store;
+  mutateStore(store => {
+    if (disabled) store.telemetry_disabled = true;
+    else delete store.telemetry_disabled;
+  });
 }
 
-// Drop license + org list atomically. Preserves device_id and hash_salt so the
-// machine identity survives a sign-out / sign-in cycle.
+// Keep identity while invalidating every in-flight authentication exchange.
 function signOut() {
-  const store = readStore();
-  delete store.license_jwt;
-  delete store.allowed_github_orgs;
-  delete store.orgs_explicitly_set;
-  store.signed_out = true;
-  store.telemetry_disabled = true;
-  writeStore(store);
-  _cache = store;
+  mutateStore(store => {
+    delete store.license_jwt;
+    delete store.allowed_github_orgs;
+    delete store.orgs_explicitly_set;
+    store.signed_out = true;
+    store.telemetry_disabled = true;
+    store.auth_generation = crypto.randomUUID();
+  });
 }
 
-// Called when the user explicitly signs in — clears the signed-out sentinel so
-// the next gh attempt is unblocked.
 function markEngaged() {
-  const store = readStore();
-  delete store.signed_out;
-  delete store.telemetry_disabled;
-  writeStore(store);
-  _cache = store;
+  mutateStore(store => {
+    delete store.signed_out;
+    delete store.telemetry_disabled;
+    store.auth_generation = crypto.randomUUID();
+  });
 }
 
 function normalizeOrgs(orgs) {
@@ -320,17 +363,15 @@ function normalizeOrgs(orgs) {
 //
 // When `orgs` is an empty array, we store it explicitly as [] to distinguish
 // "intentionally narrowed to zero orgs" from "not signed in" (missing field).
-function commitSignin({ jwt, orgs }) {
-  const store = readStore();
-  if (store.signed_out === true) return false;
-  store.license_jwt = jwt;
-  store.allowed_github_orgs = normalizeOrgs(orgs);
-  // Mark that org scope was explicitly set (even if empty) so we can
-  // distinguish from missing data
-  store.orgs_explicitly_set = true;
-  writeStore(store);
-  _cache = store;
-  return true;
+function commitSignin({ jwt, orgs, expected }) {
+  return mutateStore(store => {
+    if (store.signed_out === true) return false;
+    if (expected && !snapshotMatches(store, expected)) return false;
+    store.license_jwt = jwt;
+    store.allowed_github_orgs = normalizeOrgs(orgs);
+    store.orgs_explicitly_set = true;
+    store.auth_generation = crypto.randomUUID();
+  });
 }
 
 /**
@@ -362,6 +403,9 @@ module.exports = {
   getLicenseToken,
   getLicenseTokenUncached,
   setLicenseToken,
+  recoverySnapshot,
+  isRecoveryCurrent,
+  commitRefresh,
   isLicenseTokenExpired,
   getAllowedGitHubOrgs,
   hasExplicitOrgScope,
