@@ -316,7 +316,7 @@ async function main() {
   }
 
   log("Trying gh CLI first...");
-  const silentJwt = await licenseActivation.trySilentGhActivate(deviceId, { orgScope: cliOrgs });
+  const silentJwt = await licenseActivation.trySilentGhActivate(deviceId, { orgScope: cliOrgs, interactive:true });
   if (silentJwt) {
     say(welcomeBanner(credstore.getAllowedGitHubOrgs()));
     return;

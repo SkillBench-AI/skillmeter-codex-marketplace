@@ -58,7 +58,7 @@ function b64url(obj) {
 }
 
 function makeJwt(claims) {
-  return `${b64url({ alg: "none", typ: "JWT" })}.${b64url(claims)}.sig`;
+  return `${b64url({ alg: "none", typ: "JWT" })}.${b64url({github_id:123, sub:"synthetic-org", org:{login:"synthetic"}, aud:"https://synthetic.meter.skillbench.ai", ...claims})}.sig`;
 }
 
 function nowSec() {

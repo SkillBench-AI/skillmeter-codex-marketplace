@@ -326,7 +326,7 @@ test("prepareSession refreshes an expired token so the current session is authen
 
   // Seed an expired license JWT — the state that used to leave the triggering
   // session unauthenticated when the refresh ran fire-and-forget from afterLog.
-  const expired = makeJwt({ exp: PAST });
+  const expired = makeJwt({ exp: PAST, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
   const fresh = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
   credstore.setLicenseToken(expired);
   assert.equal(credstore.isLicenseTokenExpired(expired), true);

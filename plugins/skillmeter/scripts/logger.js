@@ -26,7 +26,8 @@ const {
   isJwtExpired,
   decodeJwtPayload,
 } = require("./lib/jwt");
-const { trySilentGhActivate, refreshExpiredJwt } = require("./lib/license-activation");
+const { ensureFreshLicense } = require("./lib/license-activation");
+const retention = require("./lib/queue-retention");
 const { resolveOrgScope } = require("./lib/org-scope");
 const telemetryStore = require("./lib/telemetry-store");
 const { resolveTelemetryGate } = require("./lib/telemetry-policy");
@@ -100,37 +101,11 @@ function setTelemetryGloballyDisabled(disabled) {
 }
 
 // ---------------------------------------------------------------------------
-// License refresh
-//
-// Try the Lambda's /refresh endpoint first (no GitHub round-trip, works for
-// users without gh-cli), then fall back to the silent gh /activate path on
-// 410 / 404 / network failure. Called once per SessionStart so the hook
-// architecture itself rate-limits it to at-most-once-per-session. Best effort:
-// every failure returns null and the session continues unauthenticated, leaving
-// the on-disk queue for the next refreshed session to drain.
+// License refresh follows the shared ADR001 outcome/status model.
 // ---------------------------------------------------------------------------
-
-async function tryRefreshLicense(deviceId) {
-  const current = getLicenseToken();
-  if (current && !credstore.isLicenseTokenExpired(current)) {
-    return current;
-  }
-  if (!deviceId) return null;
-  if (credstore.getSignedOut()) return null;
-
-  // /refresh first when we have a token to rotate. refreshExpiredJwt returns
-  // null on 410 (sliding window), 404 (endpoint not deployed), 401 (bad
-  // signature), or any network/parse error — falling through to gh in all cases.
-  if (current) {
-    const fresh = await refreshExpiredJwt(current, deviceId);
-    if (fresh) return fresh;
-  }
-
-  try {
-    return await trySilentGhActivate(deviceId);
-  } catch {
-    return null;
-  }
+async function tryRefreshLicense(deviceId, options) {
+  try { return await ensureFreshLicense(deviceId, options); }
+  catch { console.error("[skillmeter] License recovery unavailable; retry at next lifecycle boundary"); return null; }
 }
 
 // ---------------------------------------------------------------------------
@@ -379,6 +354,7 @@ function isPermanentHttpStatus(status) {
 // Standalone callers can ignore the value; processSealedBatch uses it to decide
 // between salvage, quarantine, and a bounded retry.
 async function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) {
+  if (!retention.enforce()) return "skip";
   if (!logFile || !fs.existsSync(logFile)) return "skip";
   if (getTelemetryGloballyDisabled() || credstore.getSignedOut()) return "skip";
   credstore.refreshFromDisk?.();
@@ -418,7 +394,7 @@ function transcriptScope(cwd, requireConsent = true, requestToken) {
   credstore.refreshFromDisk?.();
   if (requireConsent && credstore.getSignedOut()) return null;
   const token = requestToken === undefined ? getLicenseToken() : requestToken;
-  if (!token || (requireConsent && isJwtExpired(token))) return null;
+  if (!token || !Number.isFinite(decodeJwtPayload(token)?.exp)) return null;
   const decision = getRepoScopeDecision(cwd);
   if (!decision.allowed || (requireConsent && !captureGate(cwd).capture)) return null;
   const salt = getOrCreateHashSalt(), deviceId = getDeviceId();
@@ -442,6 +418,7 @@ function observeTranscriptConsent(source, cwd, verifyReplacement = false) {
     getOrCreateHashSalt(), captureGate(cwd).capture, scope.consentStamp + JSON.stringify(telemetryStore.readPolicy().global), false, verifyReplacement);
 }
 function stageTranscriptForUpload(transcriptPath, context = {}) {
+  if (!retention.enforce()) return null;
   const cwd = context.cwd || process.cwd();
   let consent;
   try { consent = observeTranscriptConsent(transcriptPath, cwd, true); }
@@ -475,7 +452,7 @@ function stageTranscriptForUpload(transcriptPath, context = {}) {
 async function sendTranscriptChunk(meta, compressed, backendUrl, timeoutMs) {
   credstore.refreshFromDisk?.();
   const token = getLicenseToken();
-  if (!scopeStillAllowed(meta.scope, token)) return "skip";
+  if (isJwtExpired(token) || !scopeStillAllowed(meta.scope, token)) return "skip";
   try {
     const destination = getBackendUrl(undefined, token);
     if (!destination || (backendUrl && backendUrl !== destination)) return "skip";
@@ -503,6 +480,7 @@ async function sendTranscriptChunk(meta, compressed, backendUrl, timeoutMs) {
 }
 
 async function uploadPendingTranscript(pendingPath, deviceId, backendUrl, timeoutMs) {
+  if (!retention.enforce()) return "skip";
   if (!pendingPath || !fs.existsSync(pendingPath)) return "skip";
   if (!path.resolve(pendingPath).startsWith(TRANSCRIPT_CHUNKS_DIR + path.sep)) {
     // Legacy snapshots have no sequence/scope journal. Preserve for selected
@@ -779,6 +757,7 @@ function salvageBatch(batchPath) {
 // queue-aware wrapper around transferEventLog used by the drains; it enforces
 // the max-age and max-retry bounds and performs partial-rejection salvage.
 async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
+  if (!retention.enforce()) return "skip";
   if (!fs.existsSync(batchPath)) return "skip";
   const release = transcriptQueue.acquireLock(`${batchPath}.delivery-lock`);
   if (!release) return "skip";
@@ -896,6 +875,7 @@ async function drainTranscriptDirectory(dir, send) {
 }
 
 async function drainPendingTranscripts(backendUrl, timeoutMs) {
+  if (!retention.enforce()) return 0;
   if (getTelemetryGloballyDisabled() || credstore.getSignedOut()) return 0;
   purgeDisallowedTranscriptPayloads();
   stageRequestedTranscripts();
@@ -924,6 +904,7 @@ async function drainPendingTranscripts(backendUrl, timeoutMs) {
  * (pre-drain), which callers use to decide whether work remains.
  */
 async function drainQueuesOnce(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
+  if (!retention.enforce()) return 0;
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Queue drain skipped (telemetry globally disabled)`);
     return 0;
@@ -1096,6 +1077,7 @@ function spawnRetryDaemon() {
  * (or has aged out as undeliverable).
  */
 function cleanupStaleFiles() {
+  retention.enforce();
   const now = Date.now();
   const candidates = [];
 
@@ -1266,6 +1248,7 @@ function flushAndTransfer(input) {
 }
 
 function logStructured(level, event, sessionId, data, deviceId, scope = transcriptScope(process.cwd())) {
+  if (!retention.enforce()) return;
   if (!scope || !deviceId || !scopeStillAllowed(scope)) return;
   const context = repositoryQueue.context(REPOSITORIES_LOG_DIR, scope, getOrCreateHashSalt());
   if (!context) return;
@@ -1344,7 +1327,7 @@ function captureGate(cwd) {
   const scope = getRepoScopeDecision(cwd);
   return resolveTelemetryGate({
     globalDisabled: getTelemetryGloballyDisabled(),
-    hasValidLicense: !credstore.getSignedOut() && !credstore.isLicenseTokenExpired(getLicenseToken()),
+    hasValidLicense: !credstore.getSignedOut() && Number.isFinite(decodeJwtPayload(getLicenseToken())?.exp),
     cwdAvailable: typeof cwd === "string" && cwd.length > 0,
     repoOrgOwned: scope.allowed,
     orgConsent: telemetryStore.getOrganizationConsent(scope.remoteOrg),

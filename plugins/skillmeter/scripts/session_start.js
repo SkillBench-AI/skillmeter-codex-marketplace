@@ -31,7 +31,9 @@ async function prepareSession() {
   const deviceId = getDeviceId();
   if (!deviceId || getTelemetryGloballyDisabled()) return;
   try {
-    await tryRefreshLicense(deviceId);
+    require("./credstore").ensureSigninMarker();
+    require("./lib/license-status").clearTerminal({source:"session_start"});
+    await tryRefreshLicense(deviceId, {source:"session_start"});
   } catch {}
 }
 

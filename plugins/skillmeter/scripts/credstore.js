@@ -13,6 +13,56 @@ const os = require("os");
 const { CRED_FILE } = require("./lib/config");
 const telemetryStore = require("./lib/telemetry-store");
 const { getLicenseOrgs } = require("./lib/jwt");
+const licenseIdentity = require("./lib/license-identity");
+
+function mutateStore(fn) {
+  fs.mkdirSync(path.dirname(CRED_FILE), {recursive:true, mode:0o700});
+  const release = require("./lib/transcript-delta").acquireLock(CRED_FILE + ".lock");
+  if (!release) throw new Error("credential-store-busy");
+  try {
+    const store = readStore();
+    const result = fn(store);
+    if (result === false) return false;
+    writeStore(store); _cache = store;
+    return result === undefined ? true : result;
+  } finally { release(); }
+}
+
+// Snapshot identity and intent before an asynchronous exchange. Token rotation
+// may only commit while that exact sign-in is still current.
+function recoverySnapshot() {
+  const s = readStore();
+  return {token:s.license_jwt || null, generation:s.auth_generation || null, marker:s.prior_signin || null};
+}
+function snapshotMatches(s, expected) {
+  return !s.signed_out && (s.license_jwt || null) === expected.token &&
+    (s.auth_generation || null) === expected.generation &&
+    JSON.stringify(s.prior_signin || null) === JSON.stringify(expected.marker);
+}
+function commitRecovery(jwt, expected) {
+  const next = licenseIdentity.identity(jwt);
+  const prior = expected.marker || licenseIdentity.identity(expected.token);
+  if (!licenseIdentity.matches(next, prior)) return false;
+  return mutateStore(s => {
+    if (!snapshotMatches(s, expected)) return false;
+    s.license_jwt = jwt; s.prior_signin = next;
+  });
+}
+function invalidateRecovery(expected) {
+  return mutateStore(s => {
+    if (!snapshotMatches(s, expected)) return false;
+    delete s.license_jwt; delete s.prior_signin;
+    s.auth_generation = crypto.randomUUID();
+  });
+}
+function ensureSigninMarker() {
+  const s = readStore();
+  if (s.signed_out || s.prior_signin || !licenseIdentity.identity(s.license_jwt)) return;
+  mutateStore(current => {
+    if (current.signed_out || current.prior_signin || current.license_jwt !== s.license_jwt) return false;
+    current.prior_signin = licenseIdentity.identity(current.license_jwt);
+  });
+}
 
 const KEYCHAIN_SERVICES = {
   device_id: "com.skillbench.device-id",
@@ -257,26 +307,30 @@ function setTelemetryDisabled(disabled) {
 // Drop license + org list atomically. Preserves device_id and hash_salt so the
 // machine identity survives a sign-out / sign-in cycle.
 function signOut() {
-  const store = readStore();
+  mutateStore(store => {
   delete store.license_jwt;
   delete store.allowed_github_orgs;
   delete store.orgs_explicitly_set;
   store.signed_out = true;
   store.telemetry_disabled = true;
-  writeStore(store);
-  _cache = store;
+  delete store.prior_signin;
+  store.auth_generation = crypto.randomUUID();
+  });
+  require("./lib/queue-retention").purgeAll();
 }
 
 // Called when the user explicitly signs in — clears the signed-out sentinel so
 // the next gh attempt is unblocked.
 function markEngaged() {
-  const store = readStore();
+  if (getSignedOut()) require("./lib/queue-retention").purgeAll();
+  mutateStore(store => {
   // Preserve an explicit legacy machine OFF when sign-in clears old flags.
   if (store.telemetry_disabled === true && store.signed_out !== true) telemetryStore.setGlobalEnabled(false);
   delete store.signed_out;
   delete store.telemetry_disabled;
-  writeStore(store);
-  _cache = store;
+  store.auth_generation = crypto.randomUUID();
+  });
+  require("./lib/license-status").clearLicenseStatus();
 }
 
 function normalizeOrgs(orgs) {
@@ -299,16 +353,18 @@ function normalizeOrgs(orgs) {
 // When `orgs` is an empty array, we store it explicitly as [] to distinguish
 // "intentionally narrowed to zero orgs" from "not signed in" (missing field).
 function commitSignin({ jwt, orgs }) {
-  const store = readStore();
+  return mutateStore(store => {
   if (store.signed_out === true) return false;
   store.license_jwt = jwt;
   store.allowed_github_orgs = normalizeOrgs(orgs);
   // Mark that org scope was explicitly set (even if empty) so we can
   // distinguish from missing data
   store.orgs_explicitly_set = true;
-  writeStore(store);
-  _cache = store;
-  return true;
+  const marker = licenseIdentity.identity(jwt);
+  if (marker) store.prior_signin = marker;
+  else delete store.prior_signin;
+  store.auth_generation = crypto.randomUUID();
+  });
 }
 
 /**
@@ -336,6 +392,10 @@ function hasExplicitOrgScope() {
 function refreshFromDisk() { _cache = readStore(); }
 
 module.exports = {
+  recoverySnapshot,
+  commitRecovery,
+  invalidateRecovery,
+  ensureSigninMarker,
   refreshFromDisk,
   getDeviceId,
   getOrCreateHashSalt,

@@ -196,6 +196,10 @@ function stage(root, source, scope, salt, options = {}) {
   let fd;
   try {
     const cursor = recover(dir);
+    const retiredFile = path.join(dir,"retired.json");
+    const retired = fs.existsSync(retiredFile) ? readJson(retiredFile) : null;
+    if (retired?.blocked) throw new Error("retired-journal-unavailable");
+    const retiredThrough = retired && retired.consentEpoch === options.consent?.epoch ? retired.through : 0;
     if (cursor && (cursor.scope.owner !== scope.owner || cursor.scope.deviceId !== scope.deviceId)) {
       throw new Error("source-owner-changed");
     }
@@ -241,7 +245,7 @@ function stage(root, source, scope, salt, options = {}) {
       while ((end = pending.indexOf(10)) >= 0) {
         const raw = pending.subarray(0, end + 1);
         if (raw.length > MAX_RECORD) throw new Error("oversized-single-record");
-        const excluded = options.consent?.excluded.some(([start, end]) => committed < end && committed + raw.length > start);
+        const excluded = committed < retiredThrough || options.consent?.excluded.some(([start, end]) => committed < end && committed + raw.length > start);
         // Read only the first source record across the exclusion boundary, and
         // project only its metadata. All other excluded records stay undecoded.
         const header = preserveMetadata && committed === 0;
@@ -285,7 +289,7 @@ function stage(root, source, scope, salt, options = {}) {
     const temp = path.join(dir, `.stage-${crypto.randomUUID()}`);
     fs.mkdirSync(temp, { mode: 0o700 });
     for (let i = 0; i < chunks.length; i++) writeDurable(path.join(temp, chunks[i].file), encoded[i].body);
-    writeDurable(path.join(temp, "commit.json"), JSON.stringify({ cursor: next, chunks }));
+    writeDurable(path.join(temp, "commit.json"), JSON.stringify({ cursor: next, chunks, createdAt: Date.now() }));
     options.fault?.("before-publish");
     fs.renameSync(temp, group); syncDir(dir);
     options.fault?.("after-publish");

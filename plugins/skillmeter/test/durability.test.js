@@ -203,7 +203,7 @@ test("processSealedBatch retries transient failures and quarantines at the retry
   assert.equal(fs.existsSync(logger.batchMetaPath(p)), false, "meta sidecar removed on quarantine");
 });
 
-test("processSealedBatch quarantines a batch older than the max age without uploading", async () => {
+test("processSealedBatch deletes an expired batch without uploading or quarantining", async () => {
   // Seal timestamp far in the past (well beyond BATCH_MAX_AGE_MS).
   const oldTs = Date.now() - (logger.BATCH_MAX_AGE_MS + 60_000);
   const p = path.join(require("../testing/authorized-queue").authorizedQueue(logger).root, `events.jsonl.${oldTs}`);
@@ -211,9 +211,10 @@ test("processSealedBatch quarantines a batch older than the max age without uplo
   const calls = stubFetch([{ status: 200 }]);
 
   const outcome = await logger.processSealedBatch(p, BACKEND, 1000);
-  assert.equal(outcome, "poison");
+  assert.equal(outcome, "skip");
   assert.equal(calls.count, 0, "an aged-out batch is never uploaded");
-  assert.equal(fs.existsSync(path.join(path.dirname(p), "poison", path.basename(p))), true);
+  assert.equal(fs.existsSync(p), false);
+  assert.equal(fs.existsSync(path.join(path.dirname(p), "poison", path.basename(p))), false);
 });
 
 // --- cleanup ----------------------------------------------------------------
