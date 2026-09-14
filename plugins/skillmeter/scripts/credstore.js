@@ -173,16 +173,26 @@ function getLicenseToken(logDir) {
 /**
  * Read the license JWT straight from disk, bypassing the in-process cache.
  *
- * The retry daemon lives for hours and can outlast several sign-ins and token
- * rotations performed by other processes. The cached read would pin it to the
- * token that existed when it started, so the upload path uses this instead.
- * Falls back to the cached/migrating read so a Keychain-only license from a
- * pre-migration install is still found.
+ * The retry daemon lives for hours and can outlast several sign-ins, sign-outs
+ * and token rotations performed by other processes. A cached read would pin it
+ * to the token that existed when it started, so the upload path uses this.
+ *
+ * A fresh read that finds nothing means nothing: we never fall back to a token
+ * this process cached earlier, because that token may have been signed out or
+ * removed by another client in the meantime. The one thing still worth doing is
+ * the one-time Keychain / legacy-file migration for a pre-migration install —
+ * and only when the fresh store shows no sign-out. That migration writes
+ * through to disk, so we re-read from disk rather than trusting its return.
+ *
+ * @param {string} [logDir] - legacy fallback location, for migration only.
+ * @returns {string|null} the stored license JWT, or null.
  */
 function getLicenseTokenUncached(logDir) {
-  const stored = readStore().license_jwt;
-  if (stored) return stored;
-  return getLicenseToken(logDir);
+  const store = readStore();
+  if (store.signed_out === true) return null;
+  if (store.license_jwt) return store.license_jwt;
+  loadStore(logDir);
+  return readStore().license_jwt || null;
 }
 
 function setLicenseToken(jwt) {

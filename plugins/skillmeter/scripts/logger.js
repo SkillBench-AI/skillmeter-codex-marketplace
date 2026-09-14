@@ -105,7 +105,12 @@ function setTelemetryGloballyDisabled(disabled) {
 
 async function tryRefreshLicense(deviceId) {
   const current = getLicenseToken();
-  if (current && !credstore.isLicenseTokenExpired(current)) {
+  // A token that still looks fresh is normally left alone — the local expiry
+  // check is the whole point of the cheap short-circuit. The exception is a
+  // token the edge has actually rejected: `exp` says nothing about revocation
+  // or a rotated signing key, so an outstanding rejection forces the rotation
+  // that unwedges the queue.
+  if (current && !credstore.isLicenseTokenExpired(current) && !isLicenseRejected()) {
     return current;
   }
   if (!deviceId) return null;
@@ -116,11 +121,16 @@ async function tryRefreshLicense(deviceId) {
   // signature), or any network/parse error — falling through to gh in all cases.
   if (current) {
     const fresh = await refreshExpiredJwt(current, deviceId);
-    if (fresh) return fresh;
+    if (fresh) {
+      clearLicenseRejected();
+      return fresh;
+    }
   }
 
   try {
-    return await trySilentGhActivate(deviceId);
+    const activated = await trySilentGhActivate(deviceId);
+    if (activated) clearLicenseRejected();
+    return activated;
   } catch {
     return null;
   }
@@ -417,7 +427,18 @@ function isValidBackendUrl(url) {
   }
 }
 
-function getBackendUrl() {
+/**
+ * Resolve the ingest URL for one specific license JWT.
+ *
+ * Routing and authorization MUST come from the same credential snapshot: if
+ * another process signs in to a different tenant mid-drain, deriving the host
+ * from one token and attaching another would send tenant B's JWT to tenant A's
+ * meter host. Callers therefore read their token once and pass it here.
+ *
+ * @param {string|null} token - license JWT to route by, or null when unknown.
+ * @returns {string} a validated https ingest URL.
+ */
+function getBackendUrlForToken(token) {
   const override = process.env.SKILLMETER_BACKEND_URL;
   if (override) {
     if (!isValidBackendUrl(override)) {
@@ -433,9 +454,7 @@ function getBackendUrl() {
   // meter host in its `aud` (audience) claim. Prefer a fresh token, but fall
   // back to the claim of an expired one (allow-expired) so a drain still reaches
   // the correct tenant host while a refresh is pending. Append the Codex ingest
-  // route, then fall through to the prod default when there's no usable token —
-  // preserving the unauthenticated upload path.
-  const token = getLicenseToken();
+  // route, then fall through to the prod default when there's no usable token.
   const endpoint =
     getEndpointFromToken(token) || getEndpointFromTokenAllowExpired(token);
   if (endpoint) {
@@ -450,6 +469,17 @@ function getBackendUrl() {
   }
 
   return DEFAULT_BACKEND_URL;
+}
+
+/**
+ * Ingest URL for the currently stored license. Convenience wrapper for callers
+ * that have no token in hand; the upload path uses getBackendUrlForToken with
+ * its own uncached read instead.
+ *
+ * @returns {string} a validated https ingest URL.
+ */
+function getBackendUrl() {
+  return getBackendUrlForToken(getLicenseToken());
 }
 
 const EVENT_TIMEOUT =
@@ -501,6 +531,36 @@ const ACTIVE_LOG_STALE_MS =
 // window. The lock is advisory and self-heals once it goes stale.
 const DRAIN_ONCE_LOCK_FILE = path.join(LOG_DIR, ".drain-once.lock");
 const DRAIN_ONCE_LOCK_STALE_MS = 30_000;
+
+// Set when the ingest edge rejects our license (401/403). A JWT can be revoked
+// or signed by a rotated key long before its `exp`, and the cheap local expiry
+// check cannot see that — so without this marker tryRefreshLicense would
+// short-circuit on a "still fresh" token and every sweep would resubmit the
+// same rejected credential until the batches aged out. Cleared as soon as a
+// rotation or a successful upload proves the credential works again.
+const LICENSE_REJECTED_FILE = path.join(LOG_DIR, ".license-rejected");
+
+/** Record that the ingest edge rejected the stored license. */
+function markLicenseRejected(status) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    fs.writeFileSync(LICENSE_REJECTED_FILE, `${status} ${Date.now()}\n`);
+  } catch {}
+}
+
+/** Clear the rejection marker once the license is known to work. */
+function clearLicenseRejected() {
+  try { fs.unlinkSync(LICENSE_REJECTED_FILE); } catch {}
+}
+
+/** True while a rejection is outstanding, i.e. a refresh is owed. */
+function isLicenseRejected() {
+  try {
+    return fs.existsSync(LICENSE_REJECTED_FILE);
+  } catch {
+    return false;
+  }
+}
 
 // Retry-monitor singleton lock: ensures at most one long-running retry daemon
 // runs across concurrent Codex sessions on this machine. The daemon refreshes
@@ -600,7 +660,7 @@ function isPermanentHttpStatus(status) {
 //   "skip"   — nothing to do (missing file).
 // Standalone callers can ignore the value; processSealedBatch uses it to decide
 // between salvage, quarantine, and a bounded retry.
-function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVENT_TIMEOUT) {
+function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) {
   if (!logFile || !fs.existsSync(logFile)) return Promise.resolve("skip");
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Event log transfer skipped (telemetry globally disabled)`);
@@ -622,6 +682,12 @@ function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVE
     return Promise.resolve("auth");
   }
 
+  // Route by the SAME token we are about to authenticate with, unless the
+  // caller pinned a URL (tests, SKILLMETER_BACKEND_URL). A drain that resolved
+  // the host up front could otherwise pair tenant A's endpoint with tenant B's
+  // JWT after a concurrent sign-in.
+  const url = backendUrl || getBackendUrlForToken(token);
+
   const compressed = zlib.gzipSync(fs.readFileSync(logFile));
 
   const markSent = () => {
@@ -632,7 +698,7 @@ function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVE
     `[skillmeter] Transferring event log: ${baseName} (${compressed.length} bytes gzipped)`
   );
 
-  return fetch(backendUrl, {
+  return fetch(url, {
     method: "POST",
     headers: commonHeaders(token),
     body: compressed,
@@ -640,6 +706,8 @@ function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVE
   })
     .then((res) => {
       if (res.ok) {
+        // Proof the stored credential works: drop any outstanding rejection.
+        clearLicenseRejected();
         console.error(`[skillmeter] Event log transferred: ${baseName}`);
         markSent();
         return "sent";
@@ -649,6 +717,9 @@ function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVE
       // the whole machine out of both agents. Rotation is the refresh /
       // activation path's job; we just leave the batch queued for it.
       if (isAuthHttpStatus(res.status)) {
+        // 402 is the organization's license state, which no rotation can fix;
+        // 401/403 mean this credential needs replacing, so owe a refresh.
+        if (res.status !== 402) markLicenseRejected(res.status);
         console.error(
           `[skillmeter] Event log auth rejected (HTTP ${res.status}) — license kept, ${baseName} kept queued`
         );
@@ -714,7 +785,7 @@ function stageTranscriptForUpload(transcriptPath) {
 function uploadPendingTranscript(
   pendingPath,
   deviceId,
-  backendUrl = getBackendUrl(),
+  backendUrl,
   timeoutMs = TRANSCRIPT_TIMEOUT
 ) {
   if (!pendingPath || !fs.existsSync(pendingPath)) return Promise.resolve("skip");
@@ -736,6 +807,9 @@ function uploadPendingTranscript(
     return Promise.resolve("auth");
   }
 
+  // Same credential snapshot for route and Authorization as above.
+  const url = backendUrl || getBackendUrlForToken(token);
+
   const compressed = zlib.gzipSync(fs.readFileSync(pendingPath));
 
   const removePending = () => {
@@ -746,7 +820,7 @@ function uploadPendingTranscript(
     `[skillmeter] Transferring transcript: ${transcriptId} (${compressed.length} bytes gzipped)`
   );
 
-  return fetch(`${backendUrl}/transcript`, {
+  return fetch(`${url}/transcript`, {
     method: "POST",
     headers: commonHeaders(token, {
       "X-Device-ID": deviceId,
@@ -757,6 +831,7 @@ function uploadPendingTranscript(
   })
     .then((res) => {
       if (res.ok) {
+        clearLicenseRejected();
         console.error(`[skillmeter] Transcript transferred: ${transcriptId}`);
         removePending();
         return "sent";
@@ -764,6 +839,7 @@ function uploadPendingTranscript(
       // As above: the shared credential file is never cleared from the upload
       // path, whatever the edge says about our token.
       if (isAuthHttpStatus(res.status)) {
+        if (res.status !== 402) markLicenseRejected(res.status);
         console.error(
           `[skillmeter] Transcript auth rejected (HTTP ${res.status}) — license kept, ${transcriptId} kept pending`
         );
@@ -784,7 +860,7 @@ function uploadPendingTranscript(
 
 // Backwards-compatible one-shot: stage then upload. Failed uploads remain in
 // the pending queue for the detached drain / retry monitor.
-function transferTranscript(transcriptPath, deviceId, backendUrl = getBackendUrl()) {
+function transferTranscript(transcriptPath, deviceId, backendUrl) {
   const pendingPath = stageTranscriptForUpload(transcriptPath);
   if (!pendingPath) return Promise.resolve();
   return uploadPendingTranscript(pendingPath, deviceId, backendUrl);
@@ -855,7 +931,7 @@ function recoverStaleActiveLog() {
 }
 
 // Backwards-compatible flush: seal the active log and upload it immediately.
-function flushEventLog(backendUrl = getBackendUrl()) {
+function flushEventLog(backendUrl) {
   const sealed = sealEventLog();
   if (!sealed) return Promise.resolve();
   return transferEventLog(sealed, backendUrl);
@@ -1090,7 +1166,7 @@ async function processPendingTranscript(pendingPath, deviceId, backendUrl, timeo
   return outcome;
 }
 
-async function drainFailedLogs(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
+async function drainFailedLogs(backendUrl, timeoutMs) {
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Event-log drain skipped (telemetry globally disabled)`);
     return 0;
@@ -1104,7 +1180,7 @@ async function drainFailedLogs(backendUrl = getBackendUrl(process.cwd()), timeou
   return files.length;
 }
 
-async function drainPendingTranscripts(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
+async function drainPendingTranscripts(backendUrl, timeoutMs) {
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Transcript drain skipped (telemetry globally disabled)`);
     return 0;
@@ -1126,7 +1202,7 @@ async function drainPendingTranscripts(backendUrl = getBackendUrl(process.cwd())
  * Drain both durable queues once. Returns the number of queued items found
  * (pre-drain), which callers use to decide whether work remains.
  */
-async function drainQueuesOnce(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
+async function drainQueuesOnce(backendUrl, timeoutMs) {
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Queue drain skipped (telemetry globally disabled)`);
     return 0;
@@ -1137,7 +1213,7 @@ async function drainQueuesOnce(backendUrl = getBackendUrl(process.cwd()), timeou
 }
 
 // Backwards-compatible alias retained for existing callers/tests.
-function retryFailedLogs(backendUrl = getBackendUrl(process.cwd())) {
+function retryFailedLogs(backendUrl) {
   void drainFailedLogs(backendUrl);
 }
 
@@ -1859,6 +1935,10 @@ module.exports = {
   RETRY_DAEMON_LOCK_FILE,
   DEFAULT_BACKEND_URL,
   getBackendUrl,
+  getBackendUrlForToken,
+  markLicenseRejected,
+  clearLicenseRejected,
+  isLicenseRejected,
   AGENT_NAME,
   SETTINGS_RELATIVE,
 };
