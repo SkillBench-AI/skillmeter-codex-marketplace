@@ -33,7 +33,8 @@ function retireDirectory(dir, all = false, now = Date.now()) {
     if (all) through = Math.max(through,consent?.observed || 0);
     if (through || all) {
       const file = path.join(dir,"retired.json");
-      const old = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file)) : null;
+      const old = chunks.readRetirement(dir);
+      if (old?.blocked) throw new Error("retired-journal-unavailable");
       const epoch = cursor?.consentEpoch || consent?.epoch;
       const sameEpoch = old?.consentEpoch === epoch;
       chunks.writeDurable(file,JSON.stringify({through:Math.max(through,sameEpoch ? old?.through || 0 : 0),consentEpoch:epoch}));
@@ -45,6 +46,21 @@ function retireDirectory(dir, all = false, now = Date.now()) {
 }
 function prune(all = false, now = Date.now()) {
   let complete = true;
+  // Deprecated unscoped snapshots are never replayed, but still obey logout
+  // and age deletion. Only known payload filenames in Codex's own log root.
+  for (const [directory, pattern] of [
+    [logs,/^events\.jsonl(?:\.\d+)?$/],
+    [path.join(logs,"poison"),/^(?:events\.jsonl\.\d+|.*\.(?:jsonl|gz))$/],
+    [path.join(logs,"transcripts/pending"),/\.(?:gz|jsonl)$/],
+  ]) {
+    if (!fs.existsSync(directory)) continue;
+    for (const name of fs.readdirSync(directory).filter(n => pattern.test(n))) {
+      const file = path.join(directory,name), stat = fs.lstatSync(file);
+      if (stat.isFile() && (all || stat.mtimeMs < now-RETENTION_MS)) {
+        fs.unlinkSync(file); fs.rmSync(file+".meta",{force:true});
+      }
+    }
+  }
   for (const context of repositories.list(path.join(logs,"repositories"))) {
     const result = repositories.withLock(context,() => {
       for (const directory of [context.root,path.join(context.root,"poison")]) {
@@ -75,7 +91,8 @@ function prune(all = false, now = Date.now()) {
   }
   for (const dir of chunks.queueDirectories(path.join(logs,"transcripts/chunks-v1"))) {
     try { if (!retireDirectory(dir,all,now)) complete = false; }
-    catch {
+    catch (error) {
+      if (!(error instanceof SyntaxError) && !["invalid-cursor","incomplete-transaction","invalid-retirement-journal","retired-journal-unavailable"].includes(error.message)) throw error;
       // A damaged journal blocks only its own source. If its payload ages out
       // (or logout revokes it), delete the body and persist a fail-closed marker
       // instead of guessing byte offsets that could reconstruct it later.
@@ -106,4 +123,7 @@ function enforce() {
   if (all && complete) fs.rmSync(request,{force:true});
   return complete;
 }
-module.exports = {purgeAll,enforce,retireDirectory,RETENTION_MS};
+// Hooks do not scan old payloads. Background drains/cleanup enforce age; hooks
+// only need to honor an unfinished revocation before appending new content.
+function enforcePending() { return !fs.existsSync(request) || enforce(); }
+module.exports = {purgeAll,enforce,enforcePending,retireDirectory,RETENTION_MS};

@@ -1,49 +1,60 @@
 # Codex lifecycle checkpoint, 2026-09-14
 
-Bounded work completed: consented repository provenance repair and an offline
-ADR001 acceptance harness. Full lifecycle repair and live release are incomplete.
+The 27 previously failing acceptance checks are repaired. The expanded offline
+suite passes 55/55; regular regressions pass 414/414. Source implementation and
+local compatibility evidence are complete for this pass. Production release and
+the real dashboard canary remain incomplete.
 
 Branch: `codex/consent-queue-parity-20260913`, stacked draft
 [PR #37](https://github.com/SkillBench-AI/skillmeter-codex-marketplace/pull/37).
-Production-code revision tested: `54ce356` (repository-name repair), based on
-`8d9e51d`. Claude reference is 0.34.1 at
-`0ea513751149a23fcc063fb8f045794657ceb031`. The harness commit changes no runtime
-authentication code, shared policy schema or sanitizer engine.
+Worktree: `/Users/juhokim/Code/skillbench-all/.worktrees/codex-consent-parity-20260913`.
+M1 commit: `a9b6eac`; the next commit contains M2 hardening and this checkpoint.
+Claude main was fetched and remains `0ea513751149a23fcc063fb8f045794657ceb031`.
 
 ## Evidence
 
-- `npm run check`: 413 tests passed, zero failures/skips; version and manifest checks passed.
-- Five new stdin-hook tests reproduced repository identity spoofing before the
-  repair and passed afterward. They verify consent exclusions, sanitized queue
-  contents and identical gzip-upload contents, including policy counts of zero.
-- `npm run check:lifecycle`: **7 passed, 27 failed, zero fixture errors** across
-  34 cases; exit 1. See [complete synthetic outcomes](lifecycle-baseline.json).
-- The seven passing cases cover healthy-token no-op, empty-queue background
-  refresh, no expired-token delivery, refresh-before-draining both queues,
-  signed-out recovery suppression, and repository/organization OFF purge.
-- Failure cases overlap requirements; 27 failures do not mean 27 independent
-  bugs. A case stops at its first failed assertion. Later assertions in that
-  case remain unverified. The harness README records additional coverage limits.
+- `npm run check`: version/manifests, 414 regular tests and 55 strict lifecycle
+  acceptance checks passed, with no failures or skips.
+- The original 7-pass/27-fail baseline is preserved in `lifecycle-baseline.json`;
+  current synthetic outcomes are in `lifecycle-repaired.json`.
+- Tests cover refresh-only transient recovery, identity-bound reactivation,
+  expiry-time capture with fresh-token delivery, terminal status/reset, seven-day
+  deletion, logout/402 purge, legacy payload removal, interrupted purge recovery
+  and preventing retired transcript reconstruction.
+- A separate-process regression verifies lock exclusion and recovery after a
+  crash. Snapshot/generation cases verify that late refresh results cannot
+  overwrite or revoke a newer Codex sign-in.
+- The existing synthetic Node → Go collector/storage → HTTP S3 emulator → shared
+  parser → existing analyzer/ingest-schema contract passed: 40 records, one
+  canonical session, 21 messages, repeated records, lost-response retry,
+  multi-day resume and stale-generation protection. LLM responses were scripted;
+  no dashboard or real model invocation is claimed.
+- Regression fixtures changed only where the accepted contract required it:
+  identity-bearing JWTs, realistic sweep timing, and deleting expired payloads
+  instead of preserving/quarantining them. Inventory remains read-only.
 
-## Remaining implementation
+## Remaining risks and first resume action
 
-1. Adopt Claude's typed refresh outcomes, shared status and refresh coordination:
-   transient errors must retain the token without activation, with bounded
-   exponential backoff, terminal status and explicit session/sign-in reset.
-2. Bind recovery to a prior successful sign-in. Check current GitHub identity
-   before activation and minted github_id/sub/org/audience before commit. Cover
-   missing-marker upgrade behavior and process races before changing shared auth.
-3. Separate expired-token capture from fresh-token delivery. Preserve repository,
-   principal, consent-byte and structured transcript identity across refresh.
-4. Purge unsent event/chunk payloads on logout and refresh/activate 402; enforce
-   seven-day retention, including protection against restaging deleted old data.
+First: review the two implementation commits with Seungho under INF-177,
+particularly the additive `prior_signin` and `auth_generation` fields. Current
+Claude has not shipped A4 and does not acquire Codex's credential lock. Snapshot
+checks protect against observed intervening writes, but an uncoordinated Claude
+write during Codex's final filesystem commit is not proven safe. Align the
+writers before installing this candidate into a shared real-user environment.
+The shared status schema/engine is copied from Claude without changes.
 
-First next-session action: recheck Seungho's INF-177 scope and current Claude
-ADR001 implementation, then choose the first bounded lifecycle change using
-the failing cases above. Reuse these worktrees and keep the original dirty
-checkouts and prior canary directories untouched. Do not replace the accepted
-ADR with Codex-specific auth semantics. No new cloud setup is needed for source
-work; this checkpoint does not authorize edits to shared live credentials.
+Activation server main `f5e6033359de960e81fafe3e72f7f207c27ca84b` was inspected:
+`jwt.go` emits string `aud`/`sub`, numeric `github_id` and `org.login`, matching
+the recovery identity validator. It still mints 15-minute tokens. This client
+reads token expiry and works with that TTL; the ADR's one-hour server rollout
+is a separate change and was not performed here.
+
+Native hook re-review, an installed-client upgrade/rollback, real token expiry
+and server revocation still need scoped validation. A corrupt retirement
+journal blocks that source; source recovery must be explicit, never automatic
+historical replay. INF-195 per-file consent and stage-2 sanitizer work remain
+outside this change. Original dirty checkouts, live credentials and previous
+canary runtimes were not modified.
 
 ## Exact remaining live-canary steps
 

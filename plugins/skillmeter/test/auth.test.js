@@ -331,8 +331,8 @@ test("prepareSession refreshes an expired token so the current session is authen
   credstore.setLicenseToken(expired);
   assert.equal(credstore.isLicenseTokenExpired(expired), true);
 
-  // Stub the /refresh round-trip. refreshExpiredJwt POSTs via global fetch and
-  // persists payload.token; with fetch mocked, getRefreshUrl's domain gate is
+  // Stub the /refresh round-trip. The coordinator validates identity and
+  // persists the returned token; with fetch mocked, getRefreshUrl's domain gate is
   // irrelevant because nothing touches the network.
   const realFetch = global.fetch;
   let refreshCalls = 0;

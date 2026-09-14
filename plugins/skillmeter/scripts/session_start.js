@@ -34,6 +34,9 @@ async function prepareSession() {
     require("./credstore").ensureSigninMarker();
     require("./lib/license-status").clearTerminal({source:"session_start"});
     await tryRefreshLicense(deviceId, {source:"session_start"});
+    if (require("./lib/license-status").readLicenseStatus().terminal) {
+      process.stderr.write(`SkillMeter: ${require("./lib/lifecycle-notice").notice()}\n`);
+    }
   } catch {}
 }
 

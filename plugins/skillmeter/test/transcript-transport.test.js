@@ -106,15 +106,17 @@ test("shutdown fallback uses the cached session path without scanning the sessio
   logger.stageRequestedTranscripts(); assert.equal(logger.listPendingTranscripts().length, 1);
 });
 
-test("cleanup and dry-run inventory preserve old transcript copies", () => {
+test("inventory is read-only; cleanup deletes expired legacy transcript copies", () => {
   const pending = path.join(logger.TRANSCRIPTS_PENDING_DIR, "old.jsonl");
   const poison = path.join(logger.POISON_DIR, "old.jsonl");
   for (const file of [pending, poison]) { fs.mkdirSync(path.dirname(file), {recursive:true}); fs.writeFileSync(file, line("old synthetic")); fs.utimesSync(file, new Date(0), new Date(0)); }
   const before = [pending, poison].map(f => fs.readFileSync(f));
-  logger.cleanupStaleFiles();
   const result = require("../scripts/transcript_inventory").inventory(process.env.PLUGIN_DATA);
   assert.deepEqual(result, {dryRun:true,legacyPending:1,legacyPoisonUnknownReason:1,chunkDiagnostics:{}});
   assert.deepEqual([pending, poison].map(f => fs.readFileSync(f)), before);
+  logger.cleanupStaleFiles();
+  assert.equal(fs.existsSync(pending),false);
+  assert.equal(fs.existsSync(poison),false);
 });
 
 

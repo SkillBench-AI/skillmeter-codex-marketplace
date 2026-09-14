@@ -131,6 +131,7 @@ async function silentGhActivate(deviceId, options = {}, expected = credstore.rec
     return credstore.commitRecovery(issued.token, expected) ? {outcome:"reactivated", token:issued.token} : {outcome:"superseded"};
   }
   // Explicit sign-in preserves the existing organization-narrowing behavior.
+  if (credstore.getSignedOut() || credstore.recoverySnapshot().generation !== expected.generation) return {outcome:"superseded"};
   let orgs;
   try { orgs = await fetchUserGitHubOrgs(ghToken); }
   catch { return {outcome:"transient", message:"GitHub memberships unavailable"}; }
@@ -138,12 +139,25 @@ async function silentGhActivate(deviceId, options = {}, expected = credstore.rec
   const {orgs:scopedOrgs} = narrowOrgsToScope(orgs, scope);
   const current = credstore.recoverySnapshot();
   if (current.generation !== expected.generation || current.token !== expected.token) return {outcome:"superseded"};
-  return credstore.commitSignin({jwt:issued.token, orgs:options.orgScope ? scopedOrgs : orgs})
+  return credstore.commitSignin({jwt:issued.token, orgs:options.orgScope ? scopedOrgs : orgs, expectedGeneration:expected.generation})
     ? {outcome:"reactivated", token:issued.token} : {outcome:"signed_out"};
 }
 async function trySilentGhActivate(deviceId, options = {}) {
-  const result = await silentGhActivate(deviceId, options);
+  const expected = credstore.recoverySnapshot();
+  if (options.expectedGeneration !== undefined && expected.generation !== options.expectedGeneration) throw new Error("A newer authentication action superseded this sign-in.");
+  const result = await silentGhActivate(deviceId, options, expected);
+  if (result.outcome === "revoked") {
+    revokeIfCurrent(expected, "signin");
+    throw new Error("No active SkillMeter license for this activation.");
+  }
+  if (options.interactive && ["signed_out","superseded"].includes(result.outcome)) throw new Error("A newer authentication action superseded this sign-in.");
   return result.outcome === "reactivated" ? result.token : null;
+}
+function revokeIfCurrent(expected, source) {
+  if (!credstore.invalidateRecovery(expected)) return false;
+  status.recordTerminal({source,reason:"revoked",status:402});
+  require("./queue-retention").purgeAll();
+  return true;
 }
 
 async function ensureFreshLicense(deviceId, {source = "daemon"} = {}) {
@@ -156,8 +170,12 @@ async function ensureFreshLicense(deviceId, {source = "daemon"} = {}) {
   try {
     if (credstore.getSignedOut()) return null;
     const expected = credstore.recoverySnapshot();
-    if (status.refreshBlockedReason(status.readLicenseStatus())) return null;
+    const previous = status.readLicenseStatus();
+    if (status.refreshBlockedReason(previous)) return null;
     if (expected.token && !credstore.isLicenseTokenExpired(expected.token)) return expected.token;
+    // Claude's 60-second refresh cooldown, separate from failure backoff.
+    // A new SessionStart may retry immediately, but still takes the PID lock.
+    if (source !== "session_start" && previous.last_attempt_at !== null && Date.now()-previous.last_attempt_at < 60000) return null;
     let result;
     if (expected.token) {
       result = await refreshExpiredJwt(expected.token, deviceId);
@@ -175,7 +193,9 @@ async function ensureFreshLicense(deviceId, {source = "daemon"} = {}) {
     if (JSON.stringify(credstore.recoverySnapshot()) !== JSON.stringify(expected) || credstore.getSignedOut()) return null;
     if (["revoked","identity_mismatch"].includes(result.outcome)) {
       if (!credstore.invalidateRecovery(expected)) return null;
+      status.recordTerminal({source, reason:result.outcome, status:result.status});
       require("./queue-retention").purgeAll();
+      return null;
     }
     if (["revoked","identity_mismatch","gh_unauthenticated","signin_required"].includes(result.outcome)) {
       status.recordTerminal({source, reason:result.outcome, status:result.status});
@@ -185,4 +205,4 @@ async function ensureFreshLicense(deviceId, {source = "daemon"} = {}) {
     return null;
   } finally { release(); }
 }
-module.exports = {getActivateUrl, getRefreshUrl, refreshExpiredJwt, trySilentGhActivate, ensureFreshLicense};
+module.exports = {getActivateUrl, getRefreshUrl, refreshExpiredJwt, trySilentGhActivate, ensureFreshLicense, revokeIfCurrent};

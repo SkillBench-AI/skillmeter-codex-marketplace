@@ -65,7 +65,10 @@ Codex lifecycle event
 Uploads are durable and non-blocking: `Stop`/`SubagentStop` seal events and
 transcripts to disk and hand off to a detached drain, `SessionStart` recovers
 un-rotated logs from crashed sessions and starts a background retry monitor, and
-stale uploaded files are cleaned up after 30 days. Hook failures never block your
+stale uploaded files are cleaned up after 30 days. Unsent telemetry expires after
+seven days and is removed on sign-out or license revocation. Consented capture
+continues during token expiry; authenticated delivery waits for recovery.
+Hook failures never block your
 Codex session. See [`plugins/skillmeter/README.md`](plugins/skillmeter/README.md#durable-uploads-background-flush-and-retry)
 for details.
 

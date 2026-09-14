@@ -352,9 +352,10 @@ function normalizeOrgs(orgs) {
 //
 // When `orgs` is an empty array, we store it explicitly as [] to distinguish
 // "intentionally narrowed to zero orgs" from "not signed in" (missing field).
-function commitSignin({ jwt, orgs }) {
-  return mutateStore(store => {
+function commitSignin({ jwt, orgs, expectedGeneration }) {
+  const committed = mutateStore(store => {
   if (store.signed_out === true) return false;
+  if (expectedGeneration !== undefined && (store.auth_generation || null) !== expectedGeneration) return false;
   store.license_jwt = jwt;
   store.allowed_github_orgs = normalizeOrgs(orgs);
   // Mark that org scope was explicitly set (even if empty) so we can
@@ -365,6 +366,8 @@ function commitSignin({ jwt, orgs }) {
   else delete store.prior_signin;
   store.auth_generation = crypto.randomUUID();
   });
+  if (committed) require("./lib/license-status").clearLicenseStatus();
+  return committed;
 }
 
 /**

@@ -29,6 +29,15 @@ function writeDurable(file, bytes) {
   syncDir(path.dirname(file));
 }
 function readJson(file) { return JSON.parse(fs.readFileSync(file, "utf8")); }
+function readRetirement(dir) {
+  const file = path.join(dir,"retired.json");
+  if (!fs.existsSync(file)) return null;
+  const state = readJson(file);
+  if (state?.blocked === true) return state;
+  if (!state || !Number.isSafeInteger(state.through) || state.through < 0 ||
+      (state.consentEpoch !== undefined && typeof state.consentEpoch !== "string")) throw new Error("invalid-retirement-journal");
+  return state;
+}
 function alive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return true; // incomplete lock: fail closed
   try { process.kill(pid, 0); return true; } catch (e) { return e.code !== "ESRCH"; }
@@ -196,8 +205,7 @@ function stage(root, source, scope, salt, options = {}) {
   let fd;
   try {
     const cursor = recover(dir);
-    const retiredFile = path.join(dir,"retired.json");
-    const retired = fs.existsSync(retiredFile) ? readJson(retiredFile) : null;
+    const retired = readRetirement(dir);
     if (retired?.blocked) throw new Error("retired-journal-unavailable");
     const retiredThrough = retired && retired.consentEpoch === options.consent?.epoch ? retired.through : 0;
     if (cursor && (cursor.scope.owner !== scope.owner || cursor.scope.deviceId !== scope.deviceId)) {
@@ -331,6 +339,7 @@ async function drainDirectory(dir, send) {
   if (!release) return 0;
   let sent = 0;
   try {
+    if (readRetirement(dir)?.blocked) throw new Error("retired-journal-unavailable");
     recover(dir);
     for (const file of pendingFiles(dir)) {
       const meta = metadata(file), body = fs.readFileSync(file);
@@ -350,5 +359,5 @@ async function drainDirectory(dir, send) {
     return sent;
   } finally { release(); }
 }
-module.exports = { stage, observeConsent, encodeChunks, acquireLock, recover, queueDirectories, pendingFiles, metadata,
+module.exports = { stage, observeConsent, encodeChunks, acquireLock, recover, queueDirectories, pendingFiles, metadata, readRetirement,
   drainDirectory, writeDurable, hmac, MAX_ENVELOPE, ENVELOPE_RESERVE, MAX_RECORD };

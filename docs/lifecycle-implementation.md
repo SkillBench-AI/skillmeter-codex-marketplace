@@ -26,8 +26,18 @@ Existing tests were updated only where the accepted contract changed: realistic
 identity-bearing refresh fixtures and deletion instead of quarantine after the
 retention limit.
 
-M2 remains in progress: explicit sign-in paths, user-visible status, fault/race
-tests, retirement recovery tests and review of compatibility limits. This is a
-local source checkpoint, not permission to install the candidate into a user's
-shared runtime. PR #37 stays draft; no production deployment, merge or release.
-The scoped live-canary steps remain in `lifecycle-checkpoint.md`.
+M2 completes explicit sign-in generation checks, 402 purge in both activation
+paths, terminal user notices, SessionStart/sign-in reset, refresh cooldown and
+one-shot drain recovery. Retirement tests cover busy locks, interrupted deletion,
+missing cursors, invalid journals, legacy snapshots and baseline reconstruction.
+The hook hot path checks only pending purge intent; background work scans age.
+
+Final evidence: 414 regular tests and 55 lifecycle checks pass. The lifecycle
+suite is now required by `npm run check` and both Node versions in GitHub CI.
+The existing synthetic cross-repository contract passes with 40 records and 21
+messages; it uses a scripted analyzer response and does not reach the dashboard.
+
+No candidate installation or shared live credential mutation was performed.
+PR #37 stays draft. The remaining cross-client writer review and exact live
+canary steps are recorded in `lifecycle-checkpoint.md`. No production deployment,
+merge, release, schedule change or historical replay occurred.

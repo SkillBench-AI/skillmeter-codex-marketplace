@@ -39,7 +39,7 @@ function repoScopeLine() {
   const token = getLicenseToken();
   if (!token) return "not signed in — run the signin skill (all events dropped)";
   if (isLicenseTokenExpired(token)) {
-    return "license expired — run the signin skill (all events dropped)";
+    return "license needs refresh; consented capture continues locally, delivery waits for a fresh token";
   }
   const orgs = getAllowedGitHubOrgs();
   if (orgs.length === 0) return "signed in (no licensed organization) — all events dropped";
@@ -88,6 +88,7 @@ switch (action) {
     }
     process.stderr.write(`SkillMeter: Capture status: ${captureGate(cwd).mode}\n`);
     process.stderr.write(`SkillMeter: Repo scope — ${repoScopeLine()}\n`);
+    process.stderr.write(`SkillMeter: ${require("./lib/lifecycle-notice").notice()}\n`);
     break;
   }
   default:

@@ -172,13 +172,27 @@ content-free diagnostic. Deployment-specific gateway limits still need verificat
 Capture and each upload recheck signout, global disable, current user/device,
 the licensed organization and canonical consent. Source `session_meta`/`turn_context` cwd values
 must remain in the authorized repository. Queues cannot move between principals.
-A rejected/expired token retains the queue; transcript upload does not clear shared
-credentials or retry anonymously. Event delivery follows the same authenticated-only rule.
+A rejected/expired token retains the queue until recovery or seven-day expiry;
+collector rejection never retries anonymously. A 402 from license refresh or
+activation revokes the sign-in and removes unsent telemetry. Event delivery
+follows the same authenticated-only rule.
 
 `SessionStart` still recovers/seals orphaned event logs and starts the bounded
-retry monitor. Event `.sent`/poison files retain their existing cleanup policy.
-Legacy transcript pending/poison files are preserved and excluded from automatic
-upload and expiry. New transcript chunks are also retained on failure.
+retry monitor. Uploaded `.sent` files retain the 30-day cleanup policy. Unsent
+events, transcript chunks and legacy pending/poison payloads expire after seven
+days and are removed on sign-out. Legacy snapshots remain excluded from automatic
+upload. Retirement journals prevent deleted chunks from being reconstructed by
+a later baseline reset. Busy or interrupted removals are retried from a durable
+request. Damaged retirement journals block that source instead of guessing which
+bytes may be uploaded.
+
+ADR001 recovery rotates expired tokens through `/refresh`. Network errors,
+404, 5xx and malformed replies retain the token with bounded exponential backoff.
+Only 401/410 or a missing token with a prior sign-in may use silent GitHub
+activation. Recovery verifies the GitHub identity before exchange and the minted
+user, organization and audience before commit. `telemetry.js status` reports
+terminal outcomes and the next retry time. See `docs/lifecycle-implementation.md`
+in the marketplace repository for shared-client compatibility limits.
 
 For a content-free, read-only recovery inventory:
 
@@ -351,7 +365,7 @@ node "$PLUGIN_ROOT/scripts/signin.js"
 
 Once a license is stored, every event/transcript upload is sent with an
 `Authorization: Bearer <jwt>` header and routed to the tenant host from the
-JWT's `telemetry_endpoint` claim.
+JWT's `aud` claim.
 
 ### Sign out
 
@@ -362,7 +376,9 @@ node "$PLUGIN_ROOT/scripts/signout.js"
 (or the `signout` skill). This drops the license JWT and org list, sets a
 `signed_out` sentinel so a still-authenticated `gh` CLI doesn't silently
 re-mint a license on the next session, and enables the machine-global telemetry
-kill-switch. The `device_id` and `hash_salt` are preserved, so signing back in
+kill-switch. It also clears the prior-sign-in marker and removes unsent Codex
+payloads; busy removals remain queued for retry before capture/delivery resumes.
+The `device_id` and `hash_salt` are preserved, so signing back in
 reuses the same machine identity and clears the global switch.
 
 ### Command-line tools (`bin/`)
@@ -374,7 +390,7 @@ Code plugin):
 | Tool | Purpose |
 |------|---------|
 | `bin/signin` | Run the sign-in flow (silent `gh` / GitHub device flow) |
-| `bin/signout` | Sign out, drop the license, and pause uploads |
+| `bin/signout` | Sign out, drop the license, and remove unsent Codex telemetry |
 | `bin/sk-jwt` | Print the stored license JWT's claims (org, endpoint, expiry) in human-readable form — **never** prints the raw token |
 | `bin/sk-refresh` | Clear the stored license and re-activate immediately (swap tenants / recover from a revoked token / test the silent-gh path) |
 | `bin/sk-telemetry` | `enable` / `disable` / `status` telemetry, with `--global` for the machine-wide kill switch (forwards to `scripts/telemetry.js`) |
@@ -432,9 +448,10 @@ node "$PLUGIN_ROOT/bin/sk-telemetry" status
 ### Repo-scoped filtering
 
 Telemetry requires a Git repository with an unambiguous canonical GitHub remote
-in the single licensed organization. Missing/expired identity, unsupported remotes,
+in the single licensed organization. Missing/malformed identity, unsupported remotes,
 personal repositories outside that organization, or missing explicit consent
 block capture. Use `telemetry.js status` from the checkout to see the actual gate.
+Token expiry alone permits local capture; delivery requires a fresh token.
 
 #### License scope
 

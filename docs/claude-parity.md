@@ -11,6 +11,7 @@ sanitation policy 3.1.0. No new shared package or service is introduced.
 | `scripts/lib/telemetry-store.js` | `ed0cc8bd4c27e4a74925f8d54bec5628defc0dc06ac77f0ef3916a461f616e65` | invalid/future-policy guard |
 | `scripts/lib/sanitize.js` | `61e6517fd0b2f16eadd5866cc767a162fc833b161cfafaa4fd460393a13faa43` | byte-identical |
 | `scripts/lib/rules.js` | `74f821d52450a7c7be7c10f2a2c1f6c5958a1d8e2314c8bcaebca83600ea0669` | byte-identical |
+| `scripts/lib/license-status.js` | `626ac21184934daba52653b6300d1b73be7e8d0846b864d676e2dcaaf38cd7c1` | byte-identical |
 | `scripts/lib/path-vocabulary.json` | `ff133f66d53ae5c7d12c300725d6664d7cbe696fab27ad3c8129c0fceb4b3bd6` | byte-identical |
 
 Secret and PII corpora in `plugins/skillmeter/test/fixtures/claude-3.1` are
@@ -39,6 +40,8 @@ identity. Offline stdin-to-queue-to-gzip tests verify the identity and fresh
 policy 3.1.0 counts, including zeros; OFF, undecided and excluded repositories
 produce no event payload. No additional transcript content is disclosed.
 
-This candidate does not yet satisfy all accepted ADR001 requirements. Its token
-lifecycle, per-file cross-repository consent (INF-195), stage-2 sanitization and
-release ownership remain separate. See the checkpoint for live-canary gates.
+ADR001 lifecycle source work now passes the 55-case offline acceptance suite.
+See `docs/lifecycle-implementation.md` for the additive recovery identity fields,
+Codex lock adaptation and cross-client writer limitation. INF-195 per-file
+consent, stage-2 sanitization, release ownership and live validation remain
+separate. See the checkpoint for the exact live-canary gates.

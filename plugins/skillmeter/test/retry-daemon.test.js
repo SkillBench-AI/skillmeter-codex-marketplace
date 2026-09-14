@@ -38,7 +38,7 @@ fs.writeFileSync(
   JSON.stringify({ device_id: "TEST-DEVICE", hash_salt: "deadbeef" }) + "\n"
 );
 
-const { test, afterEach } = require("node:test");
+const { test, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 
 const logger = require("../scripts/logger");
@@ -68,8 +68,11 @@ function nowSec() {
 const realFetch = global.fetch;
 const realTryRefresh = logger.tryRefreshLicense;
 const realDrain = logger.drainQueuesOnce;
+const realNow = Date.now;
+beforeEach(() => require("../scripts/lib/license-status").clearLicenseStatus());
 
 afterEach(() => {
+  Date.now = realNow;
   global.fetch = realFetch;
   logger.tryRefreshLicense = realTryRefresh;
   logger.drainQueuesOnce = realDrain;
@@ -125,8 +128,11 @@ test("a continuous session outliving its token keeps rotating without re-signin"
   };
 
   const SWEEPS = 5;
+  let clock = realNow();
+  Date.now = () => clock;
   for (let i = 0; i < SWEEPS; i++) {
     await daemon.maybeRefreshLicense();
+    clock += 120000;
   }
 
   assert.equal(calls, SWEEPS, "every sweep re-rotates the still-expiring token");

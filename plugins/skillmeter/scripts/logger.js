@@ -1248,7 +1248,7 @@ function flushAndTransfer(input) {
 }
 
 function logStructured(level, event, sessionId, data, deviceId, scope = transcriptScope(process.cwd())) {
-  if (!retention.enforce()) return;
+  if (!retention.enforcePending()) return;
   if (!scope || !deviceId || !scopeStillAllowed(scope)) return;
   const context = repositoryQueue.context(REPOSITORIES_LOG_DIR, scope, getOrCreateHashSalt());
   if (!context) return;
