@@ -28,9 +28,28 @@ process.env.PLUGIN_DATA = tmpData;
 process.env.SKILLMETER_MAX_BATCH_RETRIES = "3";
 
 fs.mkdirSync(path.join(tmpHome, ".skillbench"), { recursive: true });
+
+// Uploads require a valid (non-expired) license JWT — the ingest routes sit
+// behind the meter JWT authorizer — so the queue tests below seed one. Without
+// it every transfer would short-circuit to "auth" and never reach the stubbed
+// fetch. The signature is a dummy; only the `exp` claim is read locally.
+const b64url = (obj) =>
+  Buffer.from(JSON.stringify(obj))
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+const TEST_JWT = `${b64url({ alg: "none", typ: "JWT" })}.${b64url({
+  exp: Math.floor(Date.now() / 1000) + 3600,
+})}.sig`;
+
 fs.writeFileSync(
   path.join(tmpHome, ".skillbench", "credentials.json"),
-  JSON.stringify({ device_id: "TEST-DEVICE", hash_salt: "deadbeef" }) + "\n"
+  JSON.stringify({
+    device_id: "TEST-DEVICE",
+    hash_salt: "deadbeef",
+    license_jwt: TEST_JWT,
+  }) + "\n"
 );
 
 const { test, beforeEach, afterEach } = require("node:test");
