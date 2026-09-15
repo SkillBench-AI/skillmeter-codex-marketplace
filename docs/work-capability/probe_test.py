@@ -62,6 +62,22 @@ class ProbeTests(unittest.TestCase):
         probe.handle({**self.event,"session_id":"different-session"}, self.config)
         self.assertEqual(len(self.emitted()), 1)
 
+    def test_explicit_task_cannot_be_replaced_even_without_binding(self):
+        config = {**self.config,"required_session_hash":probe.digest(self.event["session_id"])}
+        probe.handle({**self.event,"session_id":"another-task"}, config)
+        self.assertEqual(list(self.evidence.iterdir()), [])
+
+    def test_preselected_task_accepts_followup_without_rearming(self):
+        config = {**self.config,"required_session_hash":probe.digest(self.event["session_id"])}
+        (self.evidence / "selected-session.json").write_text(json.dumps({"session_hash":config["required_session_hash"]}))
+        probe.handle({**self.event,"prompt":probe.MARKERS["hookcheck"]}, config)
+        self.assertEqual(self.emitted()[0]["transcript"]["outcome"], "readable-jsonl")
+
+    def test_explicit_task_still_requires_expected_cwd(self):
+        config = {**self.config,"required_session_hash":probe.digest(self.event["session_id"])}
+        probe.handle({**self.event,"cwd":str(self.root)}, config)
+        self.assertEqual(list(self.evidence.iterdir()), [])
+
     def test_expired_probe_is_inert(self):
         probe.handle(self.event, {**self.config,"expires_at":0})
         self.assertEqual(list(self.evidence.iterdir()), [])

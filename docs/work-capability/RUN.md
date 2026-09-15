@@ -1,5 +1,20 @@
 # Run the local Work probe
 
+## Current next step: continue the existing task
+
+The first A/B run is complete. The probe is now pinned to the exact existing task **Calculate Work activity minutes**, with its observed cwd and source identity checks. Every other task is rejected, including tasks at the same workspace root. Fifteen boundary tests pass. Hook definitions and expiry are unchanged; selection was configured explicitly and is not evidence that a hook has fired.
+
+1. Open **Calculate Work activity minutes**. Do not create a new task or change/add folders.
+2. Paste this follow-up:
+
+> WORK-PROBE-20260915-C. Using only the existing synthetic-workspace/source.csv, run one local calculation to verify the total excluding Prepare slides. Reply with the total only. Do not edit files, use connected accounts, access the internet, or create subagents.
+
+3. Once it replies **30 minutes**, return to the original assistant task and say **“Hook check done.”** If it reports a hook warning or a different result, report that instead.
+
+The seven hook definitions are already present in the user's trust state. No reinstall or trust bypass is needed. Runtime invocation still needs verification from the actual follow-up. The probe still expires September 16 at 20:09 KST.
+
+## Earlier first-run procedure (already completed)
+
 Installed September 15, 2026. Expires September 16 at 20:09 KST. No SkillBench credentials or uploader are used by this probe. Its seven hook groups are registered in the newly created `~/.codex/hooks.json`; existing config.toml and plugin hooks were left unchanged. The callback is inert outside the exact folder below, before the initial marker, for any other session after binding, and after expiry.
 
 ## 1. Review the new hooks

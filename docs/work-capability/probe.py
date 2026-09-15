@@ -14,7 +14,7 @@ import time
 EVENTS = {"SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "Interrupt", "SessionEnd"}
 KINDS = {"session_meta", "turn_context", "response_item", "event_msg", "compacted", "world_state", "token_usage_record"}
 SUBTYPES = {"message", "function_call", "function_call_output", "custom_tool_call", "custom_tool_call_output", "user_message", "agent_message", "reasoning", "web_search_call", "task_started", "task_complete", "turn_aborted"}
-MARKERS = {"initial": "WORK-PROBE-20260915-A", "followup": "WORK-PROBE-20260915-B", "total60": "60", "total30": "30"}
+MARKERS = {"initial": "WORK-PROBE-20260915-A", "followup": "WORK-PROBE-20260915-B", "hookcheck": "WORK-PROBE-20260915-C", "total60": "60", "total30": "30"}
 LIMIT = 2 * 1024 * 1024
 
 
@@ -113,6 +113,11 @@ def handle(event, config):
         return
     session = event.get("session_id")
     if not isinstance(session, str) or not session or len(session) > 256:
+        return
+    # A reviewed existing task can be selected independently of attached folders.
+    # Check this even when the binding file is absent; never widen to other tasks.
+    required = config.get("required_session_hash")
+    if required is not None and digest(session) != required:
         return
     state = Path(config["evidence_dir"])
     if not state.is_dir() or state.is_symlink() or str(state.resolve()) != str(state):
