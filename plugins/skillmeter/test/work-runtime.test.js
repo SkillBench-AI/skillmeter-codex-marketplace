@@ -70,6 +70,19 @@ test("expired or tenant-less credentials cannot register Work",()=>{
     save(extra); assert.throws(()=>workCapture().enable(source,"task"),/work-auth-unavailable/);
   }
 });
+test("Work status and enable never initialize missing shared identity fields",()=>{
+  for (const missing of ["device_id","hash_salt"]) {
+    save();
+    const store=JSON.parse(fs.readFileSync(creds)); delete store[missing];
+    fs.writeFileSync(creds,JSON.stringify(store));
+    const before=fs.readFileSync(creds);
+    assert.equal(workCapture().status().enabled,false);
+    assert.ok(fs.readFileSync(creds).equals(before),"status must not initialize credentials");
+    assert.throws(()=>workCapture().enable(source,"task"),/work-auth-unavailable/);
+    assert.ok(fs.readFileSync(creds).equals(before),"enable must not initialize credentials");
+    assert.equal(count(),0);
+  }
+});
 test("shared seven-day retention retires Work bodies without replaying retired text",()=>{
   const capture=workCapture(); capture.enable(source,"task"); append(); capture.capture(input());
   const dirs=queue.queueDirectories(path.join(process.env.PLUGIN_DATA,"logs/work-local-v1/chunks"));
