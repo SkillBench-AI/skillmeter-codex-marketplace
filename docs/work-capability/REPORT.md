@@ -2,6 +2,8 @@
 
 Evidence date: September 15, 2026. Result: **offline compatibility packet complete; live Work capture unverified**.
 
+Follow-up: a bounded, metadata-only probe is now installed in the previously absent user hooks.json. Twelve probe boundary tests and two installed-callback rejection smoke checks pass. Hook trust and the actual Work task are pending; no live evidence has been collected. See [RUN.md](RUN.md). Earlier offline test results below remain synthetic only.
+
 Reuse of the Codex sanitizer and structured parser is supported for the tested synthetic Codex-format document task. The existing plugin does not yet support non-repository Work capture or preserve Work identity through normalization. A real Work task must establish the available hook/transcript interface before an adapter is implemented.
 
 ## Local inventory and baselines

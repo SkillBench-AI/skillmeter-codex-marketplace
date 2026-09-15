@@ -1,12 +1,12 @@
 # Synthetic local Work action checklist
 
-Status: prepared, not executed in ChatGPT Work. This is a non-coding document task. The adjacent rollout.jsonl is a hand-authored compatibility fixture, not a recording of this procedure. Actual tool names and record shapes must be observed, not forced to match the fixture.
+Status: probe installed, awaiting hook trust and actual Work execution. Follow [RUN.md](RUN.md) for the marked prompts and current setup. This is a non-coding document task. The adjacent rollout.jsonl is a hand-authored compatibility fixture, not a recording of this procedure. Actual tool names and record shapes must be observed, not forced to match the fixture.
 
 ## Before starting
 
 - [x] Confirm the ChatGPT app exposes a Work task with Local execution. User screenshot on September 15 shows Work selected and On your computer checked. Actual task execution remains untested.
 - [ ] Prepare an isolated non-Git folder containing only fixture/source.csv. Do not use this Git worktree as the task workspace, or the non-repository consent test becomes invalid.
-- [ ] Complete the scoped probe setup and review its hook definition once the actual Work configuration route is established. No probe has been installed in this packet. Do not enable the existing uploader globally or bypass trust to make this test work.
+- [ ] Review and trust the installed probe's seven hook definitions as described in RUN.md. Do not enable the existing uploader globally or bypass trust to make this test work.
 - [ ] Verify that the probe targets only this task/folder, records locally, and sends nothing to the SkillBench collector. Record app/runtime versions and observed task ID without user/account secrets.
 
 The machine-local staging folder prepared with this packet is:
@@ -14,7 +14,7 @@ The machine-local staging folder prepared with this packet is:
 
 ## Initial prompt
 
-Paste after the setup checks above:
+Use the marked prompt in RUN.md after the setup checks above. The unmarked scenario below describes the task but will not arm the installed probe:
 
 > This is an entirely synthetic local Work capability test. Use only source.csv in this task's folder. Read its three activities, use a local tool to calculate total minutes, and write a short memo.md summarizing the result. Return the total and the filename. Do not access connected accounts, other folders, or the internet.
 
