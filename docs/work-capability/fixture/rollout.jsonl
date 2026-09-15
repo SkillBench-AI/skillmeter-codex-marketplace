@@ -1,0 +1,13 @@
+{"timestamp":"2026-09-15T00:00:00Z","type":"session_meta","payload":{"id":"work-capability-synthetic-001","cwd":"/synthetic/work-capability","source":"synthetic-work-hypothesis"}}
+{"timestamp":"2026-09-15T00:00:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Read source.csv, calculate the total minutes, and write memo.md. This is synthetic work for fixture@example.com."}]}}
+{"timestamp":"2026-09-15T00:00:02Z","type":"response_item","payload":{"type":"function_call","call_id":"work-read","name":"read_file","arguments":"{\"file_path\":\"/synthetic/work-capability/source.csv\",\"access_token\":\"SYNTHETIC-NOT-A-CREDENTIAL\"}"}}
+{"timestamp":"2026-09-15T00:00:03Z","type":"response_item","payload":{"type":"function_call_output","call_id":"work-read","output":"activity,minutes\nDraft memo,10\nReview evidence,20\nPrepare slides,30\n"}}
+{"timestamp":"2026-09-15T00:00:04Z","type":"response_item","payload":{"type":"function_call","call_id":"work-total","name":"exec_command","arguments":"{\"cmd\":\"python3 -c 'print(10+20+30)'\"}"}}
+{"timestamp":"2026-09-15T00:00:05Z","type":"response_item","payload":{"type":"function_call_output","call_id":"work-total","output":"60\n"}}
+{"timestamp":"2026-09-15T00:00:06Z","type":"response_item","payload":{"type":"custom_tool_call","call_id":"work-write","name":"apply_patch","input":"*** Begin Patch\n*** Add File: memo.md\n+Total: 60 minutes.\n*** End Patch"}}
+{"timestamp":"2026-09-15T00:00:07Z","type":"response_item","payload":{"type":"custom_tool_call_output","call_id":"work-write","output":"Created memo.md"}}
+{"timestamp":"2026-09-15T00:00:08Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The total is 60 minutes. I created memo.md."}]}}
+{"timestamp":"2026-09-15T00:01:01Z","type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Exclude Prepare slides and give me the revised total."}]}}
+{"timestamp":"2026-09-15T00:01:02Z","type":"response_item","payload":{"type":"function_call","call_id":"work-revise","name":"exec_command","arguments":"{\"cmd\":\"python3 -c 'print(10+20)'\"}"}}
+{"timestamp":"2026-09-15T00:01:03Z","type":"response_item","payload":{"type":"function_call_output","call_id":"work-revise","output":"30\n"}}
+{"timestamp":"2026-09-15T00:01:04Z","type":"response_item","payload":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"The revised total is 30 minutes."}]}}

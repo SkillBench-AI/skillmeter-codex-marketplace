@@ -1,0 +1,121 @@
+{
+  "app": {
+    "CFBundleIdentifier": "com.openai.codex",
+    "CFBundleShortVersionString": "26.908.40834",
+    "CFBundleVersion": "8881"
+  },
+  "bundled_runtime": "codex-cli 0.154.0-alpha.6.2",
+  "cli_runtime": "codex-cli 0.154.0",
+  "protocol_evidence": {
+    "ThreadHistoryMode": {
+      "enum": [
+        "legacy",
+        "paginated"
+      ],
+      "type": "string"
+    },
+    "SessionSource": {
+      "oneOf": [
+        {
+          "enum": [
+            "cli",
+            "vscode",
+            "exec",
+            "appServer",
+            "unknown"
+          ],
+          "type": "string"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "custom": {
+              "type": "string"
+            }
+          },
+          "required": [
+            "custom"
+          ],
+          "title": "CustomSessionSource",
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "subAgent": {
+              "$ref": "#/definitions/SubAgentSource"
+            }
+          },
+          "required": [
+            "subAgent"
+          ],
+          "title": "SubAgentSessionSource",
+          "type": "object"
+        }
+      ]
+    },
+    "ThreadSource": {
+      "type": "string"
+    },
+    "Thread_fields": {
+      "path": {
+        "description": "[UNSTABLE] Path to the thread on disk.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "historyMode": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/ThreadHistoryMode"
+          }
+        ],
+        "default": "legacy",
+        "description": "Persisted thread history contract selected when this thread was created."
+      },
+      "ephemeral": {
+        "description": "Whether the thread is ephemeral and should not be materialized on disk.",
+        "type": "boolean"
+      },
+      "originator": {
+        "description": "Originator recorded when the thread was created, independent of its current client or executor. Null when the recorded originator is unavailable.",
+        "type": [
+          "string",
+          "null"
+        ]
+      },
+      "threadSource": {
+        "anyOf": [
+          {
+            "$ref": "#/definitions/ThreadSource"
+          },
+          {
+            "type": "null"
+          }
+        ],
+        "description": "Optional analytics source classification for this thread."
+      },
+      "source": {
+        "allOf": [
+          {
+            "$ref": "#/definitions/SessionSource"
+          }
+        ],
+        "description": "Origin of the thread (CLI, VSCode, codex exec, codex app-server, etc.)."
+      },
+      "sessionId": {
+        "description": "Session id shared by threads that belong to the same session tree.",
+        "type": "string"
+      }
+    },
+    "ThreadRead_includeTurns": {
+      "description": "When true, include turns and their items from rollout history. Full-history hydration is deprecated for paginated threads; prefer a metadata-only read and page with `thread/turns/list` and `thread/items/list`.",
+      "type": "boolean"
+    }
+  },
+  "limits": [
+    "Schema capability only; no active account or task inspected",
+    "API schema is not proof of hook JSON or rollout storage format"
+  ]
+}

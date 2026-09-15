@@ -1,0 +1,23 @@
+{
+  "fixture_id": "work-capability-synthetic-001",
+  "provenance": "Hand-authored Codex-format compatibility hypothesis, NOT a captured ChatGPT Work session",
+  "intended_surface": "chatgpt_work",
+  "intended_execution": "local",
+  "source_field_is_synthetic": true,
+  "initial_total_minutes": 60,
+  "revised_total_minutes": 30,
+  "expected_authored_messages": 4,
+  "expected_tool_ids": ["work-read", "work-total", "work-write", "work-revise"],
+  "expected_tool_names": ["read_file", "exec_command", "apply_patch", "exec_command"],
+  "expected_normalized_messages": 8,
+  "negative_variant": "Append an unknown response subtype to require an explicit unsupported-record diagnostic",
+  "live_actions": [
+    {"id":"A1", "action":"Start a local ChatGPT Work task in the prepared non-Git folder", "expected":"Work surface and local execution visibly confirmed; task identity recorded", "live_status":"not_run"},
+    {"id":"A2", "action":"Read source.csv", "expected":"File-read tool call and result identifiable, including all three synthetic rows", "live_status":"not_run"},
+    {"id":"A3", "action":"Use a local tool to calculate total minutes", "expected":"Calculation tool/result and total 60", "live_status":"not_run"},
+    {"id":"A4", "action":"Write memo.md and return a final response", "expected":"Write tool/result, memo artifact and final assistant message", "live_status":"not_run"},
+    {"id":"A5", "action":"Close and reopen the same task; ask to exclude Prepare slides", "expected":"Both authored prompts retained, revised total 30, continuity without duplicates", "live_status":"not_run"},
+    {"id":"A6", "action":"Optional: search a public OpenAI documentation page", "expected":"Record whether the hosted tool is visible in transcript, hooks, both or neither; tool availability is a separate observation", "live_status":"not_run"},
+    {"id":"A7", "action":"Optional: interrupt an ongoing operation, then continue", "expected":"Interrupted/pending state visible without inventing a completed tool result", "live_status":"not_run"}
+  ]
+}
