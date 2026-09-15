@@ -20,6 +20,8 @@ const { sanitizeEventData } = require("./sanitizer");
 const credstore = require("./credstore");
 const transcriptQueue = require("./lib/transcript-delta");
 const repositoryQueue = require("./lib/repository-queue");
+const {isWorkSource} = require("./lib/work-local");
+const {workCapture} = require("./lib/work-runtime");
 const {
   getEndpointFromToken,
   getEndpointFromTokenAllowExpired,
@@ -96,6 +98,7 @@ function getTelemetryGloballyDisabled() {
 function setTelemetryGloballyDisabled(disabled) {
   stageRequestedTranscripts();
   const result = credstore.setTelemetryDisabled(disabled);
+  if (disabled) workCapture().disable();
   stageRequestedTranscripts();
   return result;
 }
@@ -418,6 +421,8 @@ function observeTranscriptConsent(source, cwd, verifyReplacement = false) {
     getOrCreateHashSalt(), captureGate(cwd).capture, scope.consentStamp + JSON.stringify(telemetryStore.readPolicy().global), false, verifyReplacement);
 }
 function stageTranscriptForUpload(transcriptPath, context = {}) {
+  // Work cannot enter the repository upload path, even inside an opted-in repo.
+  if (isWorkSource(transcriptPath)) return null;
   if (!retention.enforce()) return null;
   const cwd = context.cwd || process.cwd();
   let consent;
@@ -431,6 +436,7 @@ function stageTranscriptForUpload(transcriptPath, context = {}) {
       preserveSessionMetadata: true,
       authorizeCommit: () => scopeStillAllowed(scope) && consent.stamp === scope.consentStamp + JSON.stringify(telemetryStore.readPolicy().global),
       authorizeRecord: record => {
+        if (record.type === "session_meta" && record.payload?.originator === "codex_work_desktop") return false;
         if (!["session_meta", "turn_context"].includes(record.type) || !record.payload?.cwd) return true;
         const sourceScope = transcriptScope(record.payload.cwd);
         return sourceScope && sourceScope.repoKey === scope.repoKey && sourceScope.owner === scope.owner;
@@ -1429,6 +1435,19 @@ async function runHook(eventName, buildData, options = {}) {
     return exit(0);
   }
 
+  // Exact registered Work tasks and observed Work sources use only local state.
+  // No fallback to repo consent, hook-event logging or production drainers.
+  try {
+    const work = workCapture();
+    if (work.matches(input.session_id) || isWorkSource(input.transcript_path)) {
+      const result = work.capture(input);
+      console.error(`[skillmeter] Work local: ${result.status}; delivery disabled`);
+      return exit(0);
+    }
+  } catch {
+    console.error("[skillmeter] Work local state unavailable; hook skipped");
+    return exit(0);
+  }
   const cwd = input.cwd || process.cwd();
 
   // Resolve repo ownership up front: it both gates capture (below) and, for

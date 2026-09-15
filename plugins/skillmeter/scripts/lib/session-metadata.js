@@ -17,6 +17,12 @@ function sessionMetadata(record) {
       selected.source = { subagent: true };
     } else throw new Error("unsupported-session-source");
   }
+  if (payload.originator != null) {
+    if (typeof payload.originator !== "string" || !/^[a-zA-Z0-9_-]{1,80}$/.test(payload.originator)) {
+      throw new Error("unsupported-session-originator");
+    }
+    selected.originator = payload.originator;
+  }
   if (payload.parent_thread_id != null) {
     if (typeof payload.parent_thread_id !== "string") throw new Error("invalid-session-metadata");
     selected.parent_thread_id = payload.parent_thread_id;

@@ -308,7 +308,7 @@ function stage(root, source, scope, salt, options = {}) {
   } catch (e) {
     // Error code only. Never persist source text or arbitrary exception payloads.
     const code = ["oversized-single-record", "malformed-complete-record", "invalid-wire-budget",
-      "source-changed-during-stage", "source-truncated-during-read", "invalid-cursor", "incomplete-transaction", "source-scope-changed", "source-owner-changed", "consent-source-rewritten", "consent-changed-during-stage", "invalid-session-metadata", "unsupported-session-source"].includes(e.message) ? e.message : "stage-failed";
+      "source-changed-during-stage", "source-truncated-during-read", "invalid-cursor", "incomplete-transaction", "source-scope-changed", "source-owner-changed", "consent-source-rewritten", "consent-changed-during-stage", "invalid-session-metadata", "unsupported-session-source", "unsupported-session-originator"].includes(e.message) ? e.message : "stage-failed";
     writeDurable(path.join(dir, "diagnostic.json"), JSON.stringify({ code, at: new Date().toISOString() }));
     throw e;
   } finally { if (fd !== undefined) fs.closeSync(fd); release(); }

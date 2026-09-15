@@ -89,7 +89,22 @@ function prune(all = false, now = Date.now()) {
     });
     if (!result) complete = false;
   }
-  for (const dir of chunks.queueDirectories(path.join(logs,"transcripts/chunks-v1"))) {
+  const workRoot = path.join(logs,"work-local-v1");
+  const selection = path.join(workRoot,"selected.json");
+  if (all && fs.existsSync(selection)) {
+    const release = chunks.acquireLock(path.join(workRoot,"lock"));
+    if (!release) return false;
+    try {
+      // A logout/terminal license purge permanently revokes this local grant.
+      const policy = JSON.parse(fs.readFileSync(selection,"utf8"));
+      chunks.writeDurable(selection,JSON.stringify({...policy,enabled:false}));
+    } catch {
+      // Invalid local selection stays unusable; body deletion can still proceed.
+      chunks.writeDurable(selection,JSON.stringify({version:1,enabled:false}));
+    } finally { release(); }
+  }
+  const transcriptRoots = [path.join(logs,"transcripts/chunks-v1"),path.join(workRoot,"chunks")];
+  for (const dir of transcriptRoots.flatMap(chunks.queueDirectories)) {
     try { if (!retireDirectory(dir,all,now)) complete = false; }
     catch (error) {
       if (!(error instanceof SyntaxError) && !["invalid-cursor","incomplete-transaction","invalid-retirement-journal","retired-journal-unavailable"].includes(error.message)) throw error;
