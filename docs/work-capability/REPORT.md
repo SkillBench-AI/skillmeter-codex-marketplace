@@ -1,8 +1,8 @@
 # ChatGPT Work telemetry capability report
 
-Evidence date: September 15, 2026. Result: **real local Work transcript inspected and normalized; automatic hook delivery unverified**. See [first live result](LIVE-RESULT.md).
+Evidence date: September 15, 2026. Result: **local Work hook invocation and readable transcript access verified; selected records normalize successfully**. See [completed hook check](HOOK-RESULT.md). This completes the capability experiment, not production integration.
 
-Follow-up: the user completed the real synthetic Work task. Its cwd stayed at the parent workspace, so the exact-folder probe did not select it. Targeted read-only inspection verified a local JSONL transcript and successful candidate normalization. The probe's evidence directory is empty. Twelve probe boundary tests, three removal tests and two installed rejection checks pass. Earlier offline fixture results below remain synthetic only.
+The initial exact-folder probe excluded the task because its cwd stayed at the parent workspace. An exact-task-bound follow-up then recorded UserPromptSubmit, PreToolUse, PostToolUse and Stop. All four callbacks read valid JSONL; Stop observed all nine outer call/result pairs. Final in-memory normalization accepted 20 messages with no malformed/unsupported/incomplete diagnostics. Fifteen probe boundary tests and three removal tests pass. Temporary hook groups have been removed. Earlier offline fixture results below remain synthetic only.
 
 Reuse of the Codex sanitizer and structured parser is supported for the tested synthetic Codex-format document task. The existing plugin does not yet support non-repository Work capture or preserve Work identity through normalization. A real Work task must establish the available hook/transcript interface before an adapter is implemented.
 
@@ -46,12 +46,12 @@ Status applies to the stated layer. **Supported** means documented at that layer
 
 | Capability | Status | Evidence and boundary |
 |---|---|---|
-| Work lifecycle hook mechanism | Supported, documented | OpenAI lists Work among Codex-runtime hook consumers. Installation/trust on this account not tested. |
+| Work lifecycle hook mechanism | Supported for four observed events | Real UserPromptSubmit, PreToolUse, PostToolUse and Stop callbacks verified. Other events remain untested. |
 | Local Work availability and execution selection | Supported, screenshot-confirmed | User screenshot shows Work selected and On your computer checked. No task execution or capture is inferred. |
-| Readable raw transcript for a local Work task | Supported for one observed session | Targeted lookup found identity-matched JSONL for the completed Work task. Automatic hook access and other history modes remain unverified. |
+| Readable raw transcript for a local Work task | Supported for one observed session | All four observed hooks read identity-matched JSONL. Other history modes remain unverified. |
 | Non-repo capture through current plugin | Unsupported | Existing licensed-org test rejects non-Git directory with no_repository. Preserve this protection until explicit Work consent is designed. |
 | Prompts/final responses in known Codex-shaped records | Supported in selected live records | Both prompts and both final answers occur in the observed JSONL; candidate accepts selected sanitized records. |
-| Structured local tool calls/results | Partial, live outer links verified | Eight outer exec call/result pairs survive selected live normalization. Inner action semantics remain a separate gap. |
+| Structured local tool calls/results | Partial, live outer links verified | Nine outer exec call/result pairs survive final selected live normalization. Inner action semantics remain a separate gap. |
 | Sanitizer for tested document-task records | Partial | Email, labeled fake credential and path sentinels removed; call IDs retained. Commands and patch contents intentionally opaque. No claim of comprehensive document/browser/attachment sanitization. |
 | Distinct Work identity in normalized output | Unsupported | Observed originator=codex_work_desktop with source=vscode; candidate startup selection/projection loses Work origin and emits agent=codex. |
 | Hook-only capture of hosted tools | Unsupported as complete coverage | Official hooks docs exclude hosted paths such as WebSearch. Transcript coverage must be tested separately. |

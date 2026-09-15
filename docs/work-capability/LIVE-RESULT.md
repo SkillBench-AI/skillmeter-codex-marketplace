@@ -1,5 +1,7 @@
 # First real local Work run
 
+Subsequent C follow-up resolved hook acceptance. See [HOOK-RESULT.md](HOOK-RESULT.md) for the completed experiment and cleanup; the initial-run findings below remain historical evidence.
+
 September 15, 2026. **Local transcript feasibility demonstrated; automatic hook delivery not demonstrated.** The user completed the two-prompt synthetic Work task. No need to repeat the document/calculation task to establish its transcript format.
 
 ## Findings

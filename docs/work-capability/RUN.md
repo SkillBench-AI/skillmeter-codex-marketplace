@@ -1,5 +1,7 @@
 # Run the local Work probe
 
+**Completed September 15:** the C follow-up passed. Four hooks read the selected transcript; final normalization retained 20 messages and nine outer call/result pairs. Temporary hooks have been removed. No more user action is needed for this experiment. See [HOOK-RESULT.md](HOOK-RESULT.md); procedures below are historical, not instructions to rerun.
+
 ## Current next step: continue the existing task
 
 The first A/B run is complete. The probe is now pinned to the exact existing task **Calculate Work activity minutes**, with its observed cwd and source identity checks. Every other task is rejected, including tasks at the same workspace root. Fifteen boundary tests pass. Hook definitions and expiry are unchanged; selection was configured explicitly and is not evidence that a hook has fired.

@@ -1,0 +1,158 @@
+{
+  "observed_at": "2026-09-15",
+  "evidence_kind": "real Work hook observations plus selected-transcript normalization",
+  "hook_events": [
+    {
+      "time": 1789472439.0936909,
+      "event": "UserPromptSubmit",
+      "session_hash": "3343f4d6a431061c854e2675",
+      "transcript": {
+        "outcome": "readable-jsonl",
+        "bytes": 687680,
+        "record_counts": {
+          "response_item/message": 8,
+          "event_msg/other": 39,
+          "response_item/reasoning": 10,
+          "response_item/custom_tool_call": 8,
+          "token_usage_record/other": 10,
+          "response_item/custom_tool_call_output": 8,
+          "event_msg/task_complete": 2,
+          "event_msg/task_started": 2,
+          "world_state/other": 1,
+          "turn_context/other": 2
+        },
+        "malformed_lines": 0,
+        "newline_terminated": true,
+        "synthetic_markers": [
+          "followup",
+          "initial",
+          "total30",
+          "total60"
+        ],
+        "calls": 8,
+        "results": 8,
+        "linked_results": 8
+      }
+    },
+    {
+      "time": 1789472446.0753732,
+      "event": "PreToolUse",
+      "session_hash": "3343f4d6a431061c854e2675",
+      "transcript": {
+        "outcome": "readable-jsonl",
+        "bytes": 694439,
+        "record_counts": {
+          "response_item/message": 10,
+          "event_msg/other": 42,
+          "response_item/reasoning": 11,
+          "response_item/custom_tool_call": 9,
+          "token_usage_record/other": 11,
+          "response_item/custom_tool_call_output": 8,
+          "event_msg/task_complete": 2,
+          "event_msg/task_started": 2,
+          "world_state/other": 1,
+          "turn_context/other": 2
+        },
+        "malformed_lines": 0,
+        "newline_terminated": true,
+        "synthetic_markers": [
+          "followup",
+          "hookcheck",
+          "initial",
+          "total30",
+          "total60"
+        ],
+        "calls": 9,
+        "results": 8,
+        "linked_results": 8
+      }
+    },
+    {
+      "time": 1789472446.284279,
+      "event": "PostToolUse",
+      "session_hash": "3343f4d6a431061c854e2675",
+      "transcript": {
+        "outcome": "readable-jsonl",
+        "bytes": 695385,
+        "record_counts": {
+          "response_item/message": 10,
+          "event_msg/other": 43,
+          "response_item/reasoning": 11,
+          "response_item/custom_tool_call": 9,
+          "token_usage_record/other": 11,
+          "response_item/custom_tool_call_output": 8,
+          "event_msg/task_complete": 2,
+          "event_msg/task_started": 2,
+          "world_state/other": 1,
+          "turn_context/other": 2
+        },
+        "malformed_lines": 0,
+        "newline_terminated": true,
+        "synthetic_markers": [
+          "followup",
+          "hookcheck",
+          "initial",
+          "total30",
+          "total60"
+        ],
+        "calls": 9,
+        "results": 8,
+        "linked_results": 8
+      }
+    },
+    {
+      "time": 1789472449.46659,
+      "event": "Stop",
+      "session_hash": "3343f4d6a431061c854e2675",
+      "transcript": {
+        "outcome": "readable-jsonl",
+        "bytes": 699294,
+        "record_counts": {
+          "response_item/message": 11,
+          "event_msg/other": 46,
+          "response_item/reasoning": 11,
+          "response_item/custom_tool_call": 9,
+          "token_usage_record/other": 12,
+          "response_item/custom_tool_call_output": 9,
+          "event_msg/task_complete": 2,
+          "event_msg/task_started": 2,
+          "world_state/other": 1,
+          "turn_context/other": 2
+        },
+        "malformed_lines": 0,
+        "newline_terminated": true,
+        "synthetic_markers": [
+          "followup",
+          "hookcheck",
+          "initial",
+          "total30",
+          "total60"
+        ],
+        "calls": 9,
+        "results": 9,
+        "linked_results": 9
+      }
+    }
+  ],
+  "last_final_contains_30": true,
+  "normalization": {
+    "diagnostic": {
+      "source_key": "transcripts/SYNTHETIC-WORK/2026-09-15/selected-live-work.jsonl",
+      "format": "codex",
+      "status": "session",
+      "malformed_lines": 0,
+      "unsupported_records": 0,
+      "incomplete_tools": 0
+    },
+    "messages": 20,
+    "calls": 9,
+    "results": 9,
+    "agent": "codex"
+  },
+  "limitations": [
+    "Exact selected task only; synthetic content",
+    "Outer exec pairs only; inner operations not semantically validated",
+    "No production collection, upload, analyzer or dashboard test",
+    "No raw transcript copy retained in this packet"
+  ]
+}
