@@ -1,0 +1,28 @@
+{
+  "date": "2026-09-16",
+  "candidateSource": "973d1f4dce4b00f112b0a5c239566890c28c1944",
+  "candidateFilesMatched": 101,
+  "installedEvents": [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "Stop",
+    "SessionEnd",
+    "Interrupt"
+  ],
+  "unselectedGuardPassed": true,
+  "sharedCredentialsAndPolicyUnchanged": true,
+  "userHooksPresent": false,
+  "taskSelected": false,
+  "evidenceExists": false,
+  "status": {
+    "enabled": false,
+    "delivery": "disabled",
+    "tokenExpired": false,
+    "expiresAt": null,
+    "purgePending": false
+  },
+  "desktopNativeDispatch": "pending",
+  "normalSkillmeterInstalled": true
+}
