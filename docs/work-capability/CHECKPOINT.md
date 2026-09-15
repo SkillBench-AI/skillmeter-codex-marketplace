@@ -1,3 +1,11 @@
+# Native plugin canary prepared, September 16, 2026
+
+Current source checkpoint de8c5b9f4f98716faf301dad3f72b2e1ed0ac5f4. Separate local skillmeter-work-canary@personal 0.1.0 is installed. It embeds the unchanged 973d1f4 candidate behind seven packaged, exact-task guarded hooks; no user-hook bridge, normal SkillMeter replacement, delivery or shared-auth change. Four guard tests and seven installed unselected checks pass; candidate 101 files match. No task selected and no live evidence. Control expires September 17 at 08:09 KST.
+
+NEXT: user selects SkillMeter Work Canary in a fresh local Work task, reviews its seven hooks, runs only the setup prompt in native-canary/README.md, and replies Native preflight done. Then locate only that named task, verify metadata, enable future-byte grant and bind control before the actual synthetic task. No automatic trust bypass or marker-based selection. Native UI/dispatch remains unverified. See native-canary/README.md for the manual prompt, binding, normalization and cleanup procedure. Pipeline current source 3abe812f. No pushes/PR updates/communication.
+
+Earlier checkpoints follow.
+
 # Analyzer repair checkpoint, September 16, 2026
 
 Supersedes the two analyzer gaps below. Pipeline commit 3abe812f98e625ff17e5719c816edfa31275ddcf on codex/work-normalization-20260915 fixes empty-report generation and retains supplied agent/surface/originator through internal parse/classification/task analysis. Ineligible real sessions return the existing insufficient-activity skip with zero model calls, no report artifact and no ingest; worker acknowledgement and accurate CLI output are tested. Eligible companions still produce reports, and missing legacy source fields stay missing. No threshold, scoring prompt or public report schema changed.
