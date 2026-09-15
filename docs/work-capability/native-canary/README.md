@@ -1,3 +1,5 @@
+Update September 16: the user screenshot confirms native desktop discovery of SkillMeter Work Canary and seven hooks awaiting review. The initial package incorrectly requested 4-second SessionEnd/Interrupt timeouts; desktop clamps those to 3 seconds. Corrected both source preparation and local package to 3 seconds, validated a fresh build, reinstalled through the supported cache-buster flow as 0.1.0+codex.20260915232102, and passed all seven unselected installed checks. No task selected, no trust bypass, no capture. Click Refresh in the desktop Hooks page, open the SkillMeter Work Canary row, review the updated hooks and start a fresh local Work task. The normal SkillMeter panel showed the same canary-path warnings; do not infer that normal plugin hooks need modification. Earlier version references below identify the initial installation.
+
 # Native desktop Work canary, September 16, 2026
 
 Prepared and installed; actual desktop discovery/trust/dispatch is pending.
@@ -12,7 +14,7 @@ remains installed. No user `hooks.json` bridge was restored.
    If it is missing, refresh the app's plugin list; the View link below opens
    the local listing. Do not replace or reinstall normal SkillMeter.
 2. Open `/hooks`. Review and trust only hooks whose command points to
-   `personal/skillmeter-work-canary/0.1.0/native-hook.cjs`. There are seven:
+   `personal/skillmeter-work-canary/<version>/native-hook.cjs`. There are seven:
    SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, Stop, SessionEnd and
    Interrupt. Other plugins add to the totals, so total counts alone are not
    proof. Do not use Trust all or a hook-trust bypass. If the plugin or hooks

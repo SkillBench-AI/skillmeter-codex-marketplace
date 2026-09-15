@@ -27,7 +27,7 @@ manifest["interface"].update({
 })
 manifest_path.write_text(json.dumps(manifest, indent=2) + "\n")
 events = ["SessionStart", "UserPromptSubmit", "PreToolUse", "PostToolUse", "Stop", "SessionEnd", "Interrupt"]
-hooks = {event: [{"hooks": [{"type": "command", "command": f'node "${{PLUGIN_ROOT}}/native-hook.cjs" {shlex.quote(str(config_path))} {event}', "timeout": 4, "statusMessage": "SkillMeter Work Canary: selected task only"}]}] for event in events}
+hooks = {event: [{"hooks": [{"type": "command", "command": f'node "${{PLUGIN_ROOT}}/native-hook.cjs" {shlex.quote(str(config_path))} {event}', "timeout": 3 if event in ("SessionEnd", "Interrupt") else 4, "statusMessage": "SkillMeter Work Canary: selected task only"}]}] for event in events}
 (target / "hooks/hooks.json").write_text(json.dumps({"hooks": hooks}, indent=2) + "\n")
 config_path.parent.mkdir(parents=True, mode=0o700)
 config_path.write_text(json.dumps({
