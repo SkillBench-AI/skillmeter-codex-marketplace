@@ -1,3 +1,11 @@
+# Native canary selected, September 16, 2026
+
+User completed native preflight in the fresh task Run native work canary. Verified source=vscode, originator=codex_work_desktop, runtime0.154.0-alpha.6.2 and exact cwd. Installed candidate0.1.0+codex.20260915232102 now has an enabled future-byte grant and exact task/source/cwd binding in the protected native-canary control file. Setup tail166617bytes is excluded, queue initially empty. Shared credentials/policy unchanged; delivery disabled. This administrative enable is NOT evidence of native hook execution.
+
+Next user prompt, in that same task: read /Users/juhokim/Code/skillbench-all/reports/chatgpt-work-native-canary-20260916/workspace/source.csv, calculate total minutes, write memo.md in the same folder with the total, then stop without telemetry changes. User replies Native first prompt done to the original telemetry task. Assistant then inspects only the selected task, native events and local queue before providing the second prompt. Expected first total60 and follow-up excluding Prepare slides30. Do not count manual reconciliation as native hook evidence. Cleanup remains pending after both turns. Guard expires September17 08:09KST.
+
+See native-canary/selection-evidence.json and native-canary/README.md. No private transcript copied, upload, message to engineering, push or PR update.
+
 # Native plugin canary prepared, September 16, 2026
 
 Current source checkpoint de8c5b9f4f98716faf301dad3f72b2e1ed0ac5f4. Separate local skillmeter-work-canary@personal 0.1.0 is installed. It embeds the unchanged 973d1f4 candidate behind seven packaged, exact-task guarded hooks; no user-hook bridge, normal SkillMeter replacement, delivery or shared-auth change. Four guard tests and seven installed unselected checks pass; candidate 101 files match. No task selected and no live evidence. Control expires September 17 at 08:09 KST.

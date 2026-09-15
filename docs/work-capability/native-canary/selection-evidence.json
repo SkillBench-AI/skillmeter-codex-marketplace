@@ -1,0 +1,17 @@
+{
+  "date": "2026-09-16",
+  "taskTitle": "Run native work canary",
+  "source": "vscode",
+  "originator": "codex_work_desktop",
+  "runtime": "0.154.0-alpha.6.2",
+  "candidateSource": "973d1f4",
+  "pipelineSource": "3abe812f",
+  "installedVersion": "0.1.0+codex.20260915232102",
+  "excludedSetupBytes": 166617,
+  "capture": "enabled-local-only",
+  "delivery": "disabled",
+  "queuedChunksAtSelection": 0,
+  "sharedCredentialsAndPolicyUnchanged": true,
+  "nativeHookExecution": "pending first selected prompt",
+  "controlExpiresAt": 1789600190264
+}
