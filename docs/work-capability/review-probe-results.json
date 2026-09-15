@@ -3,10 +3,10 @@
   "results": [
     {
       "name": "expiry-retains-consented-queue",
-      "outcome": "gap",
+      "outcome": "pass",
       "beforeChunks": 1,
-      "afterChunks": 0,
-      "status": "revoked"
+      "afterChunks": 1,
+      "status": "unchanged"
     },
     {
       "name": "status-does-not-initialize-credentials",

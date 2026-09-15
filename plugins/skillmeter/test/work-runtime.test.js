@@ -70,6 +70,46 @@ test("expired or tenant-less credentials cannot register Work",()=>{
     save(extra); assert.throws(()=>workCapture().enable(source,"task"),/work-auth-unavailable/);
   }
 });
+test("expiry preserves the grant and queue across a restarted hook and same-user renewal",()=>{
+  const capture=workCapture();capture.enable(source,"task");append();capture.reconcile();
+  const expiresAt=capture.status().expiresAt;
+  const pending=()=>queue.queueDirectories(path.join(process.env.PLUGIN_DATA,"logs/work-local-v1/chunks")).flatMap(queue.pendingFiles);
+  const before=pending().map(file=>[file,fs.readFileSync(file)]);
+  save({exp:1});
+  fs.appendFileSync(source,line({type:"response_item",payload:{type:"message",role:"user",content:"recorded while expired"}}));
+  const result=spawnSync(process.execPath,[path.resolve(__dirname,"../scripts/stop.js")],{input:JSON.stringify(input()),env:process.env,encoding:"utf8"});
+  assert.equal(result.status,0);assert.match(result.stderr,/Work local: staged/);
+  assert.ok(pending().length>before.length);
+  for(const [file,bytes] of before) assert.ok(fs.readFileSync(file).equals(bytes),"expiry must retain existing chunks");
+  assert.equal(workCapture().status().enabled,true);
+  assert.equal(workCapture().status().tokenExpired,true);
+  assert.throws(()=>workCapture().enable(source,"task"),/work-auth-unavailable/);
+  save({exp:4102444900});
+  assert.equal(workCapture().reconcile().status,"unchanged");
+  assert.equal(workCapture().status().expiresAt,expiresAt,"renewal cannot extend task consent");
+  assert.equal(workCapture().status().tokenExpired,false);
+  const body=pending().map(file=>require("node:zlib").gunzipSync(fs.readFileSync(file)).toString()).join("");
+  assert.equal(body.split("recorded while expired").length-1,1);
+  assert.deepEqual(logger.listPendingTranscripts(),[]);
+});
+test("expired credentials do not bypass a changed user, tenant or device",()=>{
+  for(const change of [{license_jwt:token({exp:1,github_id:456})},{license_jwt:token({exp:1,aud:"https://other.meter.skillbench.ai"})},{license_jwt:token({exp:1}),device_id:"OTHER"}]) {
+    save();workCapture().enable(source,"task");append();workCapture().reconcile();
+    const current=JSON.parse(fs.readFileSync(creds));fs.writeFileSync(creds,JSON.stringify({...current,...change}));
+    assert.equal(workCapture().reconcile().status,"revoked");assert.equal(count(),0);
+  }
+});
+test("malformed expiry claims remain unusable instead of becoming expired capture identities",()=>{
+  for(const exp of [undefined,null,"expired"]) {
+    save();workCapture().enable(source,"task");append();workCapture().reconcile();
+    save({exp});assert.equal(workCapture().reconcile().status,"revoked");assert.equal(count(),0);
+  }
+});
+test("terminal purge still revokes Work while a token is expired",()=>{
+  workCapture().enable(source,"task");append();workCapture().reconcile();save({exp:1});
+  retention.purgeAll();assert.equal(retention.enforcePending(),true);assert.equal(count(),0);
+  save();assert.equal(workCapture().reconcile().status,"not-enabled");
+});
 test("Work status and enable never initialize missing shared identity fields",()=>{
   for (const missing of ["device_id","hash_salt"]) {
     save();

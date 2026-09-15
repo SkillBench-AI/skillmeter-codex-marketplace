@@ -57,7 +57,7 @@ function createWorkCapture({root,identity,now = Date.now}) {
   function enable(source,sessionId) {
     return locked(()=>{
       const current=identity();
-      if (!validIdentity(current)) throw Error("work-auth-unavailable");
+      if (!validIdentity(current) || current.tokenExpired===true) throw Error("work-auth-unavailable");
       const canonical=fs.realpathSync(source), meta=sourceMetadata(canonical);
       if (meta.originator!=="codex_work_desktop" || meta.source!=="vscode" || meta.parent_thread_id) throw Error("unsupported-work-source");
       if (meta.id!==sessionId) throw Error("scope-mismatch");
@@ -113,8 +113,8 @@ function createWorkCapture({root,identity,now = Date.now}) {
     });
   }
   function status() {
-    const policy=read();
-    return {enabled:!!active(policy,identity()),delivery:"disabled",expiresAt:policy?.expiresAt || null,purgePending:!!policy?.purgePending};
+    const policy=read(), current=identity();
+    return {enabled:!!active(policy,current),delivery:"disabled",tokenExpired:current?.tokenExpired ?? null,expiresAt:policy?.expiresAt || null,purgePending:!!policy?.purgePending};
   }
   function matches(sessionId) { return read()?.scope.sessionId===sessionId; }
   function disable() { return locked(()=>({status:revoke(read())?"disabled":"purge-pending",delivery:"disabled"})); }

@@ -1,6 +1,6 @@
 "use strict";
-// Production-readiness acceptance probes. Synthetic state only. Known gaps
-// intentionally return exit 1; these are outside the default regression suite.
+// Production-readiness acceptance probes. Synthetic state only. Exit 1 flags
+// any remaining gap; these are outside the default regression suite.
 const fs=require("node:fs"),os=require("node:os"),path=require("node:path");
 const {spawnSync}=require("node:child_process");
 const mode=process.argv[2];
