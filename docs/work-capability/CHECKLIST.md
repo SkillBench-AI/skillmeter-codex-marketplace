@@ -4,7 +4,7 @@ Status: prepared, not executed in ChatGPT Work. This is a non-coding document ta
 
 ## Before starting
 
-- [ ] Confirm the ChatGPT app exposes a Work task with Local execution. A normal ChatGPT chat or Codex CLI task is not a substitute.
+- [x] Confirm the ChatGPT app exposes a Work task with Local execution. User screenshot on September 15 shows Work selected and On your computer checked. Actual task execution remains untested.
 - [ ] Prepare an isolated non-Git folder containing only fixture/source.csv. Do not use this Git worktree as the task workspace, or the non-repository consent test becomes invalid.
 - [ ] Complete the scoped probe setup and review its hook definition once the actual Work configuration route is established. No probe has been installed in this packet. Do not enable the existing uploader globally or bypass trust to make this test work.
 - [ ] Verify that the probe targets only this task/folder, records locally, and sends nothing to the SkillBench collector. Record app/runtime versions and observed task ID without user/account secrets.

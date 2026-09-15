@@ -21,7 +21,7 @@ Reuse of the Codex sanitizer and structured parser is supported for the tested s
 
 Both existing candidate worktrees were clean at inspection. This packet lives on separate branch `codex/work-capability-20260915`, based on the Codex candidate. Main was inventoried, not tested; the findings below must not be attributed to a main release. No existing repair source/PR was changed.
 
-Computer Use rejected inspection of ChatGPT.app because it resolves to `com.openai.codex`, an app that the tool is not allowed to control. No alternative UI automation or private-history inspection was used. Work availability, Local selection, hook registration and trust remain unverified on the actual account.
+Computer Use rejected inspection of ChatGPT.app because it resolves to `com.openai.codex`, an app that the tool is not allowed to control. No alternative UI automation or private-history inspection was used. A subsequent user-provided screenshot on September 15 confirms Work selected and “On your computer” checked in the execution selector, with SkillBench Engineering selected. This resolves UI availability and Local selection only; hook registration, trust and actual capture remain unverified. The cloud option is visible in muted styling; cloud availability is not established.
 
 ## Runtime finding that changes the probe
 
@@ -45,7 +45,7 @@ Status applies to the stated layer. **Supported** means documented at that layer
 | Capability | Status | Evidence and boundary |
 |---|---|---|
 | Work lifecycle hook mechanism | Supported, documented | OpenAI lists Work among Codex-runtime hook consumers. Installation/trust on this account not tested. |
-| Local Work availability and execution selection | Partial, unverified | Shared desktop app is installed; UI inspection blocked. |
+| Local Work availability and execution selection | Supported, screenshot-confirmed | User screenshot shows Work selected and On your computer checked. No task execution or capture is inferred. |
 | Readable raw transcript for a local Work task | Partial, unverified | Nullable hook transcript_path; runtime supports nullable paths and paginated/ephemeral history. No Work task inspected. |
 | Non-repo capture through current plugin | Unsupported | Existing licensed-org test rejects non-Git directory with no_repository. Preserve this protection until explicit Work consent is designed. |
 | Prompts/final responses in known Codex-shaped records | Supported, synthetic | Four authored messages preserved in this fixture after sanitization. Actual Work record compatibility unverified. |
@@ -85,7 +85,7 @@ The runner pins the pipeline HEAD. The sanitizer is loaded from this checkout; u
 
 ## Next action and remaining gates
 
-First confirm that the installed ChatGPT app exposes Work with Local execution. Then establish its supported task-scoped probe/configuration route and review hook trust. Do not run the existing Git-scoped uploader on arbitrary Work content or create a fake Git repo to bypass its scope rule.
+Work with local execution is now confirmed in the user's screenshot. Next establish its supported task-scoped probe/configuration route and review hook trust. Do not run the existing Git-scoped uploader on arbitrary Work content or create a fake Git repo to bypass its scope rule.
 
 Run the [expected-action checklist](CHECKLIST.md) in the prepared non-Git synthetic workspace only after that setup. Read only the selected synthetic task through its supported transcript/export interface; never scan unrelated history. If paginated history lacks a usable transcript, assess a supported page API with explicit task selection before proposing an adapter. Do not build against undocumented application databases.
 
@@ -97,5 +97,6 @@ The resulting live evidence should decide: raw JSONL adapter versus supported pa
 - [OpenAI hook documentation](https://learn.chatgpt.com/docs/hooks): nullable/unstable transcript, hosted-tool exceptions, managed policy.
 - [Work Cloud security](https://learn.chatgpt.com/docs/enterprise/chatgpt-work-cloud-security): execution host and workspace controls.
 - Installed app metadata and offline-generated protocol, recorded in runtime-evidence.json.
+- User-provided screenshot, September 15, 2026: codex-clipboard-63c73099-9eb9-48df-bdb0-7d623af20e18.png. Only the UI availability finding is recorded; no screenshot or conversation is copied into the repository.
 - Candidate `plugins/skillmeter/scripts/lib/repo-scope.js`, `scripts/sanitizer.js`, and scope/parity tests.
 - Pinned pipeline `packages/preprocessor/src/skillbench_preprocessor/{codex,structured,flatten,model}.py`, classifier/analyzer prompts.
