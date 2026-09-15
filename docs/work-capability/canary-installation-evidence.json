@@ -1,0 +1,18 @@
+{
+  "source_commit": "85e43ccf942cf0ae70f0101b68f70cfb962ba8d3",
+  "plugin_files": 101,
+  "installed_files": 101,
+  "identical": true,
+  "tree_sha256": "3e2740e738d205d6841798071556a0857ce6d5e3ff2e70abc98a17ff30402acd",
+  "installed_work_tests_passed": 18,
+  "synthetic_bridge_passed": true,
+  "global_off_rejection_passed": true,
+  "license_valid": true,
+  "credentials_unchanged_during_preflight": true,
+  "global_telemetry_enabled": false,
+  "live_canary": "blocked-awaiting-global-consent-decision",
+  "user_hooks_registered": false,
+  "task_enabled": false,
+  "delivery": "disabled",
+  "production_deployed": false
+}

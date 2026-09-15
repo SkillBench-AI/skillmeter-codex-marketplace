@@ -1,5 +1,7 @@
 # Resume checkpoint: local Work source implementation
 
+Canary preparation update: the exact candidate is installed in a separate cache and its 18 Work tests pass. Live capture is blocked by existing global telemetry OFF, pending the user decision. No new user hooks are registered. See [CANARY-PREPARATION.md](CANARY-PREPARATION.md).
+
 September 15, 2026. The selected-task local capture adapter and Work normalization are implemented and tested. This is source/test completion for the bounded experimental adapter, not live installation, production delivery, a dashboard report or cloud support.
 
 ## Exact source checkpoints
