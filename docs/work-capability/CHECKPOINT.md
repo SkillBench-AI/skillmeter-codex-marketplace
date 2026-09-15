@@ -1,3 +1,11 @@
+# Native first prompt passed, September 16, 2026
+
+Task Run native work canary produced memo60. All38 native callbacks passed (1 UserPromptSubmit,18 PreToolUse,18 PostToolUse,1 Stop), with matching native plugin environment and no blocked network attempt. Before manual reconciliation:35 contiguous chunks and464 late bytes; reconciliation added1chunk, zero pending bytes. Normalization produced20messages/1user prompt and15unique outer tool pairs exactly matching selected source IDs, preserved Work identity, no actionable or incomplete-tool diagnostics. Setup prompt excluded. Evidence: native-canary/first-prompt-evidence.json. This proves guarded native-plugin capture, not unmodified production packaging or a dashboard report.
+
+NEXT: user continues the SAME task, calculates total excluding Prepare slides using previously read values, reads memo.md to confirm it retains original total, and changes no files/settings. User returns Native canary done. Assistant inspects native callbacks and combined source/queue, reconciles any final tail, validates expected30 with memo60 and both prompt/tool records, then disables capture, verifies payload purge and uninstalls ONLY skillmeter-work-canary@personal. Preserve normal SkillMeter, global telemetry ON, shared credentials/policy and other plugin entries. No production send or real analyzer call. Current control expires September17 08:09KST. Cleanup still pending second turn.
+
+Earlier checkpoints follow.
+
 # Native canary selected, September 16, 2026
 
 User completed native preflight in the fresh task Run native work canary. Verified source=vscode, originator=codex_work_desktop, runtime0.154.0-alpha.6.2 and exact cwd. Installed candidate0.1.0+codex.20260915232102 now has an enabled future-byte grant and exact task/source/cwd binding in the protected native-canary control file. Setup tail166617bytes is excluded, queue initially empty. Shared credentials/policy unchanged; delivery disabled. This administrative enable is NOT evidence of native hook execution.

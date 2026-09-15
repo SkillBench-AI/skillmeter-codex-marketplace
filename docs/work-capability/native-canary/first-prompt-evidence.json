@@ -1,0 +1,51 @@
+{
+  "date": "2026-09-16",
+  "stage": "first-prompt",
+  "status": "passed",
+  "taskTitle": "Run native work canary",
+  "pluginSource": "973d1f4",
+  "pipelineSource": "3abe812f",
+  "installedVersion": "0.1.0+codex.20260915232102",
+  "nativeCallbacks": 38,
+  "events": {
+    "UserPromptSubmit": 1,
+    "PreToolUse": 18,
+    "PostToolUse": 18,
+    "Stop": 1
+  },
+  "allNativeFlagsPassed": true,
+  "networkAttemptsBlocked": 0,
+  "chunksBeforeReconcile": 35,
+  "pendingBytesBeforeReconcile": 464,
+  "reconcileAddedChunks": 1,
+  "chunksAfterReconcile": 36,
+  "sequenceContiguous": true,
+  "pendingBytes": 0,
+  "normalizedMessages": 20,
+  "normalizedUserMessages": 1,
+  "matchedOuterToolPairs": 15,
+  "outerCallIdsExactlyMatchSource": true,
+  "diagnostic": {
+    "source_key": "native-canary.jsonl",
+    "format": "codex",
+    "status": "session",
+    "malformed_lines": 0,
+    "unsupported_records": 0,
+    "incomplete_tools": 0
+  },
+  "sourceIdentityPreserved": true,
+  "setupPromptExcluded": true,
+  "memoTotal": 60,
+  "hookChildLatencyMs": {
+    "min": 73,
+    "median": 123.5,
+    "max": 525
+  },
+  "delivery": "disabled",
+  "cleanup": "pending second turn",
+  "limits": [
+    "Guarded native package, not unmodified production manifest",
+    "Nested operations remain opaque",
+    "No production report or dashboard canary"
+  ]
+}
