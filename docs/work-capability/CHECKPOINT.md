@@ -1,3 +1,15 @@
+# Analyzer repair checkpoint, September 16, 2026
+
+Supersedes the two analyzer gaps below. Pipeline commit 3abe812f98e625ff17e5719c816edfa31275ddcf on codex/work-normalization-20260915 fixes empty-report generation and retains supplied agent/surface/originator through internal parse/classification/task analysis. Ineligible real sessions return the existing insufficient-activity skip with zero model calls, no report artifact and no ingest; worker acknowledgement and accurate CLI output are tested. Eligible companions still produce reports, and missing legacy source fields stay missing. No threshold, scoring prompt or public report schema changed.
+
+Seven initial regression cases failed before repair and pass after. All 333 analyzer tests pass, including existing Claude/parse/report snapshots; 18 existing datetime warnings. The changed-file Ruff comparison against e17bf5f2 has zero new findings (44 existing findings become 43). Work compatibility lint/format passes when run from the analyzer app directory. See pipeline docs/work-analyzer-repair.md for evidence and limitations. Plugin source remains 973d1f4; its earlier full test and installed-command results remain valid historical evidence, not a fresh native canary.
+
+First next action: prepare native desktop plugin selection/trust and dispatch validation on a fresh synthetic local Work task without the temporary marker bridge. User interaction may be needed for trust/selection. No additional policy decision blocked these source fixes. General Work eligibility/rubric, task consent/shared credentials and approved environment/user/report mapping remain production gates. Do not infer permission to send real Work bodies or alter scoring.
+
+User handles communication. No messages, remote pushes, PR changes or deployments. Both isolated Work branches remain local and stacked on the existing draft repairs; original dirty checkouts unchanged. No global telemetry/config/auth changes. Use the exact pipeline commit above for the next local parser/analyzer check.
+
+## Earlier checkpoints
+
 # Technical checkpoint, September 16, 2026
 
 Current milestone supersedes the earlier expiry-gap checkpoint below. User handles team communication. No GitHub/Slack messages, remote pushes, PR changes, release, deployment, schedule, historical replay, shared-auth migration or production Work delivery occurred.
