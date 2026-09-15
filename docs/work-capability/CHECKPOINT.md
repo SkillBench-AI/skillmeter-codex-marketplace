@@ -1,3 +1,21 @@
+# Technical checkpoint, September 16, 2026
+
+Current milestone supersedes the earlier expiry-gap checkpoint below. User handles team communication. No GitHub/Slack messages, remote pushes, PR changes, release, deployment, schedule, historical replay, shared-auth migration or production Work delivery occurred.
+
+- Plugin source fix: 973d1f4dce4b00f112b0a5c239566890c28c1944 on codex/work-capability-20260915. Existing task consent and queued data survive token expiry; new grants require an unexpired token; restart/renewal/identity-change/terminal-purge regressions pass. Read-only shared credentials are preserved.
+- Pipeline tests/documentation: e17bf5f208af9e4d012891984c2b855b2b0ec764 on codex/work-normalization-20260915. Three synthetic tests cover real report/schema assembly, mixed unsupported input and the short-session parser threshold. No scoring or production analyzer source changed.
+- Validation: 453 Node tests, 55 lifecycle scenarios, both review probes; 321 analyzer tests; Python lint/format and whitespace checks. Counts overlap with focused tests and must not be added together.
+- Supported CLI installation in reports/chatgpt-work-canary-20260915/native-package-check/codex-home matches all 101 plugin source files. All 12 installed manifest commands pass with synthetic isolated state and network blocked. Does not establish desktop native dispatch/trust. Normal installation unchanged; global telemetry remains ON; temporary user hooks remain removed.
+- New analyzer finding: structured source identity survives, but analysis session dictionaries drop source/surface and prompts still assume developer/Claude Code work. Short sessions are filtered; the job can still assemble an empty-task report with 13 scripted calls. These are limitations, not acceptance successes. See pipeline docs/work-analyzer-compatibility.md.
+
+First technical action next session: add a failing job-level regression for no analyzable sessions and implement an explicit outcome consistent with existing job consumers. Preserve Work surface through analysis as part of reviewed Work scoring support. Do not lower the threshold just to pass a canary.
+
+Native canary gate: select the exact corrected candidate through the supported app plugin flow, review/trust its hooks, start a fresh synthetic local Work task with explicit task consent, verify native hook dispatch without the temporary marker bridge, reconcile/normalize, then disable and verify cleanup. Actual app trust/selection may require the user. No raw/private transcript should enter a checkpoint.
+
+Production gates: agree task-selection UX and grant policy, shared credentials under INF-177/INF-200, analyzer eligibility/rubric and corruption behavior; identify an approved environment/account and authenticated user/report mapping. Only then implement gated Work delivery and trace one approved real task through stored sanitized chunks, normalization, actual analysis and the existing correct-user dashboard. Cloud/ordinary chat remain separate. Existing PR37/148 are unchanged; Work branches are local and stacked, original dirty checkouts untouched.
+
+## Historical checkpoints
+
 Engineering review milestone, September 16, 2026. See ENGINEERING-REVIEW.md and ENGINEERING-MESSAGE-DRAFT.md in the Work plugin branch. The message is a draft only; no comment, Slack message, remote branch or PR update was sent.
 
 Source fix c80c3c998028ec17c1391a2d3e7b18b70a6345c9 makes Work identity checks read-only and rejects incomplete credentials without initializing device/salt. Tested with 449 Node tests, 55 lifecycle cases and the synthetic queue-to-parser check. This source fix is NOT installed; the live canary continues to attest to 3022a12, recorded in aa21c9e. The new review-probes.cjs reproduces one remaining production lifecycle gap: token expiry revokes active Work capture and purges its queued data. It exits 1 with a named gap. Read-only credential probe passes. Preserve this distinction rather than treating all tests as green.

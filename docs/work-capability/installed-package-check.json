@@ -1,0 +1,27 @@
+{
+  "sourceCommit": "973d1f4dce4b00f112b0a5c239566890c28c1944",
+  "date": "2026-09-16",
+  "status": "passed",
+  "comparedFiles": 101,
+  "manifestEvents": [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PermissionRequest",
+    "PostToolUse",
+    "PreCompact",
+    "PostCompact",
+    "SubagentStart",
+    "SubagentStop",
+    "Stop",
+    "SessionEnd",
+    "Interrupt"
+  ],
+  "stagedChunks": 12,
+  "expiryRetained": true,
+  "credentialsUnchangedDuringHooks": true,
+  "productionQueueEmpty": true,
+  "cleanup": true,
+  "desktopNativeDispatch": "not-tested",
+  "normalInstallation": "unchanged"
+}
