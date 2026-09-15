@@ -1,3 +1,11 @@
+Engineering review milestone, September 16, 2026. See ENGINEERING-REVIEW.md and ENGINEERING-MESSAGE-DRAFT.md in the Work plugin branch. The message is a draft only; no comment, Slack message, remote branch or PR update was sent.
+
+Source fix c80c3c998028ec17c1391a2d3e7b18b70a6345c9 makes Work identity checks read-only and rejects incomplete credentials without initializing device/salt. Tested with 449 Node tests, 55 lifecycle cases and the synthetic queue-to-parser check. This source fix is NOT installed; the live canary continues to attest to 3022a12, recorded in aa21c9e. The new review-probes.cjs reproduces one remaining production lifecycle gap: token expiry revokes active Work capture and purges its queued data. It exits 1 with a named gap. Read-only credential probe passes. Preserve this distinction rather than treating all tests as green.
+
+First action next session: use the packet to settle Work task consent duration/renewal and the existing shared-credential contract under INF-177/INF-200; then implement expiry capture/retention parity before enabling delivery. Do not reuse the temporary marker bridge as shipping UX or run a production canary without approved environment, identity/report mapping and analyzer suitability. TEL-7 was closed by transfer to INF-177, not by proof of completed multi-day tests.
+
+Both Work branches remain local/stacked. PR37 and PR148 are still draft at 8cb4a4d/fd5a758; PR38 is open/non-draft at 7bb34922. Fresh remote mains unchanged: plugin 13b4648761aae7e9ebb20477276c13a416460173, pipeline f3d6710aa1ce4ca26fcb40c621ebf8bf618f34e1. Pipeline Work head remains 32266389bdeaaef606924b3719d750c6e6ee46c9. Original dirty checkouts untouched. Global telemetry remains ON; temporary canary hooks remain removed.
+
 Latest status, September 16: local two-turn Work canary PASSED and temporary hooks/queue were removed. Global telemetry remains ON. See CANARY-PASS-20260916.md and final content-free evidence. No further manual canary action pending. Earlier failed/preparation checkpoints below are historical.
 
 Current status, September 16: Work task passed but capture did not activate. Temporary hooks are removed; global telemetry remains ON. See CANARY-RESULT-20260916.md for the correction, evidence and exact resume steps. Earlier preparation states below are historical.

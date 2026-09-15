@@ -1,0 +1,17 @@
+{
+  "evidence": "synthetic-only",
+  "results": [
+    {
+      "name": "expiry-retains-consented-queue",
+      "outcome": "gap",
+      "beforeChunks": 1,
+      "afterChunks": 0,
+      "status": "revoked"
+    },
+    {
+      "name": "status-does-not-initialize-credentials",
+      "outcome": "pass",
+      "credentialsUnchanged": true
+    }
+  ]
+}

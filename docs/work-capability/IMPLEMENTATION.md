@@ -1,3 +1,5 @@
+Current status September 16: live local canary passed on 3022a12 (CANARY-PASS-20260916.md). A later read-only credential fix is c80c3c9; not installed. ENGINEERING-REVIEW.md records the remaining expiry gap and production gates. Earlier source-only states below are historical.
+
 # Experimental local Work capture
 
 September 15, 2026. Implemented and tested in isolated source checkouts. The installed plugin and user hook configuration have not been changed. Delivery is disabled by construction: Work bodies use `logs/work-local-v1/chunks`, which the production upload list does not enumerate. Recognized Work tasks cannot fall back to repository consent or the repository transcript sender.
