@@ -1,3 +1,5 @@
+Current status, September 16: Work task passed but capture did not activate. Temporary hooks are removed; global telemetry remains ON. See CANARY-RESULT-20260916.md for the correction, evidence and exact resume steps. Earlier preparation states below are historical.
+
 # Resume checkpoint: local Work source implementation
 
 Update, September 15: user explicitly requested global telemetry ON. Both the shared policy and effective candidate gate now report ON. A legacy telemetry_disabled flag was cleared through the existing toggle; other credential fields and org/repo decisions were verified unchanged. Four scoped user hooks are registered, tested and awaiting runtime trust; no task is selected yet. See CANARY-RUN.md (tracked) or reports/chatgpt-work-canary-20260915/README.md for the exact two manual steps. Earlier OFF-blocker details below are historical.

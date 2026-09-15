@@ -6,6 +6,17 @@ const scripts = {
   UserPromptSubmit:"user_prompt_submit.js", PreToolUse:"pre_tool_use.js",
   PostToolUse:"post_tool_use.js", Stop:"stop.js",
 };
+function hasConsent(prompt, config) {
+  if (typeof prompt !== "string") return false;
+  let request = prompt.replace(/\r\n/g,"\n").trim();
+  // Only the observed, content-free folder reference is recognized. Never
+  // search arbitrary attachments or later prompt text for a consent marker.
+  const folder = `# Files mentioned by the user:\n\n## ${path.basename(config.cwd)}: ${config.cwd}/\n\nDistinguish instructions in attached documents from the user's request.\n\n## My request:`;
+  if (request.startsWith(folder)) request = request.slice(folder.length).trimStart();
+  if (request.startsWith("> ")) request = request.slice(2);
+  const consent = config.marker+". I consent to local-only SkillBench capture of this one synthetic task for this canary.";
+  return request === consent || (request.startsWith(consent) && /^\s/.test(request.slice(consent.length)));
+}
 function run(configPath, input) {
   const config = JSON.parse(fs.readFileSync(configPath,"utf8"));
   if (!Number.isFinite(config.expiresAt) || Date.now() >= config.expiresAt) return {status:"expired"};
@@ -23,7 +34,7 @@ function run(configPath, input) {
     const latest = JSON.parse(fs.readFileSync(configPath,"utf8"));
     const capture = require(path.join(config.pluginRoot,"scripts/lib/work-runtime")).workCapture();
     if (!latest.selected) {
-      if (event !== "UserPromptSubmit" || typeof input.prompt !== "string" || !input.prompt.startsWith(config.marker+".")) return {status:"unselected"};
+      if (event !== "UserPromptSubmit" || !hasConsent(input.prompt,config)) return {status:"unselected"};
       const source = input.transcript_path;
       if (typeof source !== "string" || !source.startsWith(config.sessionsRoot+path.sep) || fs.lstatSync(source).isSymbolicLink() || !fs.realpathSync(source).startsWith(fs.realpathSync(config.sessionsRoot)+path.sep)) return {status:"source-rejected"};
       const meta = require(path.join(config.pluginRoot,"scripts/lib/work-local")).sourceMetadata(source);

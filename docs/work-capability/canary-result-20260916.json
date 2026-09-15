@@ -1,0 +1,35 @@
+{
+  "date": "2026-09-16",
+  "result": "work-task-passed-capture-not-activated",
+  "source": "exact selected synthetic local Work task; local inspection only",
+  "originator": "codex_work_desktop",
+  "source_kind": "vscode",
+  "completed_turns": 2,
+  "outer_custom_calls": 3,
+  "outer_custom_outputs": 3,
+  "outer_call_result_ids_match": true,
+  "expected_totals": [
+    60,
+    30
+  ],
+  "memo_correct": true,
+  "selection_activated": false,
+  "queued_payloads": 0,
+  "hook_invocation_verified": false,
+  "normalization": "not run: live queue absent",
+  "reconcile": "not-enabled",
+  "temporary_hooks_removed": true,
+  "global_telemetry_enabled": true,
+  "production_delivery": "disabled",
+  "regression_tests": {
+    "before_fix": {
+      "passed": 13,
+      "failed": 3
+    },
+    "after_fix": {
+      "passed": 16,
+      "failed": 0
+    }
+  },
+  "fix_status": "source only; corrected bridge not installed"
+}

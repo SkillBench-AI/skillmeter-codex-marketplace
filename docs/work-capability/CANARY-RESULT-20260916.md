@@ -1,0 +1,18 @@
+# Work canary checkpoint, September 16, 2026
+
+The user completed the two-turn synthetic Work task. Local inspection confirmed totals 60 and 30, memo.md containing 60, originator codex_work_desktop/source vscode, and three outer custom tool calls with three matching outputs. No private transcript or credentials were copied into these artifacts.
+
+Capture did not activate: bridge selected remained null, events.jsonl was absent, the Work queue was empty, and reconciliation returned not-enabled. There is no evidence that the desktop invoked these particular hooks. Missing event evidence cannot distinguish an untrusted/unloaded hook from a silently skipped prompt. Do not claim a successful canary, normalization, upload or report.
+
+A definite setup defect was reproduced: the first prompt had the desktop's folder-reference wrapper and a copied Markdown quote prefix. The old startsWith(marker) test rejected that shape. It also accepted the marker without the required consent sentence. The temporary bridge now accepts whitespace/quote formatting and only the exact observed content-free workspace-folder wrapper, requires the complete explicit consent sentence, and rejects markers in attachments, unknown wrappers and later prompt text. This is a bounded canary harness fix, not a general document-consent parser. Three regression tests failed before correction; all 16 bridge tests now pass. Existing plugin source and pipeline source were unchanged.
+
+Cleanup verified: candidate disabled with no purge pending; the four temporary hooks removed and the originally absent hooks.json restored to absence. Global telemetry remains ON. Corrected bridge source has not been copied to the installation. No historical transcript was queued and no production delivery occurred. The synthetic files remain available.
+
+## Resume
+
+1. Read this checkpoint and canary-result-20260916.json. Plugin Work branch is codex/work-capability-20260915 in .worktrees/chatgpt-work-capability-20260915; previous checkpoint 8573e08. Pipeline remains 32266389bdeaaef606924b3719d750c6e6ee46c9 in .worktrees/chatgpt-work-pipelines-20260915. Resolve the current plugin tip with git log; this checkpoint is committed with the bridge correction. Work branches are local, without new PRs or remote backups from this run. Existing repair PRs and dirty checkouts remain untouched.
+2. Reinstall the corrected temporary bridge using the existing isolated candidate and a fresh bounded expiry. Preserve current unrelated user hooks and record an updated removal receipt. Do not re-enable via stale CANARY-RUN.md commands alone: its hooks have been removed. Do not change global consent, credentials or existing org/repo choices.
+3. Verify runtime hook trust/loading. Use a fresh local Work task with the plain-text consent prompt. After its FIRST prompt, inspect config.selected and the content-free hook evidence before asking for the follow-up. If still unselected, diagnose runtime invocation/trust and actual hook prompt shape before another complete canary. No historical replay or manual zeroing of consent cursors.
+4. Once selection and queued output are confirmed, run the follow-up; reconcile final writes, normalize the sanitized queue using the Work pipeline, verify totals/tool linkage and consent boundaries, save content-free evidence, then remove the temporary hooks again. Live normalization/report coverage remains unvalidated until this succeeds.
+
+Global telemetry being ON does not enable general Work capture or production delivery. Correct-user dashboard mapping, general-work analyzer suitability, production candidate approval and cloud support remain separate gates.

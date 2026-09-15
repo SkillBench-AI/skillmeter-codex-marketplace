@@ -1,3 +1,5 @@
+Current status, September 16: this attempt is complete and its temporary hooks have been removed. Capture did not activate. Read the latest CHECKPOINT.md before restarting; the assistant must reinstall the corrected bridge first. The instructions below are retained as a prompt template.
+
 # Fresh Work canary: two manual steps
 
 Global telemetry is now ON at your request. The prior legacy OFF flag was also cleared through the existing toggle; authentication fields and organization/repository choices were preserved. The candidate is installed separately and still has production delivery disabled. Its four temporary hooks have passed ten boundary/cleanup tests and an installed rejection smoke check. No actual Work task has been captured yet.
@@ -26,11 +28,15 @@ In ChatGPT choose **Work → On your computer**, using the existing **SkillBench
 
 Paste this exact prompt, starting with the marker:
 
-> WORK-CANARY-20260915-7ec8951. I consent to local-only SkillBench capture of this one synthetic task for this canary. Read only /Users/juhokim/Code/skillbench-all/reports/chatgpt-work-canary-20260915/workspace/source.csv. Use a local tool to calculate total minutes, then write memo.md in that same workspace folder with the total. Reply with the total and filename. Do not use connected accounts, the internet, other files or subagents.
+```text
+WORK-CANARY-20260915-7ec8951. I consent to local-only SkillBench capture of this one synthetic task for this canary. Read only /Users/juhokim/Code/skillbench-all/reports/chatgpt-work-canary-20260915/workspace/source.csv. Use a local tool to calculate total minutes, then write memo.md in that same workspace folder with the total. Reply with the total and filename. Do not use connected accounts, the internet, other files or subagents.
+```
 
-Expected result: **60 minutes**, `memo.md`. Then, in the same task, send:
+Expected result: **60 minutes**, `memo.md`. Return to the original assistant task and say **“First Work prompt done.”** The assistant must verify selection and queued capture before proceeding. Once confirmed, in the same Work task, send:
 
-> Use a local tool to recalculate the total excluding Prepare slides. Do not modify the files. Reply with the total only.
+```text
+Use a local tool to recalculate the total excluding Prepare slides. Do not modify the files. Reply with the total only.
+```
 
 Expected result: **30 minutes**.
 
