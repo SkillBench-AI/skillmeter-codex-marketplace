@@ -9,10 +9,16 @@
   "global_off_rejection_passed": true,
   "license_valid": true,
   "credentials_unchanged_during_preflight": true,
-  "global_telemetry_enabled": false,
-  "live_canary": "blocked-awaiting-global-consent-decision",
-  "user_hooks_registered": false,
+  "global_telemetry_enabled": true,
+  "live_canary": "prepared-awaiting-hook-trust-and-fresh-work-task",
+  "user_hooks_registered": true,
   "task_enabled": false,
   "delivery": "disabled",
-  "production_deployed": false
+  "production_deployed": false,
+  "legacy_off_flag_cleared": true,
+  "authentication_fields_unchanged": true,
+  "hook_count": 4,
+  "hook_bridge_tests_passed": 10,
+  "hook_trust": "pending-user-review",
+  "bridge_expires_at_ms": 1789561334758
 }

@@ -1,5 +1,8 @@
 # Resume checkpoint: local Work source implementation
 
+Update, September 15: user explicitly requested global telemetry ON. Both the shared policy and effective candidate gate now report ON. A legacy telemetry_disabled flag was cleared through the existing toggle; other credential fields and org/repo decisions were verified unchanged. Four scoped user hooks are registered, tested and awaiting runtime trust; no task is selected yet. See CANARY-RUN.md (tracked) or reports/chatgpt-work-canary-20260915/README.md for the exact two manual steps. Earlier OFF-blocker details below are historical.
+
+
 Canary preparation update: the exact candidate is installed in a separate cache and its 18 Work tests pass. Live capture is blocked by existing global telemetry OFF, pending the user decision. No new user hooks are registered. See [CANARY-PREPARATION.md](CANARY-PREPARATION.md).
 
 September 15, 2026. The selected-task local capture adapter and Work normalization are implemented and tested. This is source/test completion for the bounded experimental adapter, not live installation, production delivery, a dashboard report or cloud support.

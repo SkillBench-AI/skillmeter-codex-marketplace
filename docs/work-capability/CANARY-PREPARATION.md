@@ -1,5 +1,8 @@
 # Work candidate canary: installed, capture blocked
 
+Update, September 15: user explicitly requested global telemetry ON. Both the shared policy and effective candidate gate now report ON. A legacy telemetry_disabled flag was cleared through the existing toggle; other credential fields and org/repo decisions were verified unchanged. Four scoped user hooks are registered, tested and awaiting runtime trust; no task is selected yet. See CANARY-RUN.md (tracked) or reports/chatgpt-work-canary-20260915/README.md for the exact two manual steps. Earlier OFF-blocker details below are historical.
+
+
 September 15, 2026. The user requested proceeding to the isolated candidate canary. The local marketplace and plugin were successfully installed with the supported Codex 0.154.0 CLI into a separate CODEX_HOME:
 
 `/Users/juhokim/.codex/work-local-canary-20260915/runtime`
