@@ -1,8 +1,8 @@
 # ChatGPT Work telemetry capability report
 
-Evidence date: September 15, 2026. Result: **offline compatibility packet complete; live Work capture unverified**.
+Evidence date: September 15, 2026. Result: **real local Work transcript inspected and normalized; automatic hook delivery unverified**. See [first live result](LIVE-RESULT.md).
 
-Follow-up: a bounded, metadata-only probe is now installed in the previously absent user hooks.json. Twelve probe boundary tests and two installed-callback rejection smoke checks pass. Hook trust and the actual Work task are pending; no live evidence has been collected. See [RUN.md](RUN.md). Earlier offline test results below remain synthetic only.
+Follow-up: the user completed the real synthetic Work task. Its cwd stayed at the parent workspace, so the exact-folder probe did not select it. Targeted read-only inspection verified a local JSONL transcript and successful candidate normalization. The probe's evidence directory is empty. Twelve probe boundary tests, three removal tests and two installed rejection checks pass. Earlier offline fixture results below remain synthetic only.
 
 Reuse of the Codex sanitizer and structured parser is supported for the tested synthetic Codex-format document task. The existing plugin does not yet support non-repository Work capture or preserve Work identity through normalization. A real Work task must establish the available hook/transcript interface before an adapter is implemented.
 
@@ -48,12 +48,12 @@ Status applies to the stated layer. **Supported** means documented at that layer
 |---|---|---|
 | Work lifecycle hook mechanism | Supported, documented | OpenAI lists Work among Codex-runtime hook consumers. Installation/trust on this account not tested. |
 | Local Work availability and execution selection | Supported, screenshot-confirmed | User screenshot shows Work selected and On your computer checked. No task execution or capture is inferred. |
-| Readable raw transcript for a local Work task | Partial, unverified | Nullable hook transcript_path; runtime supports nullable paths and paginated/ephemeral history. No Work task inspected. |
+| Readable raw transcript for a local Work task | Supported for one observed session | Targeted lookup found identity-matched JSONL for the completed Work task. Automatic hook access and other history modes remain unverified. |
 | Non-repo capture through current plugin | Unsupported | Existing licensed-org test rejects non-Git directory with no_repository. Preserve this protection until explicit Work consent is designed. |
-| Prompts/final responses in known Codex-shaped records | Supported, synthetic | Four authored messages preserved in this fixture after sanitization. Actual Work record compatibility unverified. |
-| Structured local tool calls/results | Supported, synthetic | Four IDs and names, all four result links, text and timestamps survive structured normalization. |
+| Prompts/final responses in known Codex-shaped records | Supported in selected live records | Both prompts and both final answers occur in the observed JSONL; candidate accepts selected sanitized records. |
+| Structured local tool calls/results | Partial, live outer links verified | Eight outer exec call/result pairs survive selected live normalization. Inner action semantics remain a separate gap. |
 | Sanitizer for tested document-task records | Partial | Email, labeled fake credential and path sentinels removed; call IDs retained. Commands and patch contents intentionally opaque. No claim of comprehensive document/browser/attachment sanitization. |
-| Distinct Work identity in normalized output | Unsupported | Synthetic source marker disappears; output remains agent=codex without surface or execution-location fields. |
+| Distinct Work identity in normalized output | Unsupported | Observed originator=codex_work_desktop with source=vscode; candidate startup selection/projection loses Work origin and emits agent=codex. |
 | Hook-only capture of hosted tools | Unsupported as complete coverage | Official hooks docs exclude hosted paths such as WebSearch. Transcript coverage must be tested separately. |
 | Unknown/incomplete/corrupt record diagnostics | Supported, synthetic | Unknown subtype is actionable/nonblocking; truncated JSON is blocking corruption; missing tool result increments incomplete count. |
 | Full tool structure through legacy flat export | Unsupported | Flat export removes tool-use blocks; use the existing structured projection where required. |

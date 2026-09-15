@@ -1,0 +1,65 @@
+{
+  "provenance": "read-only inspection of the exact user-selected synthetic Work session; NOT hook-delivered evidence",
+  "raw_source": "vscode",
+  "raw_originator": "codex_work_desktop",
+  "actual_cwd_is_workspace_root": true,
+  "excluded_prefix_records": 8,
+  "selected_record_count": 88,
+  "shape": {
+    "outcome": "readable-jsonl",
+    "bytes": 683241,
+    "record_counts": {
+      "response_item/message": 8,
+      "event_msg/other": 38,
+      "response_item/reasoning": 10,
+      "response_item/custom_tool_call": 8,
+      "token_usage_record/other": 10,
+      "response_item/custom_tool_call_output": 8,
+      "event_msg/task_complete": 2,
+      "event_msg/task_started": 1,
+      "world_state/other": 1,
+      "turn_context/other": 1
+    },
+    "malformed_lines": 0,
+    "newline_terminated": true,
+    "synthetic_markers": [
+      "followup",
+      "initial",
+      "total30",
+      "total60"
+    ],
+    "calls": 8,
+    "results": 8,
+    "linked_results": 8
+  },
+  "user_prompt_count": 2,
+  "initial_marker_present": true,
+  "followup_marker_present": true,
+  "assistant_final_count": 2,
+  "final_60_present": true,
+  "final_30_present": true,
+  "normalization_diagnostic": {
+    "source_key": "transcripts/SYNTHETIC-WORK/2026-09-15/selected-live-work.jsonl",
+    "format": "codex",
+    "status": "session",
+    "malformed_lines": 0,
+    "unsupported_records": 0,
+    "incomplete_tools": 0
+  },
+  "normalized_messages": 16,
+  "normalized_agent": "codex",
+  "normalized_tool_calls": 8,
+  "normalized_tool_results": 8,
+  "normalized_linked_results": 8,
+  "tool_names": [
+    "exec"
+  ],
+  "work_origin_preserved_in_projection": false,
+  "limits": [
+    "Read-only targeted inspection; installed hook evidence remains empty",
+    "Tool pairs are outer exec wrappers, not proof of inner action semantic preservation",
+    "Substring marker checks do not prove arithmetic; source.csv and memo provide independent first-turn evidence",
+    "Source identity was verified before reading only the selected synthetic session; no history backfill",
+    "No transcript text, tool arguments or outputs are saved in this evidence artifact"
+  ]
+}
