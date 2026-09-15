@@ -1,0 +1,60 @@
+{
+  "observed_at": "2026-09-15T22:10:18.395155+00:00",
+  "result": "local-work-capture-and-normalization-pass",
+  "source_commit": "3022a122d38fdb17f9cac8f98266f8e4769befd4",
+  "pipeline_commit": "32266389bdeaaef606924b3719d750c6e6ee46c9",
+  "selected_task_matches": true,
+  "agent": "codex",
+  "surface": "chatgpt_work",
+  "originator": "codex_work_desktop",
+  "chunks": 12,
+  "chunk_sequences_contiguous": true,
+  "sanitized_bytes": 46933,
+  "sanitized_sha256": "b7f97aa47083a725bed99b1b05a664e31c3997658fd263a7c0cb294e5df6c60f",
+  "messages": 9,
+  "user_messages": 2,
+  "tool_calls": 3,
+  "tool_results": 3,
+  "tool_ids_match_raw": true,
+  "diagnostic_actionable": false,
+  "incomplete_tools": 0,
+  "last_answer_is_30": true,
+  "memo_still_60": true,
+  "pending_bytes": 0,
+  "startup_roles_absent": true,
+  "raw_opaque_call_inputs_absent": true,
+  "hook_invocations": 10,
+  "hook_counts": {
+    "UserPromptSubmit": 2,
+    "PreToolUse": 3,
+    "PostToolUse": 3,
+    "Stop": 2
+  },
+  "all_hook_exits_zero": true,
+  "all_stop_json_valid": true,
+  "hook_child_latency_ms": {
+    "min": 111,
+    "max": 174
+  },
+  "hook_network_attempts_blocked": 0,
+  "delivery": "disabled",
+  "limits": [
+    "Selected synthetic local desktop task through temporary bridge only",
+    "Opaque custom tool command inputs hashed; inner exec semantics not reconstructed",
+    "No production upload, AI analyzer invocation, dashboard mapping or cloud support verified"
+  ],
+  "cleanup": {
+    "candidate": {
+      "enabled": false,
+      "delivery": "disabled",
+      "expiresAt": 1789596341660,
+      "purgePending": false
+    },
+    "ownHooksRemoved": true,
+    "queuedGzipRemaining": 0,
+    "credentialsAndPolicyUnchanged": true,
+    "globalTelemetryEnabled": true
+  },
+  "consent_excluded_initial_bytes": 155298,
+  "source_bytes_observed": 193752
+}

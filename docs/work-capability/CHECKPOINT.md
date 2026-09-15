@@ -1,3 +1,5 @@
+Latest status, September 16: local two-turn Work canary PASSED and temporary hooks/queue were removed. Global telemetry remains ON. See CANARY-PASS-20260916.md and final content-free evidence. No further manual canary action pending. Earlier failed/preparation checkpoints below are historical.
+
 Current status, September 16: Work task passed but capture did not activate. Temporary hooks are removed; global telemetry remains ON. See CANARY-RESULT-20260916.md for the correction, evidence and exact resume steps. Earlier preparation states below are historical.
 
 # Resume checkpoint: local Work source implementation

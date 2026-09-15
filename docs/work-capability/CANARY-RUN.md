@@ -1,3 +1,5 @@
+Completed September 16: the local Work canary passed; temporary hooks removed. No more user steps are required. These instructions are historical and must not be rerun without fresh assistant preparation. See the final canary report/checkpoint.
+
 Current status, September 16: this attempt is complete and its temporary hooks have been removed. Capture did not activate. Read the latest CHECKPOINT.md before restarting; the assistant must reinstall the corrected bridge first. The instructions below are retained as a prompt template.
 
 # Fresh Work canary: two manual steps
