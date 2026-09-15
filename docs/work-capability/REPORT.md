@@ -1,5 +1,7 @@
 # ChatGPT Work telemetry capability report
 
+Implementation update, September 15: the local-only adapter and source identity changes are now implemented and tested. See [IMPLEMENTATION.md](IMPLEMENTATION.md) and [CHECKPOINT.md](CHECKPOINT.md). The capability observations below remain the original baseline evidence.
+
 Evidence date: September 15, 2026. Result: **local Work hook invocation and readable transcript access verified; selected records normalize successfully**. See [completed hook check](HOOK-RESULT.md). This completes the capability experiment, not production integration.
 
 The initial exact-folder probe excluded the task because its cwd stayed at the parent workspace. An exact-task-bound follow-up then recorded UserPromptSubmit, PreToolUse, PostToolUse and Stop. All four callbacks read valid JSONL; Stop observed all nine outer call/result pairs. Final in-memory normalization accepted 20 messages with no malformed/unsupported/incomplete diagnostics. Fifteen probe boundary tests and three removal tests pass. Temporary hook groups have been removed. Earlier offline fixture results below remain synthetic only.

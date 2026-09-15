@@ -28,7 +28,7 @@ The pipeline has 190 preprocessor tests, 318 analyzer tests and 322 synthesizer 
 
 ## Candidate canary steps, not performed in this implementation run
 
-1. Review the local-only consent and source contract with engineering. Select/install this exact candidate plugin using the supported local plugin workflow, and review its hooks. Do not run the released uploader in parallel for the selected task.
+1. Review the candidate diff and select/install this exact plugin in an isolated local canary configuration using the supported plugin workflow; review its hooks. The synthetic local canary can proceed independently of production consent discussions. Do not run the released uploader in parallel for the selected task.
 2. Start a fresh local Work task using synthetic, non-sensitive content. Confirm the task's actual cwd and exact transcript metadata rather than assuming an attached folder changes cwd. Supply the exact local path and task ID to the candidate command below. This authorizes future bytes only.
 3. Make one follow-up request with a known prompt, outer tool call/result and final answer. The candidate hooks should report `Work local: staged` or `unchanged`, with delivery disabled. Finish with explicit reconciliation after the answer is persisted.
 4. Inspect the candidate local queue, normalize it with the Work pipeline branch and compare against the action ledger. Check identity, excluded pre-consent bytes, tool linkage, pending bytes, unknown formats and zero production upload calls. Run disable and verify bodies are removed. Save only sanitized/content-free evidence.
