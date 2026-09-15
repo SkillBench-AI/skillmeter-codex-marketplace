@@ -1,0 +1,232 @@
+{
+  "schema_version": 1,
+  "suite": "ADR001 offline acceptance",
+  "reference": "Claude 0.34.1 / ADR001 decisions 2-4",
+  "counts": {
+    "pass": 55,
+    "fail": 0,
+    "error": 0
+  },
+  "results": [
+    {
+      "name": "healthy-token-no-http",
+      "outcome": "pass"
+    },
+    {
+      "name": "empty-queue-background-refresh",
+      "outcome": "pass"
+    },
+    {
+      "name": "concurrent-refresh-single-flight",
+      "outcome": "pass"
+    },
+    {
+      "name": "expired-token-captures-event",
+      "outcome": "pass"
+    },
+    {
+      "name": "expired-token-captures-chunk",
+      "outcome": "pass"
+    },
+    {
+      "name": "expired-token-never-delivers",
+      "outcome": "pass"
+    },
+    {
+      "name": "refresh-recovers-both-queues",
+      "outcome": "pass"
+    },
+    {
+      "name": "transient-network-refresh-only",
+      "outcome": "pass"
+    },
+    {
+      "name": "transient-404-refresh-only",
+      "outcome": "pass"
+    },
+    {
+      "name": "transient-503-refresh-only",
+      "outcome": "pass"
+    },
+    {
+      "name": "transient-malformed-refresh-only",
+      "outcome": "pass"
+    },
+    {
+      "name": "no-prior-signin-no-silent-activation",
+      "outcome": "pass"
+    },
+    {
+      "name": "signed-out-stays-signed-out",
+      "outcome": "pass"
+    },
+    {
+      "name": "prior-signin-validates-gh-before-activation",
+      "outcome": "pass"
+    },
+    {
+      "name": "changed-gh-identity-blocks-activation",
+      "outcome": "pass"
+    },
+    {
+      "name": "minted-github_id-mismatch-discarded",
+      "outcome": "pass"
+    },
+    {
+      "name": "minted-subject-mismatch-discarded",
+      "outcome": "pass"
+    },
+    {
+      "name": "minted-organization-mismatch-discarded",
+      "outcome": "pass"
+    },
+    {
+      "name": "minted-audience-mismatch-discarded",
+      "outcome": "pass"
+    },
+    {
+      "name": "refresh-401-identity-bound-reactivation",
+      "outcome": "pass"
+    },
+    {
+      "name": "refresh-410-identity-bound-reactivation",
+      "outcome": "pass"
+    },
+    {
+      "name": "signout-purges-event",
+      "outcome": "pass"
+    },
+    {
+      "name": "refresh-402-purges-event",
+      "outcome": "pass"
+    },
+    {
+      "name": "activate-402-purges-event",
+      "outcome": "pass"
+    },
+    {
+      "name": "seven-day-retention-event",
+      "outcome": "pass"
+    },
+    {
+      "name": "signout-purges-chunk",
+      "outcome": "pass"
+    },
+    {
+      "name": "refresh-402-purges-chunk",
+      "outcome": "pass"
+    },
+    {
+      "name": "activate-402-purges-chunk",
+      "outcome": "pass"
+    },
+    {
+      "name": "seven-day-retention-chunk",
+      "outcome": "pass"
+    },
+    {
+      "name": "repository-revocation-purges-both-queues",
+      "outcome": "pass"
+    },
+    {
+      "name": "organization-revocation-purges-both-queues",
+      "outcome": "pass"
+    },
+    {
+      "name": "gh-unavailable-terminal-status",
+      "outcome": "pass"
+    },
+    {
+      "name": "exponential-backoff-cap-and-terminal",
+      "outcome": "pass"
+    },
+    {
+      "name": "success-resets-refresh-backoff",
+      "outcome": "pass"
+    },
+    {
+      "name": "refresh-result-after-signout-is-discarded",
+      "outcome": "pass"
+    },
+    {
+      "name": "late-refresh-200-cannot-replace-new-signin",
+      "outcome": "pass"
+    },
+    {
+      "name": "late-refresh-402-cannot-replace-new-signin",
+      "outcome": "pass"
+    },
+    {
+      "name": "session-start-migrates-marker-and-resets-terminal",
+      "outcome": "pass"
+    },
+    {
+      "name": "explicit-signin-resets-terminal-and-replaces-marker",
+      "outcome": "pass"
+    },
+    {
+      "name": "explicit-gh-activation-402-purges-without-device-flow",
+      "outcome": "pass"
+    },
+    {
+      "name": "old-explicit-signin-generation-cannot-commit",
+      "outcome": "pass"
+    },
+    {
+      "name": "logout-retirement-survives-baseline-reset",
+      "outcome": "pass"
+    },
+    {
+      "name": "expired-chunk-is-not-reconstructed-by-new-capture",
+      "outcome": "pass"
+    },
+    {
+      "name": "mixed-age-event-log-preserves-recent-records",
+      "outcome": "pass"
+    },
+    {
+      "name": "purge-busy-chunk-retries-durably",
+      "outcome": "pass"
+    },
+    {
+      "name": "retire-published-chunk-without-cursor",
+      "outcome": "pass"
+    },
+    {
+      "name": "status-notice-explains-terminal-action-without-credentials",
+      "outcome": "pass"
+    },
+    {
+      "name": "one-shot-drain-refreshes-before-delivery",
+      "outcome": "pass"
+    },
+    {
+      "name": "successful-short-token-obeys-refresh-cooldown",
+      "outcome": "pass"
+    },
+    {
+      "name": "invalid-retirement-journal-blocks-source-and-delivery",
+      "outcome": "pass"
+    },
+    {
+      "name": "signout-removes-legacy-pending-and-poison",
+      "outcome": "pass"
+    },
+    {
+      "name": "purge-crash-keeps-retirement-and-resumes-before-new-capture",
+      "outcome": "pass"
+    },
+    {
+      "name": "malformed-issued-token-is-transient-and-keeps-queue",
+      "outcome": "pass"
+    },
+    {
+      "name": "old-device-flow-cannot-exchange-or-commit",
+      "outcome": "pass"
+    },
+    {
+      "name": "late-device-activation-402-preserves-new-signin",
+      "outcome": "pass"
+    }
+  ]
+}

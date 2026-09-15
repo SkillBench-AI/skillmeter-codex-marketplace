@@ -31,6 +31,17 @@ with its default ten-block threshold, scripted LLM responses and the existing
 ingest schema validator. Omit it for the smaller parser/transport-only fixture.
 The Go helper must include the collector repair before testing multi-day recovery.
 
+The synthetic fixture establishes consent on an empty source before appending
+records. A test-only transport interceptor validates the licensed destination
+and bearer header, then sends to loopback. This does not prove real hook timing.
+
+Pass `--startup-consent` to reproduce the CLI startup ordering: session metadata
+and synthetic history already exist at the first consent observation. The same
+independent oracle then requires the minimal sanitized header, unchanged canonical
+session identity and workspace, and all subsequent authorized messages, while
+excluding startup instructions, history and world_state. This variant still runs
+the lost-response, multi-day reset, stale-generation and scripted-analyzer checks.
+
 The adapter substitutes for API Gateway and omits JWT verification. No actual
 backend ingest/read, model service, installed CLI/desktop hook, or dashboard is
 exercised. All fixture state is temporary; only content-free evidence is written
@@ -50,3 +61,10 @@ This creates and removes a synthetic 64 MiB source. It reports bytes read and
 warm-cache elapsed time for unchanged and appended captures. It is an observation,
 not a platform-independent performance threshold; prefix verification remains
 linear in source size.
+
+Policy 3.1 expectations are independently authored in Python, including metadata
+and opaque command/patch HMACs. The original canonical golden retains every
+message and tool link; only opaque inputs and the now unavailable patch-derived
+path differ. The scripted analyzer omits optional tech-stack refinement because
+this fixture no longer discloses file paths, and omits productivity. Its report
+still must pass the existing ten-block threshold and ingest schema.

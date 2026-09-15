@@ -31,7 +31,12 @@ async function prepareSession() {
   const deviceId = getDeviceId();
   if (!deviceId || getTelemetryGloballyDisabled()) return;
   try {
-    await tryRefreshLicense(deviceId);
+    require("./credstore").ensureSigninMarker();
+    require("./lib/license-status").clearTerminal({source:"session_start"});
+    await tryRefreshLicense(deviceId, {source:"session_start"});
+    if (require("./lib/license-status").readLicenseStatus().terminal) {
+      process.stderr.write(`SkillMeter: ${require("./lib/lifecycle-notice").notice()}\n`);
+    }
   } catch {}
 }
 
@@ -57,27 +62,23 @@ function buildSessionStartEvent(input, ctx) {
 
 // React to the gate runHook already resolved (capture decision stays central —
 // runHook exits when gate.capture is false regardless). Consent is in-context
-// only: opted-in or owned-org auto-enable captures; otherwise we print the
+// only: explicit organization and repository consent enables capture; otherwise we print the
 // enable/disable commands and stay "not configured". No OS dialog.
 function onGate({ gate, cwd }) {
   if (gate.capture) {
-    const note =
-      gate.mode === "auto_org"
-        ? "(telemetry auto-enabled — repo owned by allowed org)"
-        : "(activated)";
-    process.stderr.write(`SkillMeter v${PLUGIN_VERSION} ${note}\n`);
+    process.stderr.write(`SkillMeter v${PLUGIN_VERSION} (activated)\n`);
     // Recover an un-rotated event log left by a crashed session, drain the
     // durable queues once now (detached, non-blocking), and start the
     // long-running retry monitor so transient outages still drain mid-
     // session. Cleanup prunes uploaded/aged-out files. This runs before the
     // SessionStart event is appended, so recovery targets prior sessions.
-    recoverStaleActiveLog();
+    recoverStaleActiveLog(cwd);
     spawnDetachedDrain();
     spawnRetryDaemon();
     cleanupStaleFiles();
     return;
   }
-  if (gate.mode === "opted_out") {
+  if (gate.mode === "project_disabled") {
     process.stderr.write(
       `SkillMeter v${PLUGIN_VERSION} (telemetry disabled for this project)\n`
     );

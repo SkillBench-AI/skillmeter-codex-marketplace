@@ -65,7 +65,7 @@ test("redactString redacts multiple distinct secrets in one string", () => {
   assert.equal(value.includes(FAKE_GH), false);
   assert.equal(value.includes(FAKE_OPENAI), false);
   assert.equal(redactions.length, 2);
-  assert.ok(redactions.every((r) => r.tier === "tier1"));
+  assert.ok(redactions.every((r) => r.category === "secret"));
 });
 
 test("sanitizeEventData reports deduped, sorted types and accurate counts", () => {
@@ -78,10 +78,10 @@ test("sanitizeEventData reports deduped, sorted types and accurate counts", () =
   assert.equal(JSON.stringify(value).includes(FAKE_GH), false);
   assert.equal(JSON.stringify(value).includes("dev@example.org"), false);
 
-  assert.equal(meta.tier1, 2, "two github tokens => tier1 count 2");
-  assert.equal(meta.tier2, 1, "one email => tier2 count 1");
+  assert.equal(meta.secrets, 2, "two github tokens => tier1 count 2");
+  assert.equal(meta.pii, 1, "one email => tier2 count 1");
   // Types are a de-duplicated, sorted set.
-  assert.deepEqual(meta.types, ["email", "github_token"]);
+  assert.deepEqual(meta.ids, ["email", "github-token"]);
 });
 
 test("sanitizeEventData on clean data reports zero redactions", () => {
@@ -89,9 +89,9 @@ test("sanitizeEventData on clean data reports zero redactions", () => {
     prompt: "please refactor the billing module",
     count: 5,
   });
-  assert.equal(meta.tier1, 0);
-  assert.equal(meta.tier2, 0);
-  assert.deepEqual(meta.types, []);
+  assert.equal(meta.secrets, 0);
+  assert.equal(meta.pii, 0);
+  assert.deepEqual(meta.ids, []);
   assert.equal(value.count, 5);
 });
 
@@ -105,16 +105,16 @@ test("redactDeep preserves scalar types and array/object shape", () => {
     arr: [1, "ok", { path: "/x", secret: FAKE_OPENAI }],
   };
   const redactions = [];
-  const out = sanitizer.redactDeep(input, redactions);
+  const out = sanitizer.redactDeep(input, redactions, "fixture-salt");
 
   assert.equal(out.n, 1);
   assert.equal(out.b, true);
   assert.equal(out.nul, null);
   assert.equal(out.arr[0], 1);
   assert.equal(out.arr[1], "ok");
-  assert.equal(out.arr[2].path, "/x");
+  assert.match(out.arr[2].path, /^[a-f0-9]{12}$/);
   assert.equal(out.arr[2].secret.includes("sk-"), false);
-  assert.equal(redactions.length, 1);
+  assert.equal(redactions.filter(r => r.category === "secret").length, 1);
 });
 
 test("redactDeep scrubs strings in a top-level array", () => {
@@ -134,8 +134,8 @@ test("containsTier1 is false for Tier-2-only (email) content", () => {
 
 test("emails are reported as tier2 and not counted as secrets", () => {
   const { meta } = sanitizer.sanitizeEventData({ note: "x@y.io and a@b.com" });
-  assert.equal(meta.tier1, 0);
-  assert.equal(meta.tier2, 2);
+  assert.equal(meta.secrets, 0);
+  assert.equal(meta.pii, 2);
 });
 
 // --- env-style assignment edges --------------------------------------------
@@ -145,7 +145,7 @@ test("env_secret keeps the variable name and redacts only the value", () => {
   assert.match(value, /^MY_API_KEY=/);
   assert.equal(value.includes("supersecretvalue123"), false);
   assert.ok(value.endsWith(R));
-  assert.equal(redactions[0].type, "env_secret");
+  assert.equal(redactions[0].id, "env-secret");
 });
 
 test("placeholder assignments stay; real-looking values are redacted", () => {
@@ -158,7 +158,7 @@ test("placeholder assignments stay; real-looking values are redacted", () => {
 test("redaction metadata carries no original secret material", () => {
   const { redactions } = sanitizer.redactString(`x ${FAKE_OPENAI} y`);
   for (const r of redactions) {
-    assert.deepEqual(Object.keys(r).sort(), ["action", "tier", "type"]);
+    assert.deepEqual(Object.keys(r).sort(), ["action", "category", "id", "kind"]);
     assert.equal(JSON.stringify(r).includes("sk-"), false);
   }
 });

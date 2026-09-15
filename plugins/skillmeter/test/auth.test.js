@@ -19,6 +19,7 @@ const http = require("http");
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "sk-auth-home-"));
 process.env.HOME = tmpHome;
 process.env.USERPROFILE = tmpHome;
+process.env.PLUGIN_DATA = path.join(tmpHome, "plugin-data");
 delete process.env.SKILLMETER_BACKEND_URL;
 delete process.env.SKILLMETER_ACTIVATE_URL;
 delete process.env.SKILLMETER_GITHUB_CLIENT_ID;
@@ -61,19 +62,24 @@ function startServer(handler) {
     const server = http.createServer(handler);
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address();
+      const nativeFetch = global.fetch;
+      global.fetch = (url, options) => {
+        assert.equal(new URL(url).origin, "https://acme.meter.skillbench.com");
+        return nativeFetch(`http://127.0.0.1:${port}${new URL(url).pathname}`, options);
+      };
       resolve({
         url: `http://127.0.0.1:${port}`,
-        close: () => new Promise((r) => server.close(r)),
+        close: () => { global.fetch = nativeFetch; return new Promise((r) => server.close(r)); },
       });
     });
   });
 }
 
 function tmpLogFile(contents) {
-  const p = path.join(
-    fs.mkdtempSync(path.join(os.tmpdir(), "sk-auth-log-")),
-    "events.jsonl.1700000000000"
-  );
+  let dir;
+  try { dir = require("../testing/authorized-queue").authorizedQueue(logger).root; }
+  catch { dir = fs.mkdtempSync(path.join(os.tmpdir(), "sk-auth-log-")); }
+  const p = path.join(dir, "events.jsonl." + Date.now());
   fs.writeFileSync(p, contents);
   return p;
 }
@@ -120,12 +126,12 @@ test("getEndpointFromToken rejects expired tokens, missing/non-https claims", ()
 
 // --- credstore lifecycle ---------------------------------------------------
 
-test("commitSignin stores the license + normalized orgs; signOut clears them", () => {
-  const token = makeJwt({ exp: FUTURE });
+test("commitSignin scope comes from the license, ignoring legacy memberships", () => {
+  const token = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
   const ok = credstore.commitSignin({ jwt: token, orgs: ["Acme", "acme", " Beta ", ""] });
   assert.equal(ok, true);
   assert.equal(credstore.getLicenseToken(), token);
-  assert.deepEqual(credstore.getAllowedGitHubOrgs(), ["acme", "beta"]);
+  assert.deepEqual(credstore.getAllowedGitHubOrgs(), ["acme"]);
   assert.equal(credstore.getSignedOut(), false);
   assert.equal(credstore.getTelemetryDisabled(), false);
 
@@ -160,7 +166,7 @@ test("global telemetry switch blocks event-log uploads without consuming the que
   const logFile = tmpLogFile('{"a":1}\n');
 
   try {
-    const outcome = await logger.transferEventLog(logFile, `${srv.url}/logs/codex`, 5000);
+    const outcome = await logger.transferEventLog(logFile, "https://acme.meter.skillbench.com/logs/codex", 5000);
     assert.equal(outcome, "skip");
     assert.equal(sawRequest, false);
     assert.equal(fs.existsSync(logFile), true, "queued batch remains for later");
@@ -189,7 +195,7 @@ test("setLicenseToken('') clears the stored token", () => {
 
 test("getBackendUrl routes to the JWT per-tenant endpoint with /logs/codex", () => {
   credstore.markEngaged();
-  credstore.setLicenseToken(makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com" }));
+  credstore.setLicenseToken(makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} }));
   // tmpHome has no .codex/settings.local.json, so settings don't interfere.
   assert.equal(logger.getBackendUrl(tmpHome), "https://acme.meter.skillbench.com/logs/codex");
 });
@@ -244,7 +250,7 @@ test("an untrusted activation override falls back to the prod default", () => {
 // --- authenticated upload + 401/403 clear-and-retry ------------------------
 
 test("transferEventLog attaches the JWT and marks the batch .sent on 2xx", async () => {
-  const token = makeJwt({ exp: FUTURE });
+  const token = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
   credstore.setLicenseToken(token);
 
   let sawAuth = null;
@@ -256,7 +262,7 @@ test("transferEventLog attaches the JWT and marks the batch .sent on 2xx", async
   const logFile = tmpLogFile('{"a":1}\n');
 
   try {
-    await logger.transferEventLog(logFile, `${srv.url}/logs/codex`, 5000);
+    await logger.transferEventLog(logFile, "https://acme.meter.skillbench.com/logs/codex", 5000);
     assert.equal(sawAuth, `Bearer ${token}`);
     assert.equal(fs.existsSync(`${logFile}.sent`), true);
     assert.equal(fs.existsSync(logFile), false);
@@ -265,8 +271,8 @@ test("transferEventLog attaches the JWT and marks the batch .sent on 2xx", async
   }
 });
 
-test("transferEventLog clears the license and retries without auth on 401", async () => {
-  const token = makeJwt({ exp: FUTURE });
+test("transferEventLog retains the license and batch after one authenticated 401", async () => {
+  const token = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
   credstore.setLicenseToken(token);
 
   const seen = [];
@@ -283,18 +289,17 @@ test("transferEventLog clears the license and retries without auth on 401", asyn
   const logFile = tmpLogFile('{"a":1}\n');
 
   try {
-    await logger.transferEventLog(logFile, `${srv.url}/logs/codex`, 5000);
-    assert.equal(seen.length, 2, "should retry exactly once");
+    await logger.transferEventLog(logFile, "https://acme.meter.skillbench.com/logs/codex", 5000);
+    assert.equal(seen.length, 1, "must not retry anonymously");
     assert.equal(seen[0], `Bearer ${token}`, "first attempt is authenticated");
-    assert.equal(seen[1], null, "retry drops the Authorization header");
-    assert.equal(credstore.getLicenseToken(), null, "rejected token is cleared");
-    assert.equal(fs.existsSync(`${logFile}.sent`), true, "retry success marks batch sent");
+    assert.equal(credstore.getLicenseToken(), token, "rejected token is retained for recovery");
+    assert.equal(fs.existsSync(logFile), true, "auth failure retains the batch");
   } finally {
     await srv.close();
   }
 });
 
-test("transferEventLog drops an expired JWT before sending (no auth header)", async () => {
+test("transferEventLog retains an expired-token batch without any request", async () => {
   credstore.setLicenseToken(makeJwt({ exp: PAST }));
 
   let sawAuth = "unset";
@@ -306,9 +311,9 @@ test("transferEventLog drops an expired JWT before sending (no auth header)", as
   const logFile = tmpLogFile('{"a":1}\n');
 
   try {
-    await logger.transferEventLog(logFile, `${srv.url}/logs/codex`, 5000);
-    assert.equal(sawAuth, null, "expired token is not attached");
-    assert.equal(fs.existsSync(`${logFile}.sent`), true);
+    await logger.transferEventLog(logFile, "https://acme.meter.skillbench.com/logs/codex", 5000);
+    assert.equal(sawAuth, "unset", "expired token prevents sending");
+    assert.equal(fs.existsSync(logFile), true);
   } finally {
     await srv.close();
   }
@@ -321,13 +326,13 @@ test("prepareSession refreshes an expired token so the current session is authen
 
   // Seed an expired license JWT — the state that used to leave the triggering
   // session unauthenticated when the refresh ran fire-and-forget from afterLog.
-  const expired = makeJwt({ exp: PAST });
-  const fresh = makeJwt({ exp: FUTURE });
+  const expired = makeJwt({ exp: PAST, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
+  const fresh = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
   credstore.setLicenseToken(expired);
   assert.equal(credstore.isLicenseTokenExpired(expired), true);
 
-  // Stub the /refresh round-trip. refreshExpiredJwt POSTs via global fetch and
-  // persists payload.token; with fetch mocked, getRefreshUrl's domain gate is
+  // Stub the /refresh round-trip. The coordinator validates identity and
+  // persists the returned token; with fetch mocked, getRefreshUrl's domain gate is
   // irrelevant because nothing touches the network.
   const realFetch = global.fetch;
   let refreshCalls = 0;
@@ -366,7 +371,7 @@ test("prepareSession refreshes an expired token so the current session is authen
   });
   const logFile = tmpLogFile('{"event":"SessionStart"}\n');
   try {
-    await logger.transferEventLog(logFile, `${srv.url}/logs/codex`, 5000);
+    await logger.transferEventLog(logFile, "https://acme.meter.skillbench.com/logs/codex", 5000);
     assert.equal(
       sawAuth,
       `Bearer ${fresh}`,

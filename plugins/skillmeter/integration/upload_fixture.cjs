@@ -11,8 +11,10 @@ if (!url.startsWith("http://127.0.0.1:")) throw Error("localhost collector requi
 process.env.HOME = root;
 process.env.USERPROFILE = root;
 process.env.PLUGIN_DATA = path.join(root, "data");
+process.env.SKILLMETER_STATE_DIR = path.join(root, ".skillbench");
 delete process.env.SKILLMETER_REPO_SCOPE_ORGS;
 const appendMode = process.argv[4] === "append";
+const startupConsent = process.env.SKILLMETER_TEST_STARTUP_CONSENT === "1";
 const repo = path.join(root, "repo");
 const source = path.join(root, "synthetic.jsonl");
 const expectedFile = path.join(root, "expected.jsonl");
@@ -29,12 +31,17 @@ function initializeFixture() {
   execFileSync("git", ["init", "--quiet", repo]);
   execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://github.com/synthetic/repo.git"]);
   fs.mkdirSync(path.join(root, ".skillbench"));
-  const claims = { sub: "synthetic-user", exp: 4102444800 };
+  const claims = { sub: "synthetic-user", github_id:123, org:{login:"synthetic"}, aud:"https://synthetic.meter.skillbench.ai", exp: 4102444800 };
   const jwt = "e30." + Buffer.from(JSON.stringify(claims)).toString("base64url") + ".fixture";
   fs.writeFileSync(path.join(root, ".skillbench/credentials.json"), JSON.stringify({
     device_id: "SYNTHETIC-DEVICE", hash_salt: "fixture-salt",
     license_jwt: jwt, allowed_github_orgs: ["synthetic"],
   }));
+  require("../scripts/lib/telemetry-store").authorizeOrganizationRepositories("synthetic", ["synthetic/repo"], true);
+  if (!startupConsent) {
+    fs.writeFileSync(source, "");
+    require("../scripts/logger").observeTranscriptConsent(source, repo);
+  }
   const fixture = process.argv[4] || path.join(__dirname, "../test/fixtures/codex-m0.jsonl");
   const records = fs.readFileSync(fixture, "utf8").trim().split("\n").map(JSON.parse);
   // Synthetic canaries have independently specified expectations in Python.
@@ -44,15 +51,31 @@ function initializeFixture() {
     if (record.payload?.cwd) record.payload.cwd = repo;
   }
   records.push(repeated, repeated);
-  fs.writeFileSync(source, records.map(JSON.stringify).join("\n") + "\n");
+  if (startupConsent) {
+    const header = records.shift();
+    header.payload.instructions = "EXCLUDED-STARTUP-INSTRUCTIONS";
+    const excluded = [header,
+      {type:"response_item", payload:{type:"message", role:"user", content:"EXCLUDED-HISTORY"}},
+      {type:"world_state", payload:{text:"EXCLUDED-WORLD-STATE"}},
+    ];
+    fs.writeFileSync(source, excluded.map(JSON.stringify).join("\n") + "\n");
+    require("../scripts/logger").observeTranscriptConsent(source, repo);
+    fs.appendFileSync(source, records.map(JSON.stringify).join("\n") + "\n");
+  } else fs.writeFileSync(source, records.map(JSON.stringify).join("\n") + "\n");
 }
 
 if (!appendMode) initializeFixture();
 // Load after setting the isolated home and synthetic credentials.
 const logger = require("../scripts/logger");
 const stage = () => logger.stageTranscriptForUpload(source, { cwd: repo });
-const upload = file => logger.processPendingTranscript(file, "SYNTHETIC-DEVICE", url, 2000);
+const destination = "https://synthetic.meter.skillbench.ai/logs/codex";
+const upload = file => logger.processPendingTranscript(file, "SYNTHETIC-DEVICE", destination, 2000);
 const realFetch = global.fetch;
+const localFetch = (target, options) => {
+  if (target !== destination + "/transcript") throw Error("unexpected licensed destination");
+  if (!options.headers.Authorization?.startsWith("Bearer ")) throw Error("missing authentication");
+  return realFetch(url + "/transcript", options);
+};
 
 async function appendAndRecover() {
   const continuation = {
@@ -65,7 +88,7 @@ async function appendAndRecover() {
   let expected = fs.readFileSync(expectedFile);
   const attempts = [];
   global.fetch = async (target, options) => {
-    const response = await realFetch(target, options);
+    const response = await localFetch(target, options);
     const seq = options.headers["X-Chunk-Seq"];
     const reset = options.headers["X-Chunk-Reset"];
     attempts.push({ seq, reset, status: response.status });
@@ -92,7 +115,7 @@ async function uploadWithLostResponse() {
       seq: options.headers["X-Chunk-Seq"], reset: options.headers["X-Chunk-Reset"],
       body: Buffer.from(options.body).toString("base64"),
     });
-    return realFetch(target, options);
+    return localFetch(target, options);
   };
   const lost = await upload(first);
   if (lost !== "retry" || !fs.existsSync(first)) throw Error("response-loss retention failed");

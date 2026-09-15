@@ -12,7 +12,7 @@ const repo = path.join(root, "repo");
 execFileSync("git", ["init", "--quiet", repo]);
 execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://github.com/synthetic/repo.git"]);
 const store = path.join(root, ".skillbench/credentials.json"); fs.mkdirSync(path.dirname(store));
-const jwt = (sub = "synthetic-user", exp = 4102444800, extra = {}) => "e30." + Buffer.from(JSON.stringify({ sub, github_id: sub, exp, aud: "https://synthetic.meter.skillbench.com", ...extra })).toString("base64url") + ".fixture";
+const jwt = (sub = "synthetic-user", exp = 4102444800, extra = {}) => "e30." + Buffer.from(JSON.stringify({ sub, github_id: sub, exp, aud: "https://synthetic.meter.skillbench.com", org: {login: "synthetic"}, ...extra })).toString("base64url") + ".fixture";
 const credentials = { device_id: "SYNTHETIC-DEVICE", hash_salt: "fixture-salt", license_jwt: jwt(), allowed_github_orgs: ["synthetic"] };
 const save = patch => fs.writeFileSync(store, JSON.stringify({ ...credentials, ...patch }));
 save({});
@@ -22,10 +22,14 @@ const realFetch = global.fetch;
 const source = path.join(root, "synthetic.jsonl");
 const line = message => JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: message } }) + "\n";
 const stage = () => logger.stageTranscriptForUpload(source, { cwd: repo });
-const upload = file => logger.processPendingTranscript(file, credentials.device_id, "https://collector.invalid/logs/codex", 1000);
+const upload = file => logger.processPendingTranscript(file, credentials.device_id, "https://synthetic.meter.skillbench.com/logs/codex", 1000);
 beforeEach(() => {
-  save({}); fs.rmSync(logger.LOG_DIR, { recursive: true, force: true });
+  save({});
+  require("../scripts/lib/telemetry-store").authorizeOrganizationRepositories("synthetic", ["synthetic/repo"], true);
+  fs.rmSync(logger.LOG_DIR, { recursive: true, force: true });
   fs.rmSync(path.join(repo, ".codex"), { recursive: true, force: true });
+  fs.writeFileSync(source, "");
+  logger.observeTranscriptConsent(source, repo);
   fs.writeFileSync(source, line("synthetic first message"));
   global.fetch = async () => assert.fail("unexpected network attempt");
 });
@@ -34,7 +38,7 @@ after(() => { global.fetch = realFetch; fs.rmSync(root, { recursive: true, force
 for (const [name, change] of [
   ["global disable", () => save({ telemetry_disabled: true })],
   ["signout", () => save({ signed_out: true })],
-  ["org narrowing in another process", () => save({ allowed_github_orgs: [] })],
+  ["org narrowing in another process", () => save({ license_jwt: jwt("synthetic-user", 4102444800, {org:{login:"other"}}) })],
   ["changed user", () => save({ license_jwt: jwt("another-user") })],
   ["changed device", () => save({ device_id: "ANOTHER-DEVICE" })],
   ["expired token", () => save({ license_jwt: jwt("synthetic-user", 1) })],
@@ -61,7 +65,7 @@ for (const status of [400, 401, 403, 413, 429, 500]) test(`HTTP ${status} retain
 
 test("scope is rechecked between each ordered chunk", async () => {
   const file = stage(); fs.appendFileSync(source, line("second")); stage(); let calls = 0;
-  global.fetch = async () => { calls++; save({ allowed_github_orgs: [] }); return { ok: true }; };
+  global.fetch = async () => { calls++; save({ license_jwt: jwt("synthetic-user", 4102444800, {org:{login:"other"}}) }); return { ok: true }; };
   await upload(file); assert.equal(calls, 1); assert.equal(logger.listPendingTranscripts().length, 1);
 });
 
@@ -102,20 +106,26 @@ test("shutdown fallback uses the cached session path without scanning the sessio
   logger.stageRequestedTranscripts(); assert.equal(logger.listPendingTranscripts().length, 1);
 });
 
-test("cleanup and dry-run inventory preserve old transcript copies", () => {
+test("inventory is read-only; cleanup deletes expired legacy transcript copies", () => {
   const pending = path.join(logger.TRANSCRIPTS_PENDING_DIR, "old.jsonl");
   const poison = path.join(logger.POISON_DIR, "old.jsonl");
   for (const file of [pending, poison]) { fs.mkdirSync(path.dirname(file), {recursive:true}); fs.writeFileSync(file, line("old synthetic")); fs.utimesSync(file, new Date(0), new Date(0)); }
   const before = [pending, poison].map(f => fs.readFileSync(f));
-  logger.cleanupStaleFiles();
   const result = require("../scripts/transcript_inventory").inventory(process.env.PLUGIN_DATA);
   assert.deepEqual(result, {dryRun:true,legacyPending:1,legacyPoisonUnknownReason:1,chunkDiagnostics:{}});
   assert.deepEqual([pending, poison].map(f => fs.readFileSync(f)), before);
+  logger.cleanupStaleFiles();
+  assert.equal(fs.existsSync(pending),false);
+  assert.equal(fs.existsSync(poison),false);
 });
 
 
 test("tenant sub cannot substitute for user identity", async () => {
   save({ license_jwt: jwt("same-tenant", 4102444800, {github_id: 101}) });
+  fs.rmSync(logger.TRANSCRIPT_CHUNKS_DIR, {recursive:true, force:true});
+  fs.writeFileSync(source, "");
+  logger.observeTranscriptConsent(source, repo);
+  fs.writeFileSync(source, line("synthetic first message"));
   const file = stage(); assert.ok(file);
   save({ license_jwt: jwt("same-tenant", 4102444800, {github_id: 202}) });
   assert.equal(await upload(file), "skip"); assert.equal(fs.existsSync(file), true);
@@ -178,6 +188,8 @@ test("consent revoked during a 409 prevents reset staging and upload", async () 
 test("a corrupt queue does not block other authorized transcripts", async () => {
   stage();
   const secondSource = path.join(root, "second.jsonl");
+  fs.writeFileSync(secondSource, "");
+  logger.observeTranscriptConsent(secondSource, repo);
   fs.writeFileSync(secondSource, line("healthy second transcript"));
   logger.stageTranscriptForUpload(secondSource, { cwd: repo });
   const directories = queue.queueDirectories(logger.TRANSCRIPT_CHUNKS_DIR);
@@ -187,7 +199,7 @@ test("a corrupt queue does not block other authorized transcripts", async () => 
   fs.writeFileSync(cursor, "invalid synthetic cursor");
   let calls = 0;
   global.fetch = async () => { calls++; return { ok: true }; };
-  await logger.drainPendingTranscripts("https://collector.invalid/logs/codex", 1000);
+  await logger.drainPendingTranscripts("https://synthetic.meter.skillbench.com/logs/codex", 1000);
   assert.equal(calls, 1);
   assert.equal(fs.existsSync(retained), true);
   assert.equal(JSON.parse(fs.readFileSync(path.join(damaged, "diagnostic.json"))).code, "queue-unavailable");
@@ -196,9 +208,9 @@ test("a corrupt queue does not block other authorized transcripts", async () => 
 test("failed transcript upload counts as queued work for the retry monitor", async () => {
   const file = stage();
   global.fetch = async () => ({ ok: false, status: 503 });
-  assert.equal(await logger.drainPendingTranscripts("https://collector.invalid/logs/codex", 1000), 1);
+  assert.equal(await logger.drainPendingTranscripts("https://synthetic.meter.skillbench.com/logs/codex", 1000), 1);
   assert.equal(fs.existsSync(file), true);
   global.fetch = async () => ({ ok: true });
-  assert.equal(await logger.drainPendingTranscripts("https://collector.invalid/logs/codex", 1000), 1);
-  assert.equal(await logger.drainPendingTranscripts("https://collector.invalid/logs/codex", 1000), 0);
+  assert.equal(await logger.drainPendingTranscripts("https://synthetic.meter.skillbench.com/logs/codex", 1000), 1);
+  assert.equal(await logger.drainPendingTranscripts("https://synthetic.meter.skillbench.com/logs/codex", 1000), 0);
 });

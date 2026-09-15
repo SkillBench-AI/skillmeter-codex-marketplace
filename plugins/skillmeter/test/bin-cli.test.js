@@ -109,7 +109,9 @@ test("sk-telemetry disable --global flips the machine kill switch", () => {
   const home = makeHome({ device_id: "DEV-1", hash_salt: "abcd" });
   const res = run("sk-telemetry", ["disable", "--global"], home);
   assert.equal(res.status, 0);
-  assert.equal(readCreds(home).telemetry_disabled, true);
+  assert.equal(readCreds(home).telemetry_disabled, undefined);
+  const policy = JSON.parse(fs.readFileSync(path.join(home, ".skillbench/telemetry-policy.json"), "utf8"));
+  assert.equal(policy.global.enabled, false);
 });
 
 // --- signout ---------------------------------------------------------------

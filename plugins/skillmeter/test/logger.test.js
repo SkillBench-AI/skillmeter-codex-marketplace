@@ -142,7 +142,7 @@ test("getBackendUrl returns a trusted SKILLMETER_BACKEND_URL override", () => {
   }
 });
 
-test("getBackendUrl rejects an untrusted env override and falls back to default", () => {
+test("getBackendUrl rejects an untrusted env override and fails closed", () => {
   process.env.SKILLMETER_BACKEND_URL = "https://evil.example.com/logs/codex";
   try {
     assert.equal(logger.getBackendUrl(process.cwd()), logger.DEFAULT_BACKEND_URL);
@@ -215,7 +215,7 @@ test("getBackendUrl trusts a prod skillbench.ai per-tenant endpoint", () => {
   }
 });
 
-test("getBackendUrl falls back to default when the JWT endpoint is untrusted", () => {
+test("getBackendUrl fails closed when the JWT endpoint is untrusted", () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sk-logger-cwd-"));
   credstore.setLicenseToken(
     makeJwt({ aud:"https://evil.example.com", exp: futureExp() })
@@ -227,10 +227,8 @@ test("getBackendUrl falls back to default when the JWT endpoint is untrusted", (
   }
 });
 
-test("getBackendUrl derives the per-tenant endpoint even from an expired license JWT", () => {
-  // The `aud` endpoint claim is routing info, not an auth decision: an
-  // expired token still resolves the tenant host so a drain reaches the right
-  // collector while a refresh is pending (matches the Claude plugin).
+test("getBackendUrl has no delivery destination for an expired license JWT", () => {
+  // Delivery waits for a valid token, even when the old audience is known.
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sk-logger-cwd-"));
   credstore.setLicenseToken(
     makeJwt({ aud:"https://acme.meter.skillbench.com", exp: futureExp(-3600) })
@@ -238,14 +236,14 @@ test("getBackendUrl derives the per-tenant endpoint even from an expired license
   try {
     assert.equal(
       logger.getBackendUrl(cwd),
-      "https://acme.meter.skillbench.com/logs/codex"
+      null
     );
   } finally {
     credstore.setLicenseToken("");
   }
 });
 
-test("getBackendUrl falls back to default when an expired JWT endpoint is untrusted", () => {
+test("getBackendUrl fails closed when an expired JWT endpoint is untrusted", () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sk-logger-cwd-"));
   credstore.setLicenseToken(
     makeJwt({ aud:"https://evil.example.com", exp: futureExp(-3600) })
@@ -257,11 +255,11 @@ test("getBackendUrl falls back to default when an expired JWT endpoint is untrus
   }
 });
 
-test("getBackendUrl returns the shipped default when unauthenticated", () => {
+test("getBackendUrl has no destination when unauthenticated", () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sk-logger-cwd-"));
   credstore.setLicenseToken("");
   assert.equal(logger.getBackendUrl(cwd), logger.DEFAULT_BACKEND_URL);
-  assert.match(logger.DEFAULT_BACKEND_URL, /^https:\/\/api\.meter\.skillbench\.ai\/logs\/codex$/);
+  assert.equal(logger.DEFAULT_BACKEND_URL, null);
 });
 
 test("getBackendUrl env override takes precedence over the JWT", () => {

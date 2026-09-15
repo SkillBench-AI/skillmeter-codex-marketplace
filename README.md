@@ -65,16 +65,20 @@ Codex lifecycle event
 Uploads are durable and non-blocking: `Stop`/`SubagentStop` seal events and
 transcripts to disk and hand off to a detached drain, `SessionStart` recovers
 un-rotated logs from crashed sessions and starts a background retry monitor, and
-stale uploaded files are cleaned up after 30 days. Hook failures never block your
+stale uploaded files are cleaned up after 30 days. Unsent telemetry expires after
+seven days and is removed on sign-out or license revocation. Consented capture
+continues during token expiry; authenticated delivery waits for recovery.
+Hook failures never block your
 Codex session. See [`plugins/skillmeter/README.md`](plugins/skillmeter/README.md#durable-uploads-background-flush-and-retry)
 for details.
 
 ## Telemetry control
 
-Per-project opt-in and repo-scope settings live in
-`<project>/.codex/settings.local.json` under the `skillmeter` namespace. On
-macOS the first session in a project shows a native consent prompt; elsewhere,
-enable it explicitly:
+Capture requires a valid license for the repository's organization and explicit
+organization and repository consent. Decisions use canonical GitHub identity in
+`~/.skillbench/telemetry-policy.json`, shared with Claude across clones and
+worktrees. A legacy project-local OFF remains a veto until explicitly changed.
+Enable telemetry from the eligible repository:
 
 ```bash
 node "$PLUGIN_ROOT/scripts/telemetry.js" enable
@@ -94,10 +98,9 @@ Then `/plugins` → install `SkillMeter` → start a fresh thread. Codex loads l
 plugins from its plugin cache after installation, so reinstall (or refresh the
 marketplace) after changing the plugin contents.
 
-The shipped plugin uploads to prod by default. To point a project at a non-prod
-collector (e.g. the dev tenant collector) without changing the default, set
-`skillmeter.backendUrl` in that project's `.codex/settings.local.json` — see
-[`plugins/skillmeter/README.md`](plugins/skillmeter/README.md#configuration).
+Uploads require a valid token and its licensed tenant destination. There is no
+anonymous or default production delivery. See the plugin configuration section
+for scoped development overrides, which also require authentication.
 
 ## Versioning & releases
 

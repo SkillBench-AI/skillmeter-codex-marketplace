@@ -44,71 +44,12 @@ test("the plugin exposes no OS-dialog consent surface", () => {
   assert.equal(typeof logger.promptTelemetryOptIn, "undefined");
 });
 
-test("resolveTelemetryGate: explicit opt-out is always respected", () => {
-  // opted_out beats owned-org auto-enable.
-  assert.deepEqual(logger.resolveTelemetryGate(false, true), {
-    capture: false,
-    mode: "opted_out",
-  });
-  assert.deepEqual(logger.resolveTelemetryGate(false, false), {
-    capture: false,
-    mode: "opted_out",
-  });
-});
-
-test("resolveTelemetryGate: explicit opt-in captures regardless of ownership", () => {
-  // Downstream repo-scope still drops out-of-scope repos; the gate only decides
-  // per-project intent.
-  assert.deepEqual(logger.resolveTelemetryGate(true, true), {
-    capture: true,
-    mode: "opted_in",
-  });
-  assert.deepEqual(logger.resolveTelemetryGate(true, false), {
-    capture: true,
-    mode: "opted_in",
-  });
-});
-
-test("resolveTelemetryGate: unset auto-enables only for an owned-org repo", () => {
-  assert.deepEqual(logger.resolveTelemetryGate(null, true), {
-    capture: true,
-    mode: "auto_org",
-  });
-  assert.deepEqual(logger.resolveTelemetryGate(null, false), {
-    capture: false,
-    mode: "not_enabled",
-  });
-});
-
-test("defaultGateMessaging: auto_org announces auto-enable + how to opt out", () => {
-  const original = console.error;
-  const lines = [];
-  console.error = (msg) => lines.push(msg);
-  try {
-    logger.defaultGateMessaging("PreToolUse", { capture: true, mode: "auto_org" });
-  } finally {
-    console.error = original;
+test("resolveTelemetryGate requires license, organization and repository consent", () => {
+  const enabled = { globalDisabled: false, hasValidLicense: true, repoOrgOwned: true, orgConsent: true, projectOptIn: true };
+  assert.equal(logger.resolveTelemetryGate(enabled).capture, true);
+  for (const change of [{ globalDisabled: true }, { hasValidLicense: false }, { repoOrgOwned: false }, { orgConsent: null }, { orgConsent: false }, { projectOptIn: null }, { projectOptIn: false }]) {
+    assert.equal(logger.resolveTelemetryGate({ ...enabled, ...change }).capture, false);
   }
-  assert.equal(lines.length, 1);
-  assert.match(lines[0], /auto-enabled/);
-  assert.match(lines[0], /disable/);
-});
-
-test("defaultGateMessaging: opted_in is silent, skips report a reason", () => {
-  const original = console.error;
-  const lines = [];
-  console.error = (msg) => lines.push(msg);
-  try {
-    logger.defaultGateMessaging("PreToolUse", { capture: true, mode: "opted_in" });
-    assert.equal(lines.length, 0);
-
-    logger.defaultGateMessaging("PreToolUse", { capture: false, mode: "opted_out" });
-    logger.defaultGateMessaging("PreToolUse", { capture: false, mode: "not_enabled" });
-  } finally {
-    console.error = original;
-  }
-  assert.match(lines[0], /disabled for this project/);
-  assert.match(lines[1], /telemetry not enabled/);
 });
 
 test("writeTelemetryConsentFallback prints in-context commands without saving a decision", () => {
@@ -125,13 +66,8 @@ test("writeTelemetryConsentFallback prints in-context commands without saving a 
   assert.match(sink.output(), /telemetry\.js" status/);
 });
 
-test("saveTelemetryOptIn round-trips through getTelemetryOptIn", () => {
+test("saveTelemetryOptIn refuses to authorize a directory outside licensed scope", () => {
   const cwd = makeProject();
+  assert.throws(() => logger.saveTelemetryOptIn(cwd, true), /eligible repository/);
   assert.equal(logger.getTelemetryOptIn(cwd), null);
-
-  logger.saveTelemetryOptIn(cwd, true);
-  assert.equal(logger.getTelemetryOptIn(cwd), true);
-
-  logger.saveTelemetryOptIn(cwd, false);
-  assert.equal(logger.getTelemetryOptIn(cwd), false);
 });

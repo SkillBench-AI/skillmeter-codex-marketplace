@@ -412,7 +412,7 @@ test("emitted harness object survives the sanitizeEventData boundary", () => {
   const h = detectHarness(root, { homeDir: home, repoRoot: root, hashSalt: SALT });
   const { value, meta } = sanitizer.sanitizeEventData({ harness: h });
 
-  assert.equal(meta.tier1, 0);
+  assert.equal(meta.secrets, 0);
   assert.equal(value.harness.has_agents_md, true);
   assert.equal(value.harness.skills_count, 1);
   assert.deepEqual(value.harness.skill_names, ["deploy"]);

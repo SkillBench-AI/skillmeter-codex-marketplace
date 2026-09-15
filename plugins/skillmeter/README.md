@@ -170,15 +170,29 @@ Oversized or malformed complete records preserve the cursor/source and save a
 content-free diagnostic. Deployment-specific gateway limits still need verification.
 
 Capture and each upload recheck signout, global disable, current user/device,
-allowed orgs and project consent. Source `session_meta`/`turn_context` cwd values
+the licensed organization and canonical consent. Source `session_meta`/`turn_context` cwd values
 must remain in the authorized repository. Queues cannot move between principals.
-A rejected/expired token retains the queue; transcript upload does not clear shared
-credentials or retry anonymously. Existing event-log handling is unchanged.
+A rejected/expired token retains the queue until recovery or seven-day expiry;
+collector rejection never retries anonymously. A 402 from license refresh or
+activation revokes the sign-in and removes unsent telemetry. Event delivery
+follows the same authenticated-only rule.
 
 `SessionStart` still recovers/seals orphaned event logs and starts the bounded
-retry monitor. Event `.sent`/poison files retain their existing cleanup policy.
-Legacy transcript pending/poison files are preserved and excluded from automatic
-upload and expiry. New transcript chunks are also retained on failure.
+retry monitor. Uploaded `.sent` files retain the 30-day cleanup policy. Unsent
+events, transcript chunks and legacy pending/poison payloads expire after seven
+days and are removed on sign-out. Legacy snapshots remain excluded from automatic
+upload. Retirement journals prevent deleted chunks from being reconstructed by
+a later baseline reset. Busy or interrupted removals are retried from a durable
+request. Damaged retirement journals block that source instead of guessing which
+bytes may be uploaded.
+
+ADR001 recovery rotates expired tokens through `/refresh`. Network errors,
+404, 5xx and malformed replies retain the token with bounded exponential backoff.
+Only 401/410 or a missing token with a prior sign-in may use silent GitHub
+activation. Recovery verifies the GitHub identity before exchange and the minted
+user, organization and audience before commit. `telemetry.js status` reports
+terminal outcomes and the next retry time. See `docs/lifecycle-implementation.md`
+in the marketplace repository for shared-client compatibility limits.
 
 For a content-free, read-only recovery inventory:
 
@@ -252,10 +266,10 @@ than configured separately):
    [Identity & authentication](#identity--authentication)), with the
    `/logs/codex` route appended. The claim is read even from an expired token so
    a drain still reaches the right tenant host while a refresh is pending.
-3. built-in default (prod): `https://api.meter.skillbench.ai/logs/codex`
+3. no valid destination: retain the queue without sending
 
 Step 1 is user-supplied, so it's validated against a trusted-domain allow-list.
-Step 2 is server-minted at sign-in and trusted as-is.
+Step 2 must be a valid HTTPS origin without credentials, path, query or fragment.
 
 There is no `backendUrl` settings key. To run against a non-default
 environment, point activation at that environment (`activate_url` /
@@ -264,20 +278,12 @@ environment, point activation at that environment (`activate_url` /
 See [Pointing at a non-default environment](#pointing-at-a-non-default-environment).
 
 
-Per-project opt-in lives in `<project>/.codex/settings.local.json`:
-
-
-```json
-{
-  "skillmeter": {
-    "telemetry": true,
-    "activate_url": "https://api.dev.skillbench.com/activate"
-  }
-}
-```
-
-Repo scope is **not** configured here — it derives from the GitHub identities of
-the signed-in user (see [Repo-scoped filtering](#repo-scoped-filtering)).
+Consent is shared with Claude in `~/.skillbench/telemetry-policy.json`, keyed by
+canonical GitHub organization/repository. Both organization and repository must
+be explicitly enabled. Legacy local `telemetry: false` remains a veto;
+`telemetry: true` alone does not authorize capture. The telemetry CLI changes the
+canonical decision and clears that legacy key only for an explicit command.
+Repository eligibility comes exclusively from the single licensed organization.
 
 ### Pointing at a non-default environment
 
@@ -298,7 +304,7 @@ together when activating against dev; once the license JWT is cached, telemetry
 routing is read straight from its `telemetry_endpoint` claim, so uploads follow
 the same environment without a separate `backendUrl`. (`SKILLMETER_BACKEND_URL`
 remains available only as a local-dev bypass that points uploads at a fake
-server without a token.)
+server with a valid synthetic development token.)
 
 
 You can toggle telemetry per-project with the bundled CLI:
@@ -321,15 +327,17 @@ node "$PLUGIN_ROOT/scripts/telemetry.js" enable --global
 While globally disabled, hooks do not record new events and durable queues are
 left on disk instead of being uploaded.
 
-Consent is collected **in-context — there is no OS pop-up**. When a project has
-no explicit opt-in, telemetry **auto-enables only if the repo is owned by one of
-your allowed GitHub orgs** (owned-org auto-enable, matching the Claude Code
-plugin); a passive `(telemetry auto-enabled — repo owned by allowed org)` notice
-prints and you can opt out any time with `telemetry.js disable`. For any other
-project the first `SessionStart` prints the enable/disable/status commands and
-leaves it "not configured" until you choose. This works identically on
-headless/SSH/CI sessions — nothing is ever gated behind a desktop dialog.
+Consent is collected in context, with no OS dialog or automatic organization
+opt-in. Repository OFF removes its queued event/transcript payloads. Global OFF
+pauses delivery and preserves already authorized payloads. A Codex byte cursor
+excludes pre-consent and observed disabled intervals, including during server
+baseline recovery. Historical snapshots are never automatically migrated.
 
+Events are stored in queues bound to repository, principal, device and consent
+identity. Without a host data directory, Codex uses `~/.skillbench/codex` rather
+than its versioned installation directory. `SKILLMETER_STATE_DIR` supports
+isolated development. See `docs/codex-parity-checkpoint.md` in the repository for
+current validation limits and the required installed-client canary.
 
 ## Identity & authentication
 
@@ -357,7 +365,7 @@ node "$PLUGIN_ROOT/scripts/signin.js"
 
 Once a license is stored, every event/transcript upload is sent with an
 `Authorization: Bearer <jwt>` header and routed to the tenant host from the
-JWT's `telemetry_endpoint` claim.
+JWT's `aud` claim.
 
 ### Sign out
 
@@ -368,7 +376,9 @@ node "$PLUGIN_ROOT/scripts/signout.js"
 (or the `signout` skill). This drops the license JWT and org list, sets a
 `signed_out` sentinel so a still-authenticated `gh` CLI doesn't silently
 re-mint a license on the next session, and enables the machine-global telemetry
-kill-switch. The `device_id` and `hash_salt` are preserved, so signing back in
+kill-switch. It also clears the prior-sign-in marker and removes unsent Codex
+payloads; busy removals remain queued for retry before capture/delivery resumes.
+The `device_id` and `hash_salt` are preserved, so signing back in
 reuses the same machine identity and clears the global switch.
 
 ### Command-line tools (`bin/`)
@@ -380,7 +390,7 @@ Code plugin):
 | Tool | Purpose |
 |------|---------|
 | `bin/signin` | Run the sign-in flow (silent `gh` / GitHub device flow) |
-| `bin/signout` | Sign out, drop the license, and pause uploads |
+| `bin/signout` | Sign out, drop the license, and remove unsent Codex telemetry |
 | `bin/sk-jwt` | Print the stored license JWT's claims (org, endpoint, expiry) in human-readable form — **never** prints the raw token |
 | `bin/sk-refresh` | Clear the stored license and re-activate immediately (swap tenants / recover from a revoked token / test the silent-gh path) |
 | `bin/sk-telemetry` | `enable` / `disable` / `status` telemetry, with `--global` for the machine-wide kill switch (forwards to `scripts/telemetry.js`) |
@@ -391,7 +401,7 @@ node "$PLUGIN_ROOT/bin/sk-refresh"        # force a fresh activation
 node "$PLUGIN_ROOT/bin/sk-telemetry" status
 ```
 
-### JWT refresh & token-clear-and-retry
+### JWT refresh and authenticated retries
 
 - **Proactive refresh.** `SessionStart` rotates a missing or near-expiry JWT via
   the activation Lambda's `/refresh` endpoint (no GitHub round-trip), falling
@@ -409,8 +419,8 @@ node "$PLUGIN_ROOT/bin/sk-telemetry" status
 - **Expiry guard.** A JWT past its `exp` is dropped before a request is sent
   rather than sent and rejected.
 - **401/403 handling.** If the backend rejects the `Authorization` header, the
-  stored license is cleared and the upload is retried once unauthenticated, so a
-  revoked/rotated token can't permanently wedge the durable queue.
+  queued payload and stored identity are retained. There is no anonymous retry.
+  Event 401/402/403 responses do not consume the poison-payload retry budget.
 
 ## Privacy
 
@@ -419,91 +429,36 @@ node "$PLUGIN_ROOT/bin/sk-telemetry" status
   `~/.skillbench/credentials.json` (mode `0600`, written atomically) and shared
   with the SkillMeter Claude Code plugin so the SkillBench analyzer sees one
   device per machine and one sign-in across agents.
-- **Paths** (`cwd`, `repo_root`, `tool_input.file_path`, `command`, `patch`)
-  are HMAC-SHA256 hashed with the per-machine salt before they leave the
-  session.
-- **Raw content is scrubbed before upload.** Every event — the submitted
-  `prompt`, `last_assistant_message`, approval `description`, tool arguments,
-  tool output, and the staged session transcript — passes through a single
-  deterministic sanitization boundary (`scripts/sanitizer.js`) before it is
-  written to the durable queue or uploaded. The boundary is fail-closed for
-  Tier 1 secrets: API keys, GitHub/Slack tokens, JWTs, AWS access keys, PEM/SSH
-  private keys, `Authorization` headers, database URLs with credentials, and
-  `*_KEY=`/`*_TOKEN=`/`PASSWORD=`/`SECRET=` style assignments are replaced with
-  `[REDACTED_SECRET]`, and emails are replaced with `[EMAIL]`. Only the count
-  and detector types of any redactions travel with the event (under
-  `_sanitization`); the original sensitive values are never stored or logged.
-  This is deterministic, not LLM-based, and runs centrally in `runHook` so a new
-  hook field cannot bypass it. It is a best-effort secret/PII filter, not a
-  guarantee of complete PII removal — see `SANITIZATION_EPIC.md` for the full
-  tiered model.
-- **Repo scope filtering** stops uploads from repos outside the GitHub orgs the
-  signed-in user belongs to (see below). The default posture is closed: with no
-  signed-in orgs, every event is dropped at the hook rather than uploaded.
+- **Sanitizer policy 3.1.0** uses Claude's pinned rules and path vocabulary.
+  Secrets and typed PII are redacted; home prefixes and directory fields are
+  hashed. File fields preserve shared technical vocabulary, hierarchy and
+  extensions while hashing private segments. Commands, patches and custom tool
+  input remain opaque in Codex. Tool names and call IDs remain available.
+- **Per-record metadata** reports `policyVersion`, `secrets`, `pii`, `counts`
+  (including paths) and detector `ids`. Raw records cannot supply a trusted
+  sanitization marker. Known JSON-encoded function arguments receive structured
+  sanitization; unsupported arguments are hashed with an explicit format marker.
+- **Repository eligibility** requires the licensed organization and canonical
+  organization/repository consent. A membership list never widens that scope.
+
 - **Trust review.** Codex skips plugin-bundled hooks until you review and
   trust the current hook definition via `/hooks`. Changing this plugin's hooks
   invalidates the trust and requires re-review.
 
 ### Repo-scoped filtering
 
-Telemetry is gated to repositories owned by GitHub identities the signed-in user
-controls — their own login plus every org returned by `GET /user/orgs`. The list
-is captured at signin (using the same OAuth token that exchanges for the
-SkillMeter license) and stored in `~/.skillbench/credentials.json` next to the
-device ID and license JWT.
+Telemetry requires a Git repository with an unambiguous canonical GitHub remote
+in the single licensed organization. Missing/malformed identity, unsupported remotes,
+personal repositories outside that organization, or missing explicit consent
+block capture. Use `telemetry.js status` from the checkout to see the actual gate.
+Token expiry alone permits local capture; delivery requires a fresh token.
 
-Events are dropped — even in projects where you ran `telemetry.js enable` — for:
+#### License scope
 
-- a machine that is not signed in (no allowed orgs cached → `not_activated`)
-- directories that are not inside a Git repository
-- repositories without a recognizable GitHub remote
-- repositories whose remote belongs to an org the user is not a member of
-
-To refresh the allowed identity list (e.g. after joining a new org), run the
-`signin` skill again.
-
-#### Narrowing scope to specific orgs
-
-By default every signed-in org is in scope. If your account belongs to several
-orgs but you only want to capture telemetry for some of them (for example, only
-`skillbench-ai`), narrow it. Narrowing is intersected with your signed-in orgs,
-so it can only restrict the captured set — never widen it (a repo in an org you
-are not a member of stays blocked).
-
-**At sign-in (recommended)** — scope which orgs are even persisted. Useful when
-the silent `gh` path would otherwise enroll every org your account belongs to:
-
-```bash
-node "$PLUGIN_ROOT/scripts/signin.js" --org skillbench-ai
-```
-
-`--org` is repeatable and accepts comma-separated values. If you are already
-signed in, re-running with `--org` re-scopes the stored org list in place
-(no full re-auth needed). Re-expanding later requires sign-out + sign-in.
-
-**At runtime** — narrow the repo-scope gate without touching the stored org
-list. Resolution order (env var wins, mirroring the backend-URL resolver):
-
-1. `SKILLMETER_REPO_SCOPE_ORGS` — comma- or space-separated env var, applied to
-   every project on the machine. Useful for a single-org workstation:
-
-   ```bash
-   export SKILLMETER_REPO_SCOPE_ORGS="skillbench-ai"
-   ```
-
-2. `skillmeter.repoScopeOrgs` in `<project>/.codex/settings.local.json` — an
-   array (or comma-separated string), scoped to that project:
-
-   ```json
-   { "skillmeter": { "repoScopeOrgs": ["skillbench-ai"] } }
-   ```
-
-Org names are matched case-insensitively. Leaving everything unset preserves the
-default "all signed-in orgs" behavior. The same `SKILLMETER_REPO_SCOPE_ORGS` /
-`skillmeter.repoScopeOrgs` values are also honored at sign-in (precedence:
-`--org` > env > setting), so a configured scope narrows the persisted org list
-even on the silent `gh` path.
-
+Capture uses only the single organization in the license JWT. Legacy membership
+lists and scope-filter settings never widen it. Legacy sign-in options remain
+for compatibility while the separate auth/lifecycle changes are reconciled;
+they do not override the licensed organization or explicit telemetry consent.
 
 ## Bundled skills
 

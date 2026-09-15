@@ -32,7 +32,7 @@ const sanitizer = require("../scripts/sanitizer");
 // Fake, non-functional secrets used purely as detector fixtures. None are real.
 const FAKE = {
   githubClassic: "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
-  githubPat: "github_pat_11ABCDE0000aBcDeFgHiJ_KLMNOPqrstuvWXYZ0123456789abcdef",
+  githubPat: "github_pat_" + require("./fixtures/claude-3.1/secret-corpus.json").hi.slice(0, 82),
   openai: "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd",
   anthropic: "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
   google: "AIza" + "Sy0123456789abcdefghijklmnopqrstuvw", // AIza + 35 chars
@@ -60,7 +60,7 @@ test("redactString catches every seeded Tier 1 token type", () => {
     assert.ok(value.includes(R), `${label}: expected redaction placeholder`);
     assert.ok(redactions.length >= 1, `${label}: expected a redaction event`);
     assert.ok(
-      redactions.every((r) => r.tier === "tier1"),
+      redactions.every((r) => r.category === "secret"),
       `${label}: token should be tier1`
     );
   }
@@ -72,7 +72,7 @@ test("redactString redacts multi-line PEM private key blocks whole", () => {
   );
   assert.equal(value.includes("BEGIN RSA PRIVATE KEY"), false);
   assert.ok(value.includes(R));
-  assert.ok(redactions.some((r) => r.type === "private_key"));
+  assert.ok(redactions.some((r) => r.id === "private-key"));
 });
 
 test("redactString keeps the variable name but redacts .env style values", () => {
@@ -129,7 +129,7 @@ test("redactString redacts emails as Tier 2", () => {
   );
   assert.equal(value.includes("alice.smith@acme-corp.com"), false);
   assert.ok(value.includes(E));
-  assert.ok(redactions.some((r) => r.type === "email" && r.tier === "tier2"));
+  assert.ok(redactions.some((r) => r.kind === "email" && r.category === "pii"));
 });
 
 // --- recursive walking -----------------------------------------------------
@@ -168,9 +168,9 @@ test("sanitizeEventData returns counts/types only, never original secrets", () =
   assert.equal(value.last_assistant_message.includes("bob@x.io"), false);
 
   assert.equal(meta.policyVersion, sanitizer.POLICY_VERSION);
-  assert.equal(meta.tier1, 1);
-  assert.equal(meta.tier2, 1);
-  assert.deepEqual(meta.types.includes("aws_access_key"), true);
+  assert.equal(meta.secrets, 1);
+  assert.equal(meta.pii, 1);
+  assert.deepEqual(meta.ids.includes("aws-access-token"), true);
 
   // The metadata blob must not embed any original sensitive value.
   const metaStr = JSON.stringify(meta);
@@ -195,7 +195,6 @@ test("sanitizeTranscript hashes cwd and redacts secrets in every line", () => {
       type: "function_call_output",
       output: `connected to postgres://u:p4ss@db/app, contact dev@example.com`,
     }),
-    "this is not json and should be dropped",
   ].join("\n");
   fs.writeFileSync(txPath, lines + "\n");
 
@@ -208,10 +207,12 @@ test("sanitizeTranscript hashes cwd and redacts secrets in every line", () => {
   assert.equal(text.includes("dev@example.com"), false, "email redacted");
   assert.ok(text.includes(R));
 
-  // Every emitted line is still valid JSON (malformed line dropped, others kept).
+  // Every emitted line is still valid JSON. Malformed records fail explicitly.
   const out = text.split("\n").filter(Boolean);
   assert.equal(out.length, 3);
   for (const l of out) JSON.parse(l);
+  fs.appendFileSync(txPath, "not json\n");
+  assert.throws(() => sanitizer.sanitizeTranscript(txPath, "deadbeefsalt"), SyntaxError);
 });
 
 // --- end-to-end: hooks route raw content through the boundary --------------
@@ -230,9 +231,14 @@ function runHookEndToEnd(script, input) {
       device_id: "TEST-DEVICE",
       hash_salt: "deadbeefsalt",
       allowed_github_orgs: ["acme"],
+      license_jwt: "e30." + Buffer.from(JSON.stringify({exp:4102444800, github_id:123, org:{login:"acme"}, aud:"https://acme.meter.skillbench.com"})).toString("base64url") + ".fixture",
     }) + "\n"
   );
 
+  fs.writeFileSync(path.join(home, ".skillbench/telemetry-policy.json"), JSON.stringify({
+    schema_version: 1, revision: 1, global: {enabled:true}, organizations: {acme:{enabled:true}},
+    repositories: {"github.com/acme/widgets":{enabled:true}},
+  }));
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "sk-sani-repo-"));
   fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
   fs.writeFileSync(
@@ -261,8 +267,8 @@ function runHookEndToEnd(script, input) {
   const logDir = path.join(pluginData, "logs");
   const records = [];
   if (fs.existsSync(logDir)) {
-    for (const f of fs.readdirSync(logDir)) {
-      if (!/^events\.jsonl(\.\d+)?$/.test(f)) continue;
+    for (const f of fs.readdirSync(logDir, { recursive: true })) {
+      if (!/^events\.jsonl(\.\d+)?$/.test(path.basename(f))) continue;
       const raw = fs.readFileSync(path.join(logDir, f), "utf8");
       for (const line of raw.split("\n")) {
         if (line.trim()) {
@@ -283,7 +289,7 @@ test("UserPromptSubmit hook redacts a secret in the raw prompt before logging", 
   const blob = JSON.stringify(rec);
   assert.equal(blob.includes(FAKE.githubClassic), false, "raw token reached the queue");
   assert.ok(rec.data.prompt.includes(R));
-  assert.ok(rec.data._sanitization && rec.data._sanitization.tier1 >= 1);
+  assert.ok(rec.data._sanitization && rec.data._sanitization.secrets >= 1);
 });
 
 test("PostToolUse hook redacts secrets in tool_response before logging", () => {

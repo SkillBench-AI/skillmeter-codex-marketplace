@@ -9,20 +9,22 @@
  * for the next SessionStart pass and the retry monitor to pick up.
  */
 
-const { drainQueuesOnce, clearDrainOnceLock } = require("./logger.js");
+const { drainQueuesOnce, clearDrainOnceLock, tryRefreshLicense, getDeviceId, getTelemetryGloballyDisabled } = require("./logger.js");
 
 async function main() {
   try {
+    if (!getTelemetryGloballyDisabled()) await tryRefreshLicense(getDeviceId(), {source:"drain"});
     await drainQueuesOnce();
   } finally {
     clearDrainOnceLock();
   }
 }
 
-main().catch((err) => {
+if (require.main === module) main().catch((err) => {
   process.stderr.write(
     `[skillmeter-drain-once] ${err && err.message ? err.message : err}\n`
   );
   clearDrainOnceLock();
   process.exit(1);
 });
+module.exports = {main};
