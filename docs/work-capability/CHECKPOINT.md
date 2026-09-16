@@ -1,3 +1,13 @@
+# Work branches backed up remotely, September 16, 2026
+
+User requested remote backup. Successfully pushed origin/codex/work-capability-20260915 (initial backup2655398; subsequent documentation commit records publication) and origin/codex/work-normalization-20260915 at3abe812f98e625ff17e5719c816edfa31275ddcf. Upstream tracking is set. Review packet and unsent draft now include branch links. Plugin implementation remains274899d. No force push, tag, PR creation/update, merge, release, deployment or message to engineering.
+
+Verified remote mains remain plugin13b4648761aae7e9ebb20477276c13a416460173 and pipelinef3d6710aa1ce4ca26fcb40c621ebf8bf618f34e1. Neither Work branch existed remotely before this operation. Defined CI/deploy/release workflows do not run on these feature-branch pushes: CI uses PR/main; pipeline deployments use main/manual; plugin release uses version tags. A targeted credential-pattern scan of132new plugin-history blobs and21pipeline-history blobs found no flags. This scan is not a general security audit. Only committed source/tests/docs/content-free canary evidence were pushed; protected credentials and runtime transcripts/queues are outside Git.
+
+Branch links: https://github.com/SkillBench-AI/skillmeter-codex-marketplace/tree/codex/work-capability-20260915 and https://github.com/SkillBench-AI/skillbench-pipelines/tree/codex/work-normalization-20260915. These are stacked review/backup branches, not independently merge-ready main changes. Existing repair PRs were not changed. Machine restart remains deferred; temporary canary is removed and grant disabled. Next is engineering review/contract agreement as described in ENGINEERING-REVIEW.md. No further canary setup or delivery is enabled by publishing branches.
+
+Earlier checkpoints follow.
+
 # Machine restart deferred; review packet ready, September 16, 2026
 
 User deferred a full Mac restart as disruptive and asked to progress. This is not a failed test or a waiver of release validation. App-only restart passed; replacement continuity is deterministic-test evidence, not yet live replacement proof. Cleanup completed: disabled the current grant, purged52payloads, cleared/expired the native control and uninstalled only skillmeter-work-canary@personal. Installed cache gone, no pending purge/production queue, normal SkillMeter and shared credentials/policy unchanged, global telemetry ON. Evidence: native-canary/restart-deferred-cleanup.json.
