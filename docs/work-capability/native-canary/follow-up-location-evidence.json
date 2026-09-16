@@ -1,0 +1,16 @@
+{
+  "date": "2026-09-16",
+  "stage": "follow-up-check",
+  "status": "blocked-follow-up-in-other-task",
+  "selectedTaskTitle": "Run native work canary",
+  "observedFollowUpTaskTitle": "Calculate CSV total minutes",
+  "selectedSourceUserPrompts": 1,
+  "nativeCallbacks": 38,
+  "nativeEventsUnchanged": true,
+  "otherTaskExpectedTotalsConfirmed": true,
+  "nativeSecondTurnVerified": false,
+  "selectionChanged": false,
+  "cleanup": "pending correct-task follow-up",
+  "delivery": "disabled",
+  "requiredAction": "Repeat follow-up in Run native work canary before September 17 08:09 KST; then verify combined capture and disable/purge/uninstall the temporary plugin."
+}

@@ -1,3 +1,11 @@
+# Native follow-up location correction, September 16, 2026
+
+User reported Native canary done, but the latest follow-up ran in the earlier task Calculate CSV total minutes. Its answer has the expected30/60. The selected native task Run native work canary still has only the first captured user prompt and38 native callbacks. The second native turn remains unverified. This is a task-location mismatch, not evidence of capture failure or successful two-turn native capture. Only the exact named synthetic tasks were inspected; no transcript bodies were copied into evidence.
+
+Next: user repeats the follow-up in Run native work canary, reading the memo in reports/chatgpt-work-native-canary-20260916/workspace. Preserve the current exact-task binding and first-turn queue until verification. Do not rebind or retroactively collect the earlier task. Control expires September17 08:09KST. After correct-task completion, inspect native callbacks before reconciliation, normalize combined selected chunks, verify30/60 and both prompts/tool links, then disable/purge and uninstall only skillmeter-work-canary@personal. Normal SkillMeter/global telemetry/shared credentials remain unchanged. Cleanup is pending, delivery remains disabled. See native-canary/follow-up-location-evidence.json.
+
+Earlier checkpoints follow.
+
 # Native first prompt passed, September 16, 2026
 
 Task Run native work canary produced memo60. All38 native callbacks passed (1 UserPromptSubmit,18 PreToolUse,18 PostToolUse,1 Stop), with matching native plugin environment and no blocked network attempt. Before manual reconciliation:35 contiguous chunks and464 late bytes; reconciliation added1chunk, zero pending bytes. Normalization produced20messages/1user prompt and15unique outer tool pairs exactly matching selected source IDs, preserved Work identity, no actionable or incomplete-tool diagnostics. Setup prompt excluded. Evidence: native-canary/first-prompt-evidence.json. This proves guarded native-plugin capture, not unmodified production packaging or a dashboard report.
