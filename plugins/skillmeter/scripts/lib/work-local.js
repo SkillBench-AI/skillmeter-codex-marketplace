@@ -85,14 +85,24 @@ function createWorkCapture({root,identity,now = Date.now}) {
       }
       try {
         const meta=sourceMetadata(policy.source);
-        if (meta.id!==policy.scope.sessionId || meta.cwd!==policy.scope.cwd || meta.fileId!==policy.fileId ||
+        if (canonicalPath(policy.source)!==policy.source || meta.id!==policy.scope.sessionId || meta.cwd!==policy.scope.cwd ||
             meta.originator!=="codex_work_desktop" || meta.source!=="vscode" || meta.parent_thread_id) {
           revoke(policy); return {status:"revoked",delivery:"disabled"};
         }
         const dir=path.join(chunks,policy.queueId);
         if (!retireDirectory(dir,false,now())) return {status:"busy",delivery:"disabled"};
-        const consent=queue.observeConsent(chunks,policy.source,policy.scope,current.salt,true,policy.scope.consentStamp);
-        if (!consent) return {status:"busy",delivery:"disabled"};
+        // This grant is continuous until revoked. Only enable() may establish
+        // its exclusions; observing consent again could rebase a truncated file.
+        const consent=JSON.parse(fs.readFileSync(path.join(dir,"consent.json"),"utf8"));
+        const cursor=queue.recover(dir);
+        if (!consent.enabled || consent.owner!==current.owner || consent.authorization!==policy.scope.consentStamp ||
+            consent.stamp!==policy.scope.consentStamp ||
+            (meta.fileId!==policy.fileId && (!cursor || cursor.consentEpoch!==consent.epoch || cursor.scope.consentStamp!==policy.scope.consentStamp)) ||
+            (cursor?.scope.consentStamp===policy.scope.consentStamp && cursor.consentEpoch!==consent.epoch)) {
+          revoke(policy); return {status:"revoked",delivery:"disabled"};
+        }
+        // A restored file can keep this grant only if stage() verifies the
+        // committed prefix. Its existing reset baseline supersedes old chunks.
         const result=queue.stage(chunks,policy.source,policy.scope,current.salt,{
           consent,preserveSessionMetadata:true,
           authorizeCommit:()=>read()?.scope.consentStamp===policy.scope.consentStamp && active(read(),identity()),

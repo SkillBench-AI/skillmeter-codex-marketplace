@@ -85,12 +85,12 @@ test("account switch, unavailable authentication and expiry revoke the selected 
     assert.equal(f.adapter.status().enabled,false);
   }
 });
-test("source replacement or metadata change requires fresh consent",t=>{
+test("truncated replacement or metadata change requires fresh consent",t=>{
   for(const replacement of [false,true]) {
     const f=setup(t); f.adapter.enable(f.source,"selected-task"); f.append(message("approved")); f.adapter.capture(f.input);
     if(replacement) { fs.renameSync(f.source,f.source+".old"); fs.writeFileSync(f.source,line(f.header)); }
     else fs.writeFileSync(f.source,line({...f.header,payload:{...f.header.payload,id:"other"}}));
-    assert.equal(f.adapter.capture(f.input).status,"revoked"); assert.equal(f.records().length,0);
+    assert.equal(f.adapter.capture(f.input).status,replacement?"consent-source-rewritten":"revoked"); assert.equal(f.records().length,0);
   }
 });
 test("malformed complete records are explicit errors without publishing content",t=>{
@@ -120,4 +120,125 @@ test("invalid local selection never becomes a payload deletion path",t=>{
   fs.writeFileSync(policy,JSON.stringify({...selected,queueId:"../../outside"}));
   assert.throws(()=>f.adapter.disable(),/invalid-work-selection/);
   assert.ok(fs.existsSync(f.source));
+});
+
+function replaceSource(source, bytes = fs.readFileSync(source)) {
+  const temporary = source + ".replacement";
+  fs.writeFileSync(temporary,bytes);
+  fs.renameSync(temporary,source);
+}
+
+test("Work resume accepts an exact-prefix replacement without losing or duplicating records",t=>{
+  const f=setup(t); f.adapter.enable(f.source,"selected-task");
+  f.append(message("first turn"));
+  f.append({type:"response_item",payload:{type:"custom_tool_call",call_id:"resume-tool",name:"exec",input:"EXCLUDED-COMMAND"}});
+  f.adapter.capture(f.input);
+  const selection=fs.readFileSync(path.join(f.state,"selected.json"));
+  const dir=queue.queueDirectories(path.join(f.state,"chunks"))[0];
+  const initial=JSON.parse(fs.readFileSync(path.join(dir,"cursor.json")));
+  replaceSource(f.source);
+  f.append({type:"response_item",payload:{type:"custom_tool_call_output",call_id:"resume-tool",output:"resumed result"}});
+  f.append(message("second turn"));
+  assert.equal(f.open().capture({...f.input,hook_event_name:"SessionStart"}).status,"staged");
+  assert.equal(f.open().reconcile().status,"unchanged");
+  assert.equal(f.open().status().enabled,true);
+  assert.ok(fs.readFileSync(path.join(f.state,"selected.json")).equals(selection),"resume must not renew consent");
+  const resumed=JSON.parse(fs.readFileSync(path.join(dir,"cursor.json")));
+  assert.ok(resumed.baseline>initial.baseline,"replacement uses the existing queue snapshot reset");
+  assert.equal(resumed.consentEpoch,initial.consentEpoch);
+  assert.equal(resumed.offset,fs.statSync(f.source).size);
+  assert.deepEqual(f.records().filter(r=>r.payload?.type==="message").map(r=>r.payload.content),["first turn","second turn"]);
+  assert.equal(f.records().filter(r=>r.payload?.call_id==="resume-tool").length,2);
+  assert.ok(!JSON.stringify(f.records()).includes("EXCLUDED-"));
+  // A second replacement, then ordinary appends, must use one effective snapshot.
+  replaceSource(f.source); f.append(message("third turn"));
+  assert.equal(f.open().capture(f.input).status,"staged");
+  f.append(message("fourth turn")); assert.equal(f.open().capture(f.input).status,"staged");
+  assert.deepEqual(f.records().filter(r=>r.payload?.type==="message").map(r=>r.payload.content),["first turn","second turn","third turn","fourth turn"]);
+});
+
+test("Work resume preserves an incomplete trailing tool result until it is complete",t=>{
+  const f=setup(t); f.adapter.enable(f.source,"selected-task"); f.append(message("first"));
+  const record=line({type:"response_item",payload:{type:"custom_tool_call_output",call_id:"partial",output:"result"}});
+  fs.appendFileSync(f.source,record.slice(0,-4));
+  assert.equal(f.adapter.capture(f.input).partial,true);
+  replaceSource(f.source);
+  assert.equal(f.open().capture(f.input).partial,true);
+  fs.appendFileSync(f.source,record.slice(-4));
+  assert.equal(f.open().reconcile().status,"staged");
+  assert.equal(f.open().reconcile().status,"unchanged");
+  assert.equal(f.records().filter(r=>r.payload?.call_id==="partial").length,1);
+  assert.equal(f.records().filter(r=>r.payload?.content==="first").length,1);
+});
+
+test("changed or truncated committed history revokes Work consent for either file identity",t=>{
+  for(const replace of [false,true]) for(const edit of ["change","truncate"]) {
+    const f=setup(t); f.adapter.enable(f.source,"selected-task"); f.append(message("approved")); f.adapter.capture(f.input);
+    const bytes=edit==="change"?fs.readFileSync(f.source,"utf8").replace("approved","tampered"):line(f.header);
+    if(replace) replaceSource(f.source,bytes); else fs.writeFileSync(f.source,bytes);
+    assert.equal(f.open().capture(f.input).status,"consent-source-rewritten");
+    assert.equal(f.open().status().enabled,false);
+    assert.equal(f.records().length,0);
+    assert.equal(f.open().reconcile().status,"not-enabled");
+  }
+});
+
+test("replacement before any committed cursor still requires fresh Work consent",t=>{
+  for(const previousGrant of [false,true]) {
+    const f=setup(t);
+    if(previousGrant) {
+      f.adapter.enable(f.source,"selected-task"); f.append(message("old grant")); f.adapter.capture(f.input); f.adapter.disable();
+    }
+    f.adapter.enable(f.source,"selected-task"); replaceSource(f.source); f.append(message("unproven"));
+    assert.equal(f.open().capture(f.input).status,"revoked");
+    assert.equal(f.records().length,0);
+  }
+});
+
+test("Work resume never restores disabled consent or captures the paused interval",t=>{
+  const f=setup(t); f.adapter.enable(f.source,"selected-task"); f.append(message("EXCLUDED-REVOKED")); f.adapter.capture(f.input);
+  f.adapter.disable(); replaceSource(f.source); f.append(message("EXCLUDED-PAUSED"));
+  assert.equal(f.open().capture(f.input).status,"not-enabled");
+  f.adapter.enable(f.source,"selected-task"); f.append(message("new grant")); f.adapter.capture(f.input);
+  replaceSource(f.source); f.append(message("resumed new grant"));
+  assert.equal(f.open().capture(f.input).status,"staged");
+  assert.deepEqual(f.records().filter(r=>r.payload?.type==="message").map(r=>r.payload.content),["new grant","resumed new grant"]);
+});
+
+test("Work replacement does not reconstruct retired payloads",t=>{
+  const f=setup(t); f.adapter.enable(f.source,"selected-task"); f.append(message("EXCLUDED-RETIRED")); f.adapter.capture(f.input);
+  const dir=queue.queueDirectories(path.join(f.state,"chunks"))[0];
+  assert.equal(require("../scripts/lib/queue-retention").retireDirectory(dir,true),true);
+  replaceSource(f.source); f.append(message("after retirement"));
+  assert.equal(f.open().capture(f.input).status,"staged");
+  assert.deepEqual(f.records().filter(r=>r.payload?.type==="message").map(r=>r.payload.content),["after retirement"]);
+});
+
+test("Work replacement still rejects changed metadata and account or device identity",t=>{
+  for(const change of ["id","cwd","originator","source","parent_thread_id","owner","deviceId","policyStamp"]) {
+    const f=setup(t); f.adapter.enable(f.source,"selected-task"); f.append(message("approved")); f.adapter.capture(f.input);
+    let bytes=fs.readFileSync(f.source,"utf8");
+    if(["owner","deviceId","policyStamp"].includes(change)) f.setIdentity({owner:"synthetic-owner",deviceId:"SYNTHETIC",salt:"synthetic-salt",[change]:"changed"});
+    else bytes=bytes.replace(line(f.header),line({...f.header,payload:{...f.header.payload,[change]:"changed"}}));
+    replaceSource(f.source,bytes);
+    assert.equal(f.open().capture(f.input).status,"revoked",change);
+    assert.equal(f.records().length,0);
+  }
+});
+
+test("Work resume cannot adopt a different consent journal or follow a symlink",t=>{
+  for(const change of ["epoch","authorization","stamp","owner","enabled","symlink"]) {
+    const f=setup(t); f.adapter.enable(f.source,"selected-task"); f.append(message("approved")); f.adapter.capture(f.input);
+    const dir=queue.queueDirectories(path.join(f.state,"chunks"))[0];
+    if(change==="symlink") {
+      fs.renameSync(f.source,f.source+".moved"); fs.symlinkSync(f.source+".moved",f.source);
+    } else {
+      replaceSource(f.source);
+      const file=path.join(dir,"consent.json"),consent=JSON.parse(fs.readFileSync(file));
+      fs.writeFileSync(file,JSON.stringify({...consent,[change]:change==="enabled"?false:"changed"}));
+    }
+    assert.equal(f.open().reconcile().status,"revoked",change);
+    assert.equal(f.open().status().enabled,false);
+    assert.equal(f.records().length,0);
+  }
 });

@@ -133,3 +133,29 @@ test("shared seven-day retention retires Work bodies without replaying retired t
   const raw=dirs.flatMap(queue.pendingFiles).map(f=>zlib.gunzipSync(fs.readFileSync(f)).toString()).join("");
   assert.ok(!raw.includes("synthetic approved"));
 });
+
+test("fresh native handler processes resume a replaced Work transcript with unchanged credentials",()=>{
+  // Model an existing sign-in; SessionStart's legacy marker migration is
+  // unrelated to transcript replacement and is not exercised by this fixture.
+  require("../scripts/credstore").ensureSigninMarker();
+  const capture=workCapture(); capture.enable(source,"task"); append(); capture.reconcile();
+  const credentialsBefore=fs.readFileSync(creds);
+  const policyFile=require("../scripts/lib/config").TELEMETRY_POLICY_FILE;
+  const policyBefore=fs.readFileSync(policyFile);
+  fs.copyFileSync(source,source+".replacement"); fs.renameSync(source+".replacement",source);
+  const guard=path.resolve(__dirname,"../../../docs/work-capability/canary/network-guard.cjs");
+  const run=script=>spawnSync(process.execPath,["--require",guard,path.resolve(__dirname,"../scripts/"+script)],{input:JSON.stringify(input()),env:process.env,encoding:"utf8"});
+  const start=run("session_start.js");
+  assert.equal(start.status,0); assert.match(start.stderr,/Work local: staged/);
+  fs.appendFileSync(source,line({type:"response_item",payload:{type:"message",role:"user",content:"after restart"}}));
+  const stop=run("stop.js");
+  assert.equal(stop.status,0); assert.deepEqual(JSON.parse(stop.stdout),{}); assert.match(stop.stderr,/Work local: staged/);
+  assert.ok(![start,stop].some(result=>result.stderr.includes("WORK-CANARY-NETWORK-BLOCKED")));
+  const pending=queue.queueDirectories(path.join(process.env.PLUGIN_DATA,"logs/work-local-v1/chunks")).flatMap(queue.pendingFiles);
+  const body=pending.map(file=>require("node:zlib").gunzipSync(fs.readFileSync(file)).toString()).join("");
+  assert.equal(body.split("synthetic approved").length-1,1);
+  assert.equal(body.split("after restart").length-1,1);
+  assert.equal(workCapture().status().enabled,true);
+  assert.ok(fs.readFileSync(creds).equals(credentialsBefore)); assert.ok(fs.readFileSync(policyFile).equals(policyBefore));
+  assert.deepEqual(logger.listPendingTranscripts(),[]);
+});
