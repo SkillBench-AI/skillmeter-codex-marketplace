@@ -1,0 +1,90 @@
+{
+  "date": "2026-09-16",
+  "status": "partial-native-resume-revoked",
+  "pluginSource": "973d1f4",
+  "pipelineSource": "3abe812f",
+  "installedVersion": "0.1.0+codex.20260915232102",
+  "taskTitle": "Run native work canary",
+  "sourceUserPrompts": 2,
+  "sourceToolCalls": 16,
+  "sourceToolResults": 16,
+  "expectedFinalTotalsConfirmed": true,
+  "memoUnchanged": true,
+  "nativeCallbacks": 43,
+  "events": {
+    "UserPromptSubmit": 2,
+    "PreToolUse": 19,
+    "PostToolUse": 19,
+    "Stop": 2,
+    "SessionStart": 1
+  },
+  "nativeDispatchFlagsPassed": true,
+  "followUpStatuses": [
+    {
+      "event": "SessionStart",
+      "status": "revoked"
+    },
+    {
+      "event": "UserPromptSubmit",
+      "status": "not-enabled"
+    },
+    {
+      "event": "PreToolUse",
+      "status": "not-enabled"
+    },
+    {
+      "event": "PostToolUse",
+      "status": "not-enabled"
+    },
+    {
+      "event": "Stop",
+      "status": "not-enabled"
+    }
+  ],
+  "sourceFileIdentityChanged": true,
+  "committedPrefixMatches": true,
+  "previousCommittedBytes": 976360,
+  "uncollectedFollowUpBytes": 63523,
+  "taskIdentityMatches": true,
+  "ownerMatches": true,
+  "deviceMatches": true,
+  "policyMatches": true,
+  "grantExpired": false,
+  "beforeCleanup": {
+    "enabled": false,
+    "delivery": "disabled",
+    "tokenExpired": false,
+    "expiresAt": 1789601163738,
+    "purgePending": false
+  },
+  "payloadsBeforeCleanup": 0,
+  "combinedNormalization": "not possible: first-turn queue purged by resume revocation; follow-up was not staged",
+  "delivery": "disabled",
+  "limits": [
+    "First-turn native result remains valid historical evidence",
+    "Second-turn native dispatch worked but capture was not enabled",
+    "No production upload, analyzer or dashboard verification"
+  ],
+  "cleanupDisable": {
+    "status": "disabled",
+    "delivery": "disabled"
+  },
+  "afterCleanup": {
+    "enabled": false,
+    "delivery": "disabled",
+    "tokenExpired": false,
+    "expiresAt": 1789601163738,
+    "purgePending": false
+  },
+  "payloadsAfterCleanup": 0,
+  "productionPending": 0,
+  "uninstallExitCode": 0,
+  "installedCacheRemoved": true,
+  "controlUnselected": true,
+  "credentialsUnchanged": true,
+  "policyUnchanged": true,
+  "normalPluginUnchanged": true,
+  "globalTelemetryEnabled": true,
+  "userHookBridgeAbsent": true,
+  "cleanupPassed": true
+}

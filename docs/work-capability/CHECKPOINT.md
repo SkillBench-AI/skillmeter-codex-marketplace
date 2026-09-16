@@ -1,3 +1,11 @@
+# Native canary finished with resume gap, September 16, 2026
+
+Supersedes the pending-follow-up state below. The correct-task follow-up completed with30/60 and unchanged memo. All43 native callbacks dispatched, but resumed SessionStart revoked the capture because the transcript inode changed; the exact committed prefix, task identity, account/device and policy still match. The queue was purged before the follow-up. First-turn capture remains verified; combined two-turn capture is NOT verified. A synthetic exact-prefix replacement reproduces the revocation. See native-canary/RESULT.md, final-evidence.json and resume-reproduction.json.
+
+Cleanup is complete: isolated capture disabled, payloads absent, native control cleared/expired, temporary plugin uninstalled/cache removed. Normal SkillMeter, credentials and policy unchanged; global telemetry ON. No further user canary action is pending. First next action: add a regression and repair Work resume for proven prefix-preserving file replacement while retaining corruption/consent protections, then run deterministic checks before preparing a fresh native canary. Do not restore revoked consent or recover purged bodies. Plugin source remains973d1f4; pipeline remains3abe812f. No production send, push, PR update or external message.
+
+Earlier checkpoints follow.
+
 # Native follow-up location correction, September 16, 2026
 
 User reported Native canary done, but the latest follow-up ran in the earlier task Calculate CSV total minutes. Its answer has the expected30/60. The selected native task Run native work canary still has only the first captured user prompt and38 native callbacks. The second native turn remains unverified. This is a task-location mismatch, not evidence of capture failure or successful two-turn native capture. Only the exact named synthetic tasks were inspected; no transcript bodies were copied into evidence.

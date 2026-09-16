@@ -1,0 +1,11 @@
+{
+  "synthetic": true,
+  "first": "staged",
+  "exactPrefixPreserved": true,
+  "inodeChanged": true,
+  "followUp": "revoked",
+  "enabledAfterResume": false,
+  "pendingChunks": 0,
+  "expected": "continue capture with prior consent and prefix integrity checks",
+  "gapReproduced": true
+}
