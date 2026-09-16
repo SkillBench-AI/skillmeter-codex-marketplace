@@ -1,0 +1,66 @@
+{
+  "date": "2026-09-16",
+  "stage": "repaired-first-prompt",
+  "candidateSource": "274899d",
+  "pipelineSource": "3abe812f",
+  "installedVersion": "0.1.0+codex.20260916045017",
+  "nativeCallbacks": 46,
+  "events": {
+    "UserPromptSubmit": 1,
+    "PreToolUse": 22,
+    "PostToolUse": 22,
+    "Stop": 1
+  },
+  "nativeStatuses": {
+    "staged": 40,
+    "unchanged": 6
+  },
+  "nativeFlagsPassed": true,
+  "chunksBeforeReconcile": 40,
+  "pendingBytesBeforeReconcile": 471,
+  "baselineBeforeReconcile": 1,
+  "sourceFileIdentityHash": "137d1c74ea345a3d7b673810805b06ccb216c73a480c6f9c4e4965560eef741b",
+  "hookMaxLatencyMs": 146,
+  "delivery": "disabled",
+  "reconcile": {
+    "status": "staged",
+    "delivery": "disabled",
+    "chunks": 1,
+    "partial": false,
+    "pendingBytes": 0
+  },
+  "chunksAfterReconcile": 41,
+  "pendingBytesAfterReconcile": 0,
+  "latestBaseline": 1,
+  "lastSequence": 41,
+  "status": {
+    "enabled": true,
+    "delivery": "disabled",
+    "tokenExpired": false,
+    "expiresAt": 1789620955975,
+    "purgePending": false
+  },
+  "credentialsUnchanged": true,
+  "policyUnchanged": true,
+  "productionPending": 0,
+  "result": "passed-first-turn",
+  "normalizedMessages": 20,
+  "normalizedUserMessages": 1,
+  "matchedOuterToolPairs": 16,
+  "outerIdsExactlyMatchSource": true,
+  "noDuplicateToolIds": true,
+  "sourceIdentityPreserved": true,
+  "setupPromptExcluded": true,
+  "diagnostic": {
+    "source_key": "restart-native-canary.jsonl",
+    "format": "codex",
+    "status": "session",
+    "malformed_lines": 0,
+    "unsupported_records": 0,
+    "incomplete_tools": 0
+  },
+  "memoTotal": 60,
+  "memoSha256": "925b263bed594cfaaec6de2cb3e2cd2368cee69c19eced12e51819a5865ab36b",
+  "restartValidation": "pending",
+  "cleanup": "pending restart tests"
+}

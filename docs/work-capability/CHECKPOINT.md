@@ -1,3 +1,13 @@
+# Repaired canary first turn passed, September 16, 2026
+
+Selected fresh task01a0a88f-ea78-7d63-8d29-e6964393ce9d produced memo60. All46 native callbacks passed (1UserPromptSubmit,22PreToolUse,22PostToolUse,1Stop), with40 staged and6 unchanged outcomes and matching native environment. Before manual reconciliation:40 pending chunks and471 late bytes. Reconciliation added1chunk;41 chunks, zero pending bytes, current grant enabled. Pipeline normalization yielded20messages/1user and16unique outer tool call/result pairs exactly matching selected raw source IDs; no malformed/unsupported/incomplete-tool diagnostics, Work identity retained, setup excluded. Credentials/policy unchanged during verification; no production queue/send. See native-canary/resume-first-prompt-evidence.json for memo/file-identity hashes and counts.
+
+NEXT USER STEP: quit the desktop app completely (Cmd+Q), reopen it, and continue the SAME selected task. Do not restart the Mac yet. Prompt: use the prior activity values to calculate total excluding Prepare slides; read /Users/juhokim/Code/skillbench-all/reports/chatgpt-work-native-resume-canary-20260916/workspace/memo.md, confirm it still holds original total, report both and change no files/settings. Expected30/60. Return App restart canary done here. Before reconciliation, inspect callbacks added after46 and capture status, file-identity change and queue snapshot baseline. Normalize pendingFiles/latest-baseline and compare both source prompts and tool IDs. Only after passing app restart should the user test Mac restart, separately, with expected50/60 (excluding Read notes). Do not silently renew consent. Control expires September17 13:50KST. Cleanup remains pending both restart tests.
+
+Candidate274899d, installed0.1.0+codex.20260916045017; pipeline3abe812f. Guarded native capture only, not unmodified production packaging or dashboard completion. No source, remote PR, auth configuration or production change.
+
+Earlier checkpoints follow.
+
 # Repaired restart canary bound, September 16, 2026
 
 Fresh setup task01a0a88f-ea78-7d63-8d29-e6964393ce9d is verified as local Work (source=vscode, originator=codex_work_desktop, actual cwd=/Users/juhokim/Code/skillbench-all). Existing SkillMeter token is now valid. Installed repaired candidate274899d has an enabled future-byte grant; the167406-byte setup is excluded, queue empty. Shared credentials/policy were unchanged by binding. The exact task/cwd/transcript are bound in /Users/juhokim/.codex/work-native-resume-canary-20260916/config.json, with control expiry September17 13:50KST. Native dispatch evidence still awaits the actual first test. See native-canary/resume-selection-evidence.json.
