@@ -1,0 +1,28 @@
+{
+  "date": "2026-09-16",
+  "stage": "restart-preflight-bound",
+  "candidateSource": "274899d93c003354d2a431043315436f43abdef4",
+  "installedVersion": "0.1.0+codex.20260916045017",
+  "sourceIdentity": {
+    "source": "vscode",
+    "originator": "codex_work_desktop"
+  },
+  "taskId": "01a0a88f-ea78-7d63-8d29-e6964393ce9d",
+  "setupConsentConfirmed": true,
+  "setupBytesExcluded": 167406,
+  "exclusionMatches": true,
+  "pendingChunks": 0,
+  "credentialsUnchanged": true,
+  "policyUnchanged": true,
+  "status": {
+    "enabled": true,
+    "delivery": "disabled",
+    "tokenExpired": false,
+    "expiresAt": 1789620955975,
+    "purgePending": false
+  },
+  "controlExpiresAt": 1789620617459,
+  "nativeDispatch": "awaiting first test prompt",
+  "delivery": "disabled",
+  "cleanup": "pending canary completion"
+}

@@ -1,3 +1,11 @@
+# Repaired restart canary bound, September 16, 2026
+
+Fresh setup task01a0a88f-ea78-7d63-8d29-e6964393ce9d is verified as local Work (source=vscode, originator=codex_work_desktop, actual cwd=/Users/juhokim/Code/skillbench-all). Existing SkillMeter token is now valid. Installed repaired candidate274899d has an enabled future-byte grant; the167406-byte setup is excluded, queue empty. Shared credentials/policy were unchanged by binding. The exact task/cwd/transcript are bound in /Users/juhokim/.codex/work-native-resume-canary-20260916/config.json, with control expiry September17 13:50KST. Native dispatch evidence still awaits the actual first test. See native-canary/resume-selection-evidence.json.
+
+NEXT USER STEP: in that SAME fresh setup task, read /Users/juhokim/Code/skillbench-all/reports/chatgpt-work-native-resume-canary-20260916/workspace/source.csv, calculate total and write memo.md in the same folder. Then return Restart first prompt done here. Do not restart yet. Inspect selected native callbacks/queue before reconciliation, then normalize pendingFiles/latest-baseline and compare source/tool IDs. Expected60. Verify first capture before the app-only restart test (exclude Prepare slides ->30 with memo60), and verify that before Mac restart test (exclude Read notes ->50 with memo60). Do not reuse earlier canary tasks or reconstruct their purged queues. Cleanup remains pending this new canary. Delivery is disabled; no production/PR changes.
+
+Earlier checkpoints follow.
+
 # Repaired restart canary prepared, September 16, 2026
 
 Installed SkillMeter Work Canary 0.1.0+codex.20260916045017 with unchanged candidate274899d;101 files verified, seven installed unselected checks and four wrapper tests pass. Control /Users/juhokim/.codex/work-native-resume-canary-20260916/config.json expires 2026-09-17T13:50:17.459000+09:00; no task selected, capture off, delivery disabled. Normal SkillMeter/shared credentials/policy unchanged. Existing token is expired: verify normal startup refresh after user setup and require valid auth before enabling a fresh grant. Do not bypass or change shared auth/org scope.
