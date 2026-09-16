@@ -1,0 +1,34 @@
+{
+  "date": "2026-09-16",
+  "candidateSource": "274899d93c003354d2a431043315436f43abdef4",
+  "pipelineSource": "3abe812f98e625ff17e5719c816edfa31275ddcf",
+  "installedVersion": "0.1.0+codex.20260916045017",
+  "candidateFilesMatched": 101,
+  "installedEvents": [
+    "SessionStart",
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "Stop",
+    "SessionEnd",
+    "Interrupt"
+  ],
+  "unselectedGuardPassed": true,
+  "sharedCredentialsAndPolicyUnchanged": true,
+  "normalPluginUnchanged": true,
+  "marketplaceUnchanged": true,
+  "userHooksPresent": false,
+  "taskSelected": false,
+  "evidenceExists": false,
+  "status": {
+    "enabled": false,
+    "delivery": "disabled",
+    "tokenExpired": true,
+    "expiresAt": null,
+    "purgePending": false
+  },
+  "controlExpiresAt": 1789620617459,
+  "desktopNativeDispatch": "pending",
+  "productionDelivery": "disabled",
+  "oldSourceArchived": true
+}

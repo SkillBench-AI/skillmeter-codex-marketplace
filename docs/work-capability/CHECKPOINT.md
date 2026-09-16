@@ -1,3 +1,11 @@
+# Repaired restart canary prepared, September 16, 2026
+
+Installed SkillMeter Work Canary 0.1.0+codex.20260916045017 with unchanged candidate274899d;101 files verified, seven installed unselected checks and four wrapper tests pass. Control /Users/juhokim/.codex/work-native-resume-canary-20260916/config.json expires 2026-09-17T13:50:17.459000+09:00; no task selected, capture off, delivery disabled. Normal SkillMeter/shared credentials/policy unchanged. Existing token is expired: verify normal startup refresh after user setup and require valid auth before enabling a fresh grant. Do not bypass or change shared auth/org scope.
+
+NEXT: user creates a fresh local Work task, selects/reviews the canary's seven hooks, sends only the setup prompt in native-canary/RESTART-CANARY.md and returns Restart preflight done. Locate that fresh task, confirm Work metadata/cwd and auth, enable future-byte consent and bind new control. Then test first capture, app-only restart, and Mac restart separately with assistant verification between each. Use pendingFiles/latest-baseline normalization. Old canary remains disabled; new temporary plugin cleanup is pending the new test. No source code/production/PR change in this preparation.
+
+Earlier checkpoints follow.
+
 # Resume repair source complete, September 16, 2026
 
 Source commit274899d93c003354d2a431043315436f43abdef4 on codex/work-capability-20260915 repairs the prefix-preserving file-replacement failure found after the native app/Mac restart. The Work adapter keeps its original consent journal and permits replacement only with a committed cursor from the current grant; the existing queue verifies prefix integrity and selects the latest snapshot baseline. Changed/truncated history, altered identity/consent and symlinks are denied. Repeated resume preserves messages/tool links without duplicates, does not renew consent, and cannot restore excluded or retired content. No shared queue/authentication/Claude/pipeline implementation changed.
