@@ -1,0 +1,37 @@
+{
+  "date": "2026-09-16",
+  "reason": "User deferred machine restart; preserve completed app-restart evidence and stop temporary capture",
+  "machineRestartValidation": "deferred-not-run",
+  "appRestartValidation": "passed",
+  "liveFileReplacementValidation": "not exercised by latest native canary; deterministic tests pass",
+  "beforeStatus": {
+    "enabled": true,
+    "delivery": "disabled",
+    "tokenExpired": false,
+    "expiresAt": 1789620955975,
+    "purgePending": false
+  },
+  "payloadsBeforeCleanup": 52,
+  "disable": {
+    "status": "disabled",
+    "delivery": "disabled"
+  },
+  "afterStatus": {
+    "enabled": false,
+    "delivery": "disabled",
+    "tokenExpired": false,
+    "expiresAt": 1789620955975,
+    "purgePending": false
+  },
+  "payloadsAfterCleanup": 0,
+  "productionPending": 0,
+  "uninstallExitCode": 0,
+  "installedCacheRemoved": true,
+  "credentialsUnchanged": true,
+  "policyUnchanged": true,
+  "normalPluginUnchanged": true,
+  "globalTelemetryEnabled": true,
+  "controlCleared": true,
+  "userHookBridgeAbsent": true,
+  "cleanupPassed": true
+}
