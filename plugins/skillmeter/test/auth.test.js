@@ -241,7 +241,7 @@ test("an untrusted activation override falls back to the prod default", () => {
   }
 });
 
-// --- authenticated upload + 401/403 clear-and-retry ------------------------
+// --- authenticated upload + auth-failure containment -----------------------
 
 test("transferEventLog attaches the JWT and marks the batch .sent on 2xx", async () => {
   const token = makeJwt({ exp: FUTURE });
@@ -265,51 +265,199 @@ test("transferEventLog attaches the JWT and marks the batch .sent on 2xx", async
   }
 });
 
-test("transferEventLog clears the license and retries without auth on 401", async () => {
-  const token = makeJwt({ exp: FUTURE });
-  credstore.setLicenseToken(token);
+// The credential file is shared with the Claude Code plugin, so an auth
+// failure here must never delete the token: doing so signs the whole machine
+// out of both agents (INF-200). The batch is re-sent once a refresh lands.
+for (const status of [401, 402, 403]) {
+  test(`transferEventLog keeps the license and the batch on HTTP ${status}`, async () => {
+    const token = makeJwt({ exp: FUTURE });
+    credstore.setLicenseToken(token);
 
-  const seen = [];
-  const srv = await startServer((req, res) => {
-    seen.push(req.headers["authorization"] || null);
-    if (seen.length === 1) {
-      res.writeHead(401);
+    const seen = [];
+    const srv = await startServer((req, res) => {
+      seen.push(req.headers["authorization"] || null);
+      res.writeHead(status);
       res.end("nope");
-    } else {
-      res.writeHead(200);
-      res.end("ok");
+    });
+    const logFile = tmpLogFile('{"a":1}\n');
+
+    try {
+      const outcome = await logger.transferEventLog(
+        logFile,
+        `${srv.url}/logs/codex`,
+        5000
+      );
+      assert.equal(outcome, "auth");
+      assert.deepEqual(seen, [`Bearer ${token}`], "no anonymous retry");
+      assert.equal(credstore.getLicenseToken(), token, "license survives");
+      assert.equal(fs.existsSync(logFile), true, "batch stays queued");
+      assert.equal(fs.existsSync(`${logFile}.sent`), false);
+    } finally {
+      try { fs.unlinkSync(logFile); } catch {}
+      await srv.close();
     }
   });
-  const logFile = tmpLogFile('{"a":1}\n');
+}
 
-  try {
-    await logger.transferEventLog(logFile, `${srv.url}/logs/codex`, 5000);
-    assert.equal(seen.length, 2, "should retry exactly once");
-    assert.equal(seen[0], `Bearer ${token}`, "first attempt is authenticated");
-    assert.equal(seen[1], null, "retry drops the Authorization header");
-    assert.equal(credstore.getLicenseToken(), null, "rejected token is cleared");
-    assert.equal(fs.existsSync(`${logFile}.sent`), true, "retry success marks batch sent");
-  } finally {
-    await srv.close();
-  }
-});
+test("transferEventLog never sends unauthenticated with an expired JWT", async () => {
+  const expired = makeJwt({ exp: PAST });
+  credstore.setLicenseToken(expired);
 
-test("transferEventLog drops an expired JWT before sending (no auth header)", async () => {
-  credstore.setLicenseToken(makeJwt({ exp: PAST }));
-
-  let sawAuth = "unset";
-  const srv = await startServer((req, res) => {
-    sawAuth = req.headers["authorization"] || null;
+  let sawRequest = false;
+  const srv = await startServer((_req, res) => {
+    sawRequest = true;
     res.writeHead(200);
     res.end("ok");
   });
   const logFile = tmpLogFile('{"a":1}\n');
 
   try {
-    await logger.transferEventLog(logFile, `${srv.url}/logs/codex`, 5000);
-    assert.equal(sawAuth, null, "expired token is not attached");
-    assert.equal(fs.existsSync(`${logFile}.sent`), true);
+    const outcome = await logger.transferEventLog(
+      logFile,
+      `${srv.url}/logs/codex`,
+      5000
+    );
+    assert.equal(outcome, "auth");
+    assert.equal(sawRequest, false, "the ingest route rejects anonymous posts");
+    assert.equal(credstore.getLicenseToken(), expired, "expired license is kept for /refresh");
+    assert.equal(fs.existsSync(logFile), true, "batch stays queued");
+    assert.equal(fs.existsSync(`${logFile}.sent`), false);
   } finally {
+    try { fs.unlinkSync(logFile); } catch {}
+    await srv.close();
+  }
+});
+
+// Routing and authorization must come from one credential snapshot: a drain
+// that resolved the host up front could otherwise pair tenant A's endpoint with
+// tenant B's JWT after a concurrent sign-in.
+test("transferEventLog routes by the same token it authenticates with", async () => {
+  const token = makeJwt({
+    exp: FUTURE,
+    aud: "https://tenantb.meter.skillbench.com",
+  });
+  credstore.setLicenseToken(token);
+
+  const realFetch = global.fetch;
+  let seen = null;
+  global.fetch = async (url, options) => {
+    seen = { url, auth: options.headers["Authorization"] };
+    return { ok: true, status: 200 };
+  };
+  const logFile = tmpLogFile('{"a":1}\n');
+
+  try {
+    // No explicit backendUrl: the transfer resolves its own from the token.
+    await logger.transferEventLog(logFile);
+    assert.equal(seen.url, "https://tenantb.meter.skillbench.com/logs/codex");
+    assert.equal(seen.auth, `Bearer ${token}`);
+  } finally {
+    global.fetch = realFetch;
+    try { fs.unlinkSync(`${logFile}.sent`); } catch {}
+  }
+});
+
+// `exp` says nothing about revocation or a rotated signing key, so a rejected
+// token that still looks fresh must not be resubmitted every sweep forever.
+test("an authenticated rejection forces the next refresh to rotate", async () => {
+  const token = makeJwt({ exp: FUTURE });
+  credstore.setLicenseToken(token);
+  logger.clearLicenseRejected();
+
+  const srv = await startServer((_req, res) => {
+    res.writeHead(401);
+    res.end("nope");
+  });
+  const logFile = tmpLogFile('{"a":1}\n');
+
+  try {
+    await logger.transferEventLog(logFile, `${srv.url}/logs/codex`, 5000);
+    assert.equal(logger.isLicenseRejected(), true, "a refresh is now owed");
+
+    // Must differ from `token`: an identical payload would let the assertion
+    // pass even if the rejected credential were returned unchanged.
+    const fresh = makeJwt({ exp: FUTURE, jti: "rotated" });
+    const realFetch = global.fetch;
+    let refreshCalls = 0;
+    global.fetch = async () => {
+      refreshCalls += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ token: fresh }),
+        text: async () => "",
+      };
+    };
+    try {
+      const rotated = await logger.tryRefreshLicense("TEST-DEVICE");
+      assert.equal(refreshCalls, 1, "the rejection defeats the freshness short-circuit");
+      assert.equal(rotated, fresh);
+      assert.notEqual(rotated, token, "the rejected credential is not reused");
+      assert.equal(credstore.getLicenseTokenUncached(), fresh, "rotation is persisted");
+    } finally {
+      global.fetch = realFetch;
+    }
+    assert.equal(logger.isLicenseRejected(), false, "marker cleared once rotated");
+  } finally {
+    try { fs.unlinkSync(logFile); } catch {}
+    await srv.close();
+  }
+});
+
+// The shared credential file has several writers. A fresh read that finds no
+// token must mean "no token", never "reuse the one this process cached".
+test("getLicenseTokenUncached never resurrects a token another client removed", () => {
+  const token = makeJwt({ exp: FUTURE });
+  credstore.setLicenseToken(token);
+  assert.equal(credstore.getLicenseToken(), token, "cache is warm");
+
+  const credFile = path.join(tmpHome, ".skillbench", "credentials.json");
+  const raw = JSON.parse(fs.readFileSync(credFile, "utf8"));
+  delete raw.license_jwt;
+  fs.writeFileSync(credFile, JSON.stringify(raw) + "\n");
+
+  assert.equal(credstore.getLicenseToken(), token, "the cached read still sees it");
+  assert.equal(credstore.getLicenseTokenUncached(), null, "the fresh read does not");
+});
+
+test("getLicenseTokenUncached returns null while signed out", () => {
+  credstore.setLicenseToken(makeJwt({ exp: FUTURE }));
+  assert.notEqual(credstore.getLicenseTokenUncached(), null);
+
+  const credFile = path.join(tmpHome, ".skillbench", "credentials.json");
+  const raw = JSON.parse(fs.readFileSync(credFile, "utf8"));
+  raw.signed_out = true;
+  fs.writeFileSync(credFile, JSON.stringify(raw) + "\n");
+
+  try {
+    assert.equal(credstore.getLicenseTokenUncached(), null);
+  } finally {
+    credstore.markEngaged();
+  }
+});
+
+test("uploadPendingTranscript keeps the license and the snapshot on HTTP 401", async () => {
+  const token = makeJwt({ exp: FUTURE });
+  credstore.setLicenseToken(token);
+
+  const srv = await startServer((_req, res) => {
+    res.writeHead(401);
+    res.end("nope");
+  });
+  const pending = tmpLogFile('{"type":"message"}\n');
+
+  try {
+    const outcome = await logger.uploadPendingTranscript(
+      pending,
+      "TEST-DEVICE",
+      `${srv.url}/logs/codex`,
+      5000
+    );
+    assert.equal(outcome, "auth");
+    assert.equal(credstore.getLicenseToken(), token, "license survives");
+    assert.equal(fs.existsSync(pending), true, "snapshot stays pending");
+  } finally {
+    try { fs.unlinkSync(pending); } catch {}
     await srv.close();
   }
 });

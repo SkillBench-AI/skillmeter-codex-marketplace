@@ -9,10 +9,24 @@
  * for the next SessionStart pass and the retry monitor to pick up.
  */
 
-const { drainQueuesOnce, clearDrainOnceLock } = require("./logger.js");
+const {
+  drainQueuesOnce,
+  clearDrainOnceLock,
+  getDeviceId,
+  tryRefreshLicense,
+} = require("./logger.js");
 
 async function main() {
   try {
+    // Uploads require a valid license JWT, and this process can start minutes
+    // after the SessionStart refresh — long enough for the token to age out on
+    // a long session. Rotate first so the drain isn't spent on requests the
+    // authorizer will reject. Best-effort: tryRefreshLicense is internally
+    // bounded and swallows every failure to null.
+    try {
+      const deviceId = getDeviceId();
+      if (deviceId) await tryRefreshLicense(deviceId);
+    } catch {}
     await drainQueuesOnce();
   } finally {
     clearDrainOnceLock();
