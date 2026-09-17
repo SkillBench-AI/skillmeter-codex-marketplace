@@ -1,149 +1,68 @@
 # SkillMeter for Codex
 
-SkillMeter is the SkillBench **telemetry plugin for Codex**. It records
-privacy-scoped lifecycle telemetry from your Codex sessions through Codex's plugin
-hooks and forwards it to the SkillBench analyzer, so your skill reports include
-Codex activity alongside Claude Code and GitHub PR data.
+Connect Codex sessions to [SkillBench](https://skillbench.com) for
+organization-level developer skill analytics. SkillMeter collects
+repository-scoped workflow and conversation telemetry, sanitizes it locally,
+and uploads it in the background.
 
-This is the Codex counterpart to the SkillMeter Claude Code plugin. It emits the
-same NDJSON envelope to the same collector (tagged `agent: "codex"`), so both
-agents land in one pipeline and are queryable side by side.
+## Before you start
 
-## What you get
+Collected data can include prompts, assistant messages, tool inputs and outputs,
+transcripts, and custom skill content. Sanitization reduces exposure; it does
+not make arbitrary content anonymous. Read the [data and scope guide](plugins/skillmeter/README.md#data-and-privacy)
+before enabling collection.
 
-- **Live telemetry** — every Codex lifecycle hook (session start, prompt
-  submit, tool use, permission requests, compaction, subagents, stop) is
-  captured, sanitized, and uploaded in the background.
-- **Privacy by default** — paths and commands are HMAC-hashed, telemetry is
-  opt-in per project, and repo-scope filtering keeps out-of-scope repos from
-  ever uploading.
-- **Complementary skills** — bundled `@skillmeter` skills still cover batch
-  export, repo-scope checks, and export review for one-off audits.
-
-See [`plugins/skillmeter/README.md`](plugins/skillmeter/README.md) for the full
-event table, data flow, configuration, and privacy details.
+In 0.5.0, repositories owned by your allowed GitHub identities **auto-enable
+unless you opt out**. Other repositories remain outside the collection scope.
+This differs from Claude's newer explicit repository-selection flow.
 
 ## Install
 
-If you already have the SkillBench session-collector installed, the easiest path
-is:
+Requires Codex with plugin support, Node.js 20 or later, and a SkillMeter license.
 
-```bash
-skillbench codex plugin-install
+```sh
+codex plugin marketplace add SkillBench-AI/skillmeter-codex-marketplace --ref main
+codex plugin add skillmeter@skillbench
 ```
 
-This clones (or refreshes) this marketplace and runs the
-`codex plugin marketplace add` step for you, then prints the next steps. Pass
-`--dry-run` to print the commands without executing them.
+Restart Codex and start a new session. Review and enable the plugin's hooks if
+Codex prompts you. Then ask Codex:
 
-To install manually:
+> Use SkillMeter's signin skill to sign me in with GitHub, scoped to my organization.
 
-```bash
-codex plugin marketplace add SkillBench-AI/skillmeter-codex-marketplace
+Already signed in with a shared GitHub-based SkillMeter credential? You can
+reuse it. Compatibility with Claude's latest broker sign-in remains follow-up
+work. See [sign-in and collection controls](plugins/skillmeter/README.md).
+
+## Update
+
+For the Git marketplace installed above:
+
+```sh
+codex plugin marketplace upgrade skillbench
+codex plugin add skillmeter@skillbench
 ```
 
-Then open Codex, run `/plugins`, choose the `SkillBench` marketplace, and
-install `SkillMeter`. Codex lists the plugin's hooks under `/hooks` — they stay
-inactive until you review and trust them, then start a fresh thread.
+Restart Codex and start a new session. Run `codex plugin list --json` to check
+the installed SkillMeter version.
 
-Codex currently installs plugins through the interactive plugin browser. There
-is not a separate documented `codex plugin install ...` command for installing a
-plugin entry directly by name.
+**Installed from a local checkout?** Update that checkout first, then run
+`codex plugin add skillmeter@skillbench`. `marketplace upgrade` only refreshes
+Git marketplaces; it does not pull a locally registered repository.
 
-## How it works
+## Using SkillMeter
 
-```text
-Codex lifecycle event
-  -> bundled hook script (scripts/<event>.js)
-  -> sanitize + append NDJSON to a local queue
-  -> Stop / SubagentStop gzip + POST the batch to the SkillBench Codex collector
-  -> OTel Collector
-  -> ClickHouse (ServiceName = skillmeter-codex-collector-<tenant>-<env>)
-  -> SkillBench analyzer
+- [Sign in, pause collection, or sign out](plugins/skillmeter/README.md#sign-in-and-controls)
+- [Understand collection scope and privacy](plugins/skillmeter/README.md#data-and-privacy)
+- [Review releases and known limitations](https://github.com/SkillBench-AI/skillmeter-codex-marketplace/releases)
+- [Report an issue](https://github.com/SkillBench-AI/skillmeter-codex-marketplace/issues)
+
+## Development
+
+```sh
+npm run check
 ```
 
-Uploads are durable and non-blocking: `Stop`/`SubagentStop` seal events and
-transcripts to disk and hand off to a detached drain, `SessionStart` recovers
-un-rotated logs from crashed sessions and starts a background retry monitor, and
-stale uploaded files are cleaned up after 30 days. Hook failures never block your
-Codex session. See [`plugins/skillmeter/README.md`](plugins/skillmeter/README.md#durable-uploads-background-flush-and-retry)
-for details.
-
-## Telemetry control
-
-Per-project opt-in and repo-scope settings live in
-`<project>/.codex/settings.local.json` under the `skillmeter` namespace. On
-macOS the first session in a project shows a native consent prompt; elsewhere,
-enable it explicitly:
-
-```bash
-node "$PLUGIN_ROOT/scripts/telemetry.js" enable
-node "$PLUGIN_ROOT/scripts/telemetry.js" status
-node "$PLUGIN_ROOT/scripts/telemetry.js" disable
-```
-
-## Local development
-
-Add this checkout as a marketplace source:
-
-```bash
-codex plugin marketplace add ./skillmeter-codex-marketplace
-```
-
-Then `/plugins` → install `SkillMeter` → start a fresh thread. Codex loads local
-plugins from its plugin cache after installation, so reinstall (or refresh the
-marketplace) after changing the plugin contents.
-
-The shipped plugin uploads to prod by default. To point a project at a non-prod
-collector (e.g. the dev tenant collector) without changing the default, set
-`skillmeter.backendUrl` in that project's `.codex/settings.local.json` — see
-[`plugins/skillmeter/README.md`](plugins/skillmeter/README.md#configuration).
-
-## Versioning & releases
-
-The plugin version is the single source of truth in
-[`plugins/skillmeter/.codex-plugin/plugin.json`](plugins/skillmeter/.codex-plugin/plugin.json)
-and uses clean [SemVer](https://semver.org/) (`MAJOR.MINOR.PATCH`, no
-build-metadata suffix). Releases are cut by pushing a matching `vMAJOR.MINOR.PATCH`
-tag, which runs the full CI gate and publishes a GitHub Release automatically.
-
-Run the same checks CI runs:
-
-```bash
-npm run check   # clean-SemVer check + manifest validation + unit tests
-npm test        # just the unit tests (node --test)
-```
-
-See [`RELEASING.md`](RELEASING.md) for the full versioning policy, tag strategy,
-and step-by-step release process.
-
-## Bundled skills
-
-The plugin still ships the original workflow skills, useful for batch exports
-and audits on top of the live feed:
-
-- `@skillmeter collect a sanitized export of my recent Codex sessions`
-- `@skillmeter check whether this repo is in scope for skillbench-ai`
-- `@skillmeter review dist/skillbench_export_sanitized_2026_W17.json`
-
-## Repo Layout
-
-```text
-skillmeter-codex-marketplace/
-├── .github/
-│   ├── workflows/            # ci.yml (lint + test) and release.yml (tag → release)
-│   └── scripts/              # check-version.mjs, validate-manifests.mjs
-├── .claude-plugin/marketplace.json
-├── .agents/plugins/marketplace.json
-├── package.json              # test / check script entrypoints
-├── RELEASING.md              # versioning policy + release process
-└── plugins/skillmeter/
-    ├── .codex-plugin/plugin.json
-    ├── README.md
-    ├── hooks/hooks.json
-    ├── scripts/            # lifecycle hook handlers + logger/sanitizer/credstore
-    └── skills/
-        ├── collect-export/SKILL.md
-        ├── check-repo-scope/SKILL.md
-        └── review-export/SKILL.md
-```
+See the [transport and recovery guide](plugins/skillmeter/integration/README.md)
+for local integration checks and [RELEASING.md](RELEASING.md) for versioning and
+release steps. Do not commit credentials or generated telemetry.
