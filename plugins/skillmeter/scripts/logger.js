@@ -855,23 +855,44 @@ function requestTranscriptCapture(input, options = {}) {
   fs.mkdirSync(TRANSCRIPT_CAPTURES_DIR, { recursive: true, mode: 0o700 });
   const salt = getOrCreateHashSalt();
   const cacheKey = transcriptQueue.hmac(salt, String(input.session_id || "unknown"));
-  const cachePath = path.join(TRANSCRIPT_CAPTURES_DIR, cacheKey + ".json");
   let paths = collectTranscriptPaths(input, { ...options, discover: options.discover !== false });
-  if (!paths.length && fs.existsSync(cachePath)) {
-    const cached = JSON.parse(fs.readFileSync(cachePath, "utf8"));
-    if (scopeStillAllowed(cached.scope)) paths = cached.paths;
+  if (!paths.length) {
+    // Read old session hints as well as the new independent source hints.
+    for (const name of fs.readdirSync(TRANSCRIPT_CAPTURES_DIR)) {
+      if (name !== `${cacheKey}.json` && !new RegExp(`^${cacheKey}-[a-f0-9]{64}\\.json$`).test(name)) continue;
+      try {
+        const cached = JSON.parse(fs.readFileSync(path.join(TRANSCRIPT_CAPTURES_DIR, name), "utf8"));
+        if (scopeStillAllowed(cached.scope)) paths.push(...cached.paths);
+      } catch { /* Another valid source hint can still recover this session. */ }
+    }
   }
-  if (!paths.length) return 0;
-  transcriptQueue.writeDurable(cachePath, JSON.stringify({ scope, paths }));
+  paths = [...new Set(paths)];
+  // Separate source keys avoid lost updates when parent/subagent hooks race.
+  // A later parent-only hook must not remove the subagent's capture request.
+  for (const source of paths) {
+    const sourceKey = transcriptQueue.hmac(salt, path.resolve(source));
+    const cachePath = path.join(TRANSCRIPT_CAPTURES_DIR, `${cacheKey}-${sourceKey}.json`);
+    transcriptQueue.writeDurable(cachePath, JSON.stringify({ scope, paths: [source] }));
+  }
   return paths.length;
 }
 function stageRequestedTranscripts() {
   if (!fs.existsSync(TRANSCRIPT_CAPTURES_DIR)) return;
-  for (const name of fs.readdirSync(TRANSCRIPT_CAPTURES_DIR).filter(n => /^[a-f0-9]{64}\.json$/.test(n))) {
+  for (const name of fs.readdirSync(TRANSCRIPT_CAPTURES_DIR).filter(n => /^[a-f0-9]{64}(?:-[a-f0-9]{64})?\.json$/.test(n))) {
     try {
       const capture = JSON.parse(fs.readFileSync(path.join(TRANSCRIPT_CAPTURES_DIR, name), "utf8"));
       if (!scopeStillAllowed(capture.scope)) continue;
-      for (const source of capture.paths) stageTranscriptForUpload(source, { cwd: capture.scope.cwd, scope: capture.scope });
+      for (const source of capture.paths) {
+        try {
+          // Stage all slices even if the retry daemon has exited. Bound the
+          // loop by the initial size so a growing source cannot hold this
+          // detached drain forever; later hooks capture subsequent growth.
+          const maxSlices = Math.ceil(fs.statSync(source).size / transcriptQueue.STAGE_BYTES) + 1;
+          for (let slice = 0; slice < maxSlices; slice++) {
+            if (!stageTranscriptForUpload(source, { cwd: capture.scope.cwd, scope: capture.scope })) break;
+          }
+        } catch { console.error("[skillmeter] Capture source unavailable; other sources continue"); }
+      }
     } catch { console.error("[skillmeter] Capture hint unavailable; retained for retry"); }
   }
 }

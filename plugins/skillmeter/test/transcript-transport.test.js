@@ -258,3 +258,46 @@ test("combined drain honors an explicit transcript endpoint override", async () 
   assert.equal(await logger.drainQueuesOnce("https://collector.invalid/logs/codex", 1000), 1);
   assert.equal(fs.existsSync(file), false);
 });
+
+test("later parent hooks preserve a subagent source in the same session", async () => {
+  const agentSource = path.join(root, "agent.jsonl");
+  fs.writeFileSync(agentSource, line("subagent message"));
+  logger.requestTranscriptCapture({ cwd: repo, session_id: "parent", transcript_path: source, agent_transcript_path: agentSource });
+  logger.requestTranscriptCapture({ cwd: repo, session_id: "parent", transcript_path: source });
+  const transcripts = new Set();
+  global.fetch = async (_, options) => {
+    transcripts.add(options.headers["X-Transcript-ID"]);
+    return { ok: true };
+  };
+  await logger.drainPendingTranscripts();
+  assert.deepEqual([...transcripts].sort(), ["agent.jsonl", "synthetic.jsonl"]);
+});
+
+test("one detached sweep drains a final transcript larger than the staging budget", async () => {
+  const records = Array.from({ length: 10 }, (_, i) => line(`${i}:` + "x".repeat(1024 * 1024)));
+  fs.writeFileSync(source, records.join(""));
+  logger.requestTranscriptCapture({ cwd: repo, session_id: "large-final", transcript_path: source });
+  let delivered = 0;
+  global.fetch = async (_, options) => {
+    delivered += require("node:zlib").gunzipSync(options.body).toString().trim().split("\n").length;
+    return { ok: true };
+  };
+  await logger.drainPendingTranscripts();
+  assert.equal(delivered, 10);
+  assert.equal(logger.listPendingTranscripts().length, 0);
+});
+
+test("a missing source in a legacy session hint does not block its surviving source", async () => {
+  logger.requestTranscriptCapture({ cwd: repo, session_id: "legacy", transcript_path: source });
+  const names = fs.readdirSync(logger.TRANSCRIPT_CAPTURES_DIR).filter(n => n.endsWith(".json"));
+  const hint = path.join(logger.TRANSCRIPT_CAPTURES_DIR, names[0]);
+  const capture = JSON.parse(fs.readFileSync(hint));
+  capture.paths.unshift(path.join(root, "missing-agent.jsonl"));
+  const legacyName = names[0].slice(0, 64) + ".json";
+  fs.unlinkSync(hint);
+  fs.writeFileSync(path.join(logger.TRANSCRIPT_CAPTURES_DIR, legacyName), JSON.stringify(capture));
+  let calls = 0;
+  global.fetch = async () => { calls++; return { ok: true }; };
+  await logger.drainPendingTranscripts();
+  assert.equal(calls, 1);
+});

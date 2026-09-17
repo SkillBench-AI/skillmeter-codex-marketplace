@@ -265,4 +265,4 @@ async function drainDirectory(dir, send) {
   } finally { release(); }
 }
 module.exports = { stage, encodeChunks, acquireLock, recover, queueDirectories, pendingFiles, metadata,
-  drainDirectory, writeDurable, hmac, MAX_ENVELOPE, ENVELOPE_RESERVE, MAX_RECORD };
+  drainDirectory, writeDurable, hmac, MAX_ENVELOPE, ENVELOPE_RESERVE, MAX_RECORD, STAGE_BYTES };
