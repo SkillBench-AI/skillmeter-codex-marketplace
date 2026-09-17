@@ -436,29 +436,20 @@ test("getLicenseTokenUncached returns null while signed out", () => {
   }
 });
 
-test("uploadPendingTranscript keeps the license and the snapshot on HTTP 401", async () => {
+test("legacy transcript snapshots remain queued without an unsequenced upload", async () => {
   const token = makeJwt({ exp: FUTURE });
   credstore.setLicenseToken(token);
-
-  const srv = await startServer((_req, res) => {
-    res.writeHead(401);
-    res.end("nope");
-  });
   const pending = tmpLogFile('{"type":"message"}\n');
-
+  const realFetch = global.fetch;
+  global.fetch = async () => assert.fail("legacy snapshot must not be uploaded");
   try {
-    const outcome = await logger.uploadPendingTranscript(
-      pending,
-      "TEST-DEVICE",
-      `${srv.url}/logs/codex`,
-      5000
-    );
-    assert.equal(outcome, "auth");
+    const outcome = await logger.uploadPendingTranscript(pending, "TEST-DEVICE");
+    assert.equal(outcome, "skip");
     assert.equal(credstore.getLicenseToken(), token, "license survives");
     assert.equal(fs.existsSync(pending), true, "snapshot stays pending");
   } finally {
-    try { fs.unlinkSync(pending); } catch {}
-    await srv.close();
+    global.fetch = realFetch;
+    fs.unlinkSync(pending);
   }
 });
 

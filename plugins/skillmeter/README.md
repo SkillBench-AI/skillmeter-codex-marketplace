@@ -31,22 +31,18 @@ The plugin wires a handler into every Codex lifecycle hook that exists today:
 | `SubagentStart` | A subagent thread starts | `agent_id`, `agent_type` |
 | `SubagentStop` | A subagent thread stops | `agent_id`, `agent_type`, `agent_transcript_path`, `stop_hook_active`, sanitized `last_assistant_message` |
 | `Stop` | A turn stops | `stop_hook_active`, sanitized `last_assistant_message` |
+| `SessionEnd` | The main session ends | `reason`; bounded capture hint |
+| `Interrupt` | An active main-thread turn is interrupted | `turn_id`; bounded capture hint |
 
 
 Every event record also carries `session_id`, `device_id`, `agent: "codex"`,
 the current `model` and `turn_id`, hashed `cwd`/`repo_root`, and the
 `repo_scope` decision for the current project.
 
-These ten events are the **complete** post-GA Codex lifecycle hook catalog
-([OpenAI Codex hooks docs](https://developers.openai.com/codex/hooks)), so the
-plugin handles every hook Codex can emit. The Claude Code plugin additionally
-ships `Notification`, `SessionEnd`, `PermissionDenied`, `TaskCreated` /
-`TaskCompleted`, and `WorktreeCreate` / `WorktreeRemove` handlers, but **none of
-those events exist in Codex today** — `SessionEnd` is only an open upstream
-request ([openai/codex#20603](https://github.com/openai/codex/issues/20603)) and
-the rest are Claude-only. Wiring them would be dead config, so they are
-deliberately omitted; `test/hook-surface.test.js` guards this contract so the
-plugin picks any new event up the moment Codex ships it.
+These twelve events match the [official hook catalog](https://learn.chatgpt.com/docs/hooks)
+verified on 2026-09-05. `SessionEnd` and `Interrupt` have a three-second maximum.
+Their handlers save small capture hints and detach the upload work. Actual CLI
+and desktop install/canary validation remains required before release.
 
 
 ## Harness metadata
@@ -135,14 +131,12 @@ Privacy notes:
 ```text
 Codex lifecycle event
   -> ${PLUGIN_ROOT}/scripts/<event>.js
-  -> append NDJSON entry to ${PLUGIN_DATA}/logs/events.jsonl
-  -> Stop / SubagentStop seal events.jsonl -> events.jsonl.<ts> and stage the
-     transcript, then spawn a detached drain (drain_once.js) that gzips + POSTs
-     to the resolved backend (default https://api.meter.skillbench.ai/logs/codex)
-  -> SkillBench Codex collector lambda
-  -> OTel Collector
-  -> ClickHouse skillmeter.otel_logs
-  -> backend-analyzer
+  -> sanitized events.jsonl -> sealed event batch -> detached POST /logs/codex
+     -> collector -> OTel -> ClickHouse skillmeter.otel_logs
+  -> transcript capture hint -> detached staging of complete raw lines
+     -> sanitized immutable gzip chunks + durable cursor
+     -> POST /logs/codex/transcript -> collector -> S3 transcript object
+     -> skillbench-pipelines AI-usage analyzer -> existing report store/dashboard
 ```
 
 
@@ -154,46 +148,23 @@ from Claude Code while sharing the same `otel_logs` table.
 
 ### Durable uploads, background flush, and retry
 
-The on-disk queues are the source of truth, so hooks never block on the network
-and nothing is lost if an upload fails or a session crashes:
+Hooks save capture hints; the detached drain stages sanitized gzip chunks with
+`X-Chunk-Seq` and `X-Chunk-Reset`. A durable raw-byte cursor, prefix HMAC, and
+per-source lock preserve order across interruption and retries. Partial final
+lines wait for the next capture. Only acknowledged chunks are removed.
 
-- **Sealing.** `Stop` / `SubagentStop` rename the active `events.jsonl` to a
-  sealed batch `events.jsonl.<timestamp>` and write a sanitized transcript
-  snapshot to `logs/transcripts/pending/`. No network call happens inline.
-- **Background flush (one-shot drain).** Those hooks then spawn a detached
-  `drain_once.js` that uploads every sealed log and pending transcript. On
-  success a log is renamed to `.sent` and a transcript is deleted; on failure
-  the file stays for the next attempt. A short-lived lock
-  (`.drain-once.lock`) coalesces redundant spawns.
-- **Retry monitor.** `SessionStart` launches a long-running, singleton
-  `monitors/retry_daemon.js` that re-drains the queues on an interval, so a
-  backend outage that clears mid-session still uploads without waiting for the
-  next session. It is guarded by a heartbeat lock (`.retry-daemon.lock`) and
-  self-terminates on idle or after a max lifetime (Codex has no managed monitor
-  lifecycle to stop it).
-- **Crash recovery.** `SessionStart` recovers an un-rotated `events.jsonl` left
-  behind by a crashed/abandoned session (one idle beyond
-  `SKILLMETER_ACTIVE_LOG_STALE_MS`) by sealing it into the drain queue.
-- **Atomic writes.** Event records are appended in a single `O_APPEND` write and
-  transcript snapshots / salvaged batches are written via a temp file + rename,
-  so a concurrent writer or a crash mid-write can't leave interleaved or
-  half-written ("invalid") lines that would later poison an upload.
-- **Poison-batch handling.** A batch the backend permanently rejects (a 4xx
-  other than 401/403/408/429) is never retried forever. The drain first attempts
-  a *partial-rejection salvage* — it re-parses the batch line by line, drops only
-  the malformed records, and retries the cleaned batch once. If that still fails
-  (or the payload was already well-formed) the batch is *quarantined*: moved to
-  `logs/poison/` so it stops consuming retry bandwidth while remaining available
-  for forensics.
-- **Retry & age limits.** Transient failures (5xx / 408 / 429 / network) are
-  retried with the attempt count tracked in a `.meta` sidecar; a batch is
-  quarantined once it exceeds `SKILLMETER_MAX_BATCH_RETRIES` attempts or its seal
-  time is older than `SKILLMETER_BATCH_MAX_AGE_MS`, whichever comes first.
-- **Cleanup.** Uploaded `.sent` logs, quarantined poison batches, orphaned
-  `.meta`/temp files, and staged transcripts older than 30 days are pruned so
-  disk usage stays bounded even if ingest is unavailable for weeks.
+Capture and every send recheck the user/device, signout, allowed repository and
+consent. Auth failures retain both the queue and the shared licence; 401/403
+request refresh. Existing legacy snapshots are preserved, not automatically replayed.
 
-Hook failures never block your Codex session.
+The existing collector accepts sequenced chunks. Collector #44 separately adds
+missing-baseline recovery for sessions resumed beyond its today/yesterday lookup;
+without it, multi-day continuity is not guaranteed. Pipeline #148 and a live
+report check are separate follow-ups to plugin delivery.
+
+For queue details, synthetic tests, recovery inventory and rollback, see the
+[integration guide](integration/README.md). Installed CLI/desktop capture and
+production transcript storage still require verification.
 
 
 ## Install
@@ -618,4 +589,3 @@ a repeated test loop) never stalls on a device-flow login. Without `read:org`,
 the silent path fails and the run falls back to the interactive device flow. Run
 `node "$PLUGIN_ROOT/bin/sk-refresh"` to force this path on demand and confirm the
 silent re-mint works in your environment.
-
