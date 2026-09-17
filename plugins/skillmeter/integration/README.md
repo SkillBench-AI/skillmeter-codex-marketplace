@@ -70,6 +70,10 @@ decoded records must remain below 32 MiB. Malformed/oversized input retains the
 source and cursor with a content-free diagnostic. Failed chunks and superseded
 reset generations are retained; automatic historical replay is outside this change.
 
+Queues created with an earlier owner-identity formula remain preserved but may
+not be eligible for delivery. Never edit their owner fields to force migration;
+select still-authorized source files for explicit recovery instead.
+
 Read-only inventory (from the plugin directory):
 
 ```sh
