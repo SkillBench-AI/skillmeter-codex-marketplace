@@ -228,3 +228,33 @@ test("chunk routing and authorization use one current credential snapshot", asyn
   };
   assert.equal(await logger.processPendingTranscript(file, credentials.device_id), "sent");
 });
+
+for (const changedPrincipal of [false, true]) test(`broker credential rotation ${changedPrincipal ? "blocks a different user" : "preserves the same user's queue"}`, async () => {
+  const brokerToken = (user, jti) => jwt("tenant-uuid", 4102444800, {
+    github_id: undefined, broker_sub: user, jti,
+  });
+  save({ license_jwt: brokerToken("broker-user-a", "old") });
+  const file = stage();
+  assert.ok(file);
+  const rotated = brokerToken(changedPrincipal ? "broker-user-b" : "broker-user-a", "new");
+  save({ license_jwt: rotated });
+  let calls = 0;
+  global.fetch = async (_, options) => {
+    calls++;
+    assert.equal(options.headers.Authorization, `Bearer ${rotated}`);
+    return { ok: true };
+  };
+  assert.equal(await upload(file), changedPrincipal ? "skip" : "sent");
+  assert.equal(calls, changedPrincipal ? 0 : 1);
+  assert.equal(fs.existsSync(file), changedPrincipal);
+});
+
+test("combined drain honors an explicit transcript endpoint override", async () => {
+  const file = stage();
+  global.fetch = async (url) => {
+    assert.equal(url, "https://collector.invalid/logs/codex/transcript");
+    return { ok: true };
+  };
+  assert.equal(await logger.drainQueuesOnce("https://collector.invalid/logs/codex", 1000), 1);
+  assert.equal(fs.existsSync(file), false);
+});

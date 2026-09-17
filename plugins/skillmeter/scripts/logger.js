@@ -761,9 +761,10 @@ function transcriptScope(cwd, token) {
   const salt = getOrCreateHashSalt(), deviceId = getDeviceId();
   if (!salt || !deviceId) return null;
   const claims = decodeJwtPayload(token);
-  const identity = claims.github_id || claims.user_alt_id;
-  // Tokens without a stable principal can stage, but rotation requires a new
-  // capture. Never deliver one principal's queued transcript as another user.
+  const identity = claims.broker_sub || claims.github_id || claims.user_alt_id;
+  // Broker licences identify the user with broker_sub; sub names the tenant.
+  // Without a stable principal, token rotation cannot reuse this queue. Never
+  // deliver one principal's queued transcript as another user.
   const owner = transcriptQueue.hmac(salt, JSON.stringify([claims.iss, claims.aud, claims.sub, identity || token]));
   return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner };
 }
@@ -1205,7 +1206,7 @@ async function drainQueuesOnce(backendUrl, timeoutMs) {
     return 0;
   }
   const logs = await drainFailedLogs(backendUrl, timeoutMs);
-  const transcripts = await drainPendingTranscripts(undefined, timeoutMs);
+  const transcripts = await drainPendingTranscripts(backendUrl, timeoutMs);
   return logs + transcripts;
 }
 
