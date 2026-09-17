@@ -108,6 +108,7 @@ async function refreshExpiredJwt(jwt, deviceId) {
 
 async function silentGhActivate(deviceId, options = {}, expected = credstore.recoverySnapshot()) {
   if (credstore.getSignedOut()) return {outcome:"signed_out"};
+  if (deviceId !== expected.deviceId || !credstore.isRecoveryCurrent(expected)) return {outcome:"superseded"};
   const prior = expected.marker || identity.identity(expected.token);
   if (!options.interactive && !prior) return {outcome:"signin_required"};
   let ghToken;
@@ -139,7 +140,7 @@ async function silentGhActivate(deviceId, options = {}, expected = credstore.rec
   const {orgs:scopedOrgs} = narrowOrgsToScope(orgs, scope);
   const current = credstore.recoverySnapshot();
   if (current.generation !== expected.generation || current.token !== expected.token) return {outcome:"superseded"};
-  return credstore.commitSignin({jwt:issued.token, orgs:options.orgScope ? scopedOrgs : orgs, expectedGeneration:expected.generation})
+  return credstore.commitSignin({jwt:issued.token, orgs:options.orgScope ? scopedOrgs : orgs, expectedGeneration:expected.generation, expected})
     ? {outcome:"reactivated", token:issued.token} : {outcome:"signed_out"};
 }
 async function trySilentGhActivate(deviceId, options = {}) {
@@ -160,7 +161,7 @@ function revokeIfCurrent(expected, source) {
   return true;
 }
 
-async function ensureFreshLicense(deviceId, {source = "daemon"} = {}) {
+async function ensureFreshLicense(deviceId, {source = "daemon", force = false} = {}) {
   if (!deviceId || credstore.getSignedOut()) return null;
   fs.mkdirSync(STATE_DIR, {recursive:true, mode:0o700});
   // Existing durable PID lock: never take over a live owner on a timer. This
@@ -170,9 +171,10 @@ async function ensureFreshLicense(deviceId, {source = "daemon"} = {}) {
   try {
     if (credstore.getSignedOut()) return null;
     const expected = credstore.recoverySnapshot();
+    if (expected.signedOut || expected.deviceId !== deviceId) return null;
     const previous = status.readLicenseStatus();
     if (status.refreshBlockedReason(previous)) return null;
-    if (expected.token && !credstore.isLicenseTokenExpired(expected.token)) return expected.token;
+    if (!force && expected.token && !credstore.isLicenseTokenExpired(expected.token)) return expected.token;
     // Claude's 60-second refresh cooldown, separate from failure backoff.
     // A new SessionStart may retry immediately, but still takes the PID lock.
     if (source !== "session_start" && previous.last_attempt_at !== null && Date.now()-previous.last_attempt_at < 60000) return null;
@@ -185,6 +187,7 @@ async function ensureFreshLicense(deviceId, {source = "daemon"} = {}) {
           ? {outcome:"rotated", token:result.token} : {outcome:"superseded"};
       }
     }
+    if ((!result || result.outcome === "rejected") && !credstore.isRecoveryCurrent(expected)) return null;
     if (!result || result.outcome === "rejected") result = await silentGhActivate(deviceId, {}, expected);
     if (["rotated","reactivated"].includes(result.outcome)) {
       status.recordRefreshSuccess({source, outcome:result.outcome}); return result.token;

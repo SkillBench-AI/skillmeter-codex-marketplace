@@ -1,5 +1,10 @@
 # ADR001 implementation checkpoint, 2026-09-14
 
+Historical checkpoint. The September 18 reconciliation preserves this lifecycle
+behavior while incorporating main's credential writer lock and device-aware
+snapshots. Claude's later broker cutover is not implemented here; see
+`credential-reconciliation.md` and the current draft PR status.
+
 M1 implements the previously failing 34-case acceptance contract. The local
 acceptance suite now passes 34/34 and `npm run check` passes 413/413. The prior
 red baseline remains in `lifecycle-baseline.json` as historical evidence.

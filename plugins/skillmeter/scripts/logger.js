@@ -89,6 +89,13 @@ function getLicenseToken() {
   return credstore.getLicenseToken(LOG_DIR);
 }
 
+// Uncached read for the upload path. The retry daemon can outlive several
+// sign-ins, so it must see a token another process refreshed rather than the
+// snapshot credstore cached when this process started.
+function getLicenseTokenUncached() {
+  return credstore.getLicenseTokenUncached(LOG_DIR);
+}
+
 function getTelemetryGloballyDisabled() {
   return credstore.getTelemetryDisabled();
 }
@@ -104,7 +111,12 @@ function setTelemetryGloballyDisabled(disabled) {
 // License refresh follows the shared ADR001 outcome/status model.
 // ---------------------------------------------------------------------------
 async function tryRefreshLicense(deviceId, options) {
-  try { return await ensureFreshLicense(deviceId, options); }
+  try {
+    getLicenseTokenUncached();
+    const token = await ensureFreshLicense(deviceId, { ...options, force: isLicenseRejected() });
+    if (token) clearLicenseRejected();
+    return token;
+  }
   catch { console.error("[skillmeter] License recovery unavailable; retry at next lifecycle boundary"); return null; }
 }
 
@@ -272,6 +284,36 @@ const ACTIVE_LOG_STALE_MS =
 const DRAIN_ONCE_LOCK_FILE = path.join(LOG_DIR, ".drain-once.lock");
 const DRAIN_ONCE_LOCK_STALE_MS = 30_000;
 
+// Set when the ingest edge rejects our license (401/403). A JWT can be revoked
+// or signed by a rotated key long before its `exp`, and the cheap local expiry
+// check cannot see that — so without this marker tryRefreshLicense would
+// short-circuit on a "still fresh" token and every sweep would resubmit the
+// same rejected credential until the batches aged out. Cleared as soon as a
+// rotation or a successful upload proves the credential works again.
+const LICENSE_REJECTED_FILE = path.join(LOG_DIR, ".license-rejected");
+
+/** Record that the ingest edge rejected the stored license. */
+function markLicenseRejected(status) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    fs.writeFileSync(LICENSE_REJECTED_FILE, `${status} ${Date.now()}\n`);
+  } catch {}
+}
+
+/** Clear the rejection marker once the license is known to work. */
+function clearLicenseRejected() {
+  try { fs.unlinkSync(LICENSE_REJECTED_FILE); } catch {}
+}
+
+/** True while a rejection is outstanding, i.e. a refresh is owed. */
+function isLicenseRejected() {
+  try {
+    return fs.existsSync(LICENSE_REJECTED_FILE);
+  } catch {
+    return false;
+  }
+}
+
 // Retry-monitor singleton lock: ensures at most one long-running retry daemon
 // runs across concurrent Codex sessions on this machine. The daemon refreshes
 // the lock mtime as a heartbeat and removes it on exit.
@@ -341,6 +383,10 @@ function atomicWriteFileSync(targetPath, data) {
 // Authentication outcomes retain queued data and never consume the poison
 // retry budget. Other 4xx responses except 408/429 are payload rejections.
 // ---------------------------------------------------------------------------
+function isAuthHttpStatus(status) {
+  return status === 401 || status === 402 || status === 403;
+}
+
 function isPermanentHttpStatus(status) {
   if (status === 408 || status === 429) return false;
   return status >= 400 && status < 500;
@@ -350,6 +396,8 @@ function isPermanentHttpStatus(status) {
 //   "sent"   — 2xx; the file was renamed to `.sent`.
 //   "poison" — permanent server rejection; the payload will never be accepted.
 //   "retry"  — transient failure (5xx / 408 / 429 / network / timeout).
+//   "auth"   — no valid license, or the edge rejected the token (401/402/403);
+//              the batch stays queued and its retry budget is untouched.
 //   "skip"   — nothing to do (missing file).
 // Standalone callers can ignore the value; processSealedBatch uses it to decide
 // between salvage, quarantine, and a bounded retry.
@@ -375,10 +423,14 @@ async function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) 
       signal: AbortSignal.timeout(timeoutMs),
     });
     if (res.ok) {
+      clearLicenseRejected();
       fs.renameSync(logFile, `${logFile}.sent`);
       return "sent";
     }
-    if ([401, 402, 403].includes(res.status)) return "auth";
+    if (isAuthHttpStatus(res.status)) {
+      if (res.status !== 402) markLicenseRejected(res.status);
+      return "auth";
+    }
     return isPermanentHttpStatus(res.status) ? "poison" : "retry";
   } catch { return "retry"; }
 }
@@ -400,9 +452,10 @@ function transcriptScope(cwd, requireConsent = true, requestToken) {
   const salt = getOrCreateHashSalt(), deviceId = getDeviceId();
   if (!salt || !deviceId) return null;
   const claims = decodeJwtPayload(token);
-  const identity = claims.github_id || claims.user_alt_id;
-  // Tokens without a stable principal can stage, but rotation requires a new
-  // capture. Never deliver one principal's queued transcript as another user.
+  const identity = claims.broker_sub || claims.github_id || claims.user_alt_id;
+  // Broker licences identify the user with broker_sub; sub names the tenant.
+  // Without a stable principal, token rotation cannot reuse this queue. Never
+  // deliver one principal's queued transcript as another user.
   const owner = transcriptQueue.hmac(salt, JSON.stringify([claims.iss, claims.aud, claims.sub, identity || token]));
   const scope = { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, repoKey: decision.repoKey, deviceId, owner };
   return { ...scope, consentStamp: repositoryQueue.consentStamp(scope) };
@@ -468,14 +521,18 @@ async function sendTranscriptChunk(meta, compressed, backendUrl, timeoutMs) {
       body: compressed,
       signal: AbortSignal.timeout(timeoutMs || TRANSCRIPT_TIMEOUT),
     });
-    if (res.ok) return "sent";
+    if (res.ok) {
+      clearLicenseRejected();
+      return "sent";
+    }
     if (res.status === 409 && (await res.json()).error === "transcript-baseline-missing") return "reset-required";
+    if (isAuthHttpStatus(res.status) && res.status !== 402) markLicenseRejected(res.status);
     // Auth rejection must not clear shared credentials or fall back to anonymous
     // transcript upload. Keep this chunk and all later chunks for scoped retry.
     if (meta.queueDir) transcriptQueue.writeDurable(path.join(meta.queueDir, "diagnostic.json"),
       JSON.stringify({ code: `http-${res.status}`, seq: meta.seq, at: new Date().toISOString() }));
     console.error(`[skillmeter] Transcript chunk ${meta.seq}: HTTP ${res.status}; retained`);
-    return (res.status === 401 || res.status === 403) ? "skip" : "retry";
+    return isAuthHttpStatus(res.status) ? "auth" : "retry";
   } catch { return "retry"; }
 }
 
@@ -487,15 +544,30 @@ async function uploadPendingTranscript(pendingPath, deviceId, backendUrl, timeou
     // recovery; never auto-migrate or quarantine historical data on startup.
     return "skip";
   }
-  const meta = transcriptQueue.metadata(pendingPath);
-  if (deviceId !== meta.scope.deviceId) return "skip";
   const dir = path.dirname(path.dirname(pendingPath));
-  let outcome = "skip";
-  await drainTranscriptDirectory(dir, async (chunk, body) => {
-    outcome = await sendTranscriptChunk({ ...chunk, queueDir: dir }, body, backendUrl, timeoutMs);
+  try {
+    const meta = transcriptQueue.metadata(pendingPath);
+    if (deviceId !== meta.scope.deviceId) return "skip";
+    let outcome = "skip";
+    await drainTranscriptDirectory(dir, async (chunk, body) => {
+      outcome = await sendTranscriptChunk({ ...chunk, queueDir: dir }, body, backendUrl, timeoutMs);
+      return outcome;
+    });
     return outcome;
-  });
-  return outcome;
+  } catch {
+    recordTranscriptQueueFailure(dir);
+    return "retry";
+  }
+}
+
+function recordTranscriptQueueFailure(dir) {
+  console.error("[skillmeter] Transcript queue unavailable; retained for retry");
+  try {
+    transcriptQueue.writeDurable(path.join(dir, "diagnostic.json"),
+      JSON.stringify({ code: "queue-unavailable", at: new Date().toISOString() }));
+  } catch {
+    console.error("[skillmeter] Could not persist transcript queue diagnostic");
+  }
 }
 
 function transferTranscript(transcriptPath, deviceId, backendUrl, context = {}) {
@@ -512,15 +584,26 @@ function requestTranscriptCapture(input, options = {}) {
   fs.mkdirSync(TRANSCRIPT_CAPTURES_DIR, { recursive: true, mode: 0o700 });
   const salt = getOrCreateHashSalt();
   const cacheKey = transcriptQueue.hmac(salt, String(input.session_id || "unknown"));
-  const cachePath = path.join(TRANSCRIPT_CAPTURES_DIR, cacheKey + ".json");
   let paths = collectTranscriptPaths(input, { ...options, discover: options.discover !== false });
-  if (!paths.length && fs.existsSync(cachePath)) {
-    const cached = JSON.parse(fs.readFileSync(cachePath, "utf8"));
-    if (cached.scope.owner === scope.owner && cached.scope.repoKey === scope.repoKey) paths = cached.paths;
+  if (!paths.length) {
+    // Read old session hints as well as the new independent source hints.
+    for (const name of fs.readdirSync(TRANSCRIPT_CAPTURES_DIR)) {
+      if (name !== `${cacheKey}.json` && !new RegExp(`^${cacheKey}-[a-f0-9]{64}\\.json$`).test(name)) continue;
+      try {
+        const cached = JSON.parse(fs.readFileSync(path.join(TRANSCRIPT_CAPTURES_DIR, name), "utf8"));
+        if (scopeStillAllowed(cached.scope)) paths.push(...cached.paths);
+      } catch { /* Another valid source hint can still recover this session. */ }
+    }
   }
-  if (!paths.length) return 0;
-  for (const source of paths) observeTranscriptConsent(source, cwd);
-  transcriptQueue.writeDurable(cachePath, JSON.stringify({ scope, paths }));
+  paths = [...new Set(paths)];
+  // Separate source keys avoid lost updates when parent/subagent hooks race.
+  // A later parent-only hook must not remove the subagent's capture request.
+  for (const source of paths) {
+    observeTranscriptConsent(source, cwd);
+    const sourceKey = transcriptQueue.hmac(salt, path.resolve(source));
+    const cachePath = path.join(TRANSCRIPT_CAPTURES_DIR, `${cacheKey}-${sourceKey}.json`);
+    transcriptQueue.writeDurable(cachePath, JSON.stringify({ scope, paths: [source] }));
+  }
   return paths.length;
 }
 function purgeDisallowedTranscriptPayloads() {
@@ -546,12 +629,21 @@ function purgeDisallowedTranscriptPayloads() {
 
 function stageRequestedTranscripts() {
   if (!fs.existsSync(TRANSCRIPT_CAPTURES_DIR)) return;
-  for (const name of fs.readdirSync(TRANSCRIPT_CAPTURES_DIR).filter(n => /^[a-f0-9]{64}\.json$/.test(n))) {
+  for (const name of fs.readdirSync(TRANSCRIPT_CAPTURES_DIR).filter(n => /^[a-f0-9]{64}(?:-[a-f0-9]{64})?\.json$/.test(n))) {
     try {
       const capture = JSON.parse(fs.readFileSync(path.join(TRANSCRIPT_CAPTURES_DIR, name), "utf8"));
       for (const source of capture.paths) {
-        observeTranscriptConsent(source, capture.scope.cwd);
-        if (scopeStillAllowed(capture.scope)) stageTranscriptForUpload(source, { cwd: capture.scope.cwd, scope: capture.scope });
+        try {
+          observeTranscriptConsent(source, capture.scope.cwd);
+          if (!scopeStillAllowed(capture.scope)) continue;
+          // Stage all slices even if the retry daemon has exited. Bound the
+          // loop by the initial size so a growing source cannot hold this
+          // detached drain forever; later hooks capture subsequent growth.
+          const maxSlices = Math.ceil(fs.statSync(source).size / transcriptQueue.STAGE_BYTES) + 1;
+          for (let slice = 0; slice < maxSlices; slice++) {
+            if (!stageTranscriptForUpload(source, { cwd: capture.scope.cwd, scope: capture.scope })) break;
+          }
+        } catch { console.error("[skillmeter] Capture source unavailable; other sources continue"); }
       }
     } catch { console.error("[skillmeter] Capture hint unavailable; retained for retry"); }
   }
@@ -632,7 +724,7 @@ function recoverStaleActiveLog(cwd = process.cwd()) {
 }
 
 // Backwards-compatible flush: seal the active log and upload it immediately.
-function flushEventLog(backendUrl = getBackendUrl()) {
+function flushEventLog(backendUrl) {
   const sealed = sealEventLog();
   if (!sealed) return Promise.resolve();
   return transferEventLog(sealed, backendUrl);
@@ -812,8 +904,10 @@ async function processLockedBatch(batchPath, backendUrl, timeoutMs) {
         clearBatchMeta(batchPath);
         return "sent";
       }
-      if (retryOutcome === "retry") {
-        return "retry";
+      if (retryOutcome === "retry" || retryOutcome === "auth") {
+        // The salvaged batch was never judged on its merits — a transient
+        // failure, or the license aged out between the two posts. Keep it.
+        return retryOutcome;
       }
       quarantineFile(batchPath, "still rejected after partial-rejection salvage");
       clearBatchMeta(batchPath);
@@ -845,7 +939,7 @@ async function processPendingTranscript(pendingPath, deviceId, backendUrl, timeo
   return uploadPendingTranscript(pendingPath, deviceId, backendUrl, timeoutMs);
 }
 
-async function drainFailedLogs(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
+async function drainFailedLogs(backendUrl, timeoutMs) {
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Event-log drain skipped (telemetry globally disabled)`);
     return 0;
@@ -887,13 +981,7 @@ async function drainPendingTranscripts(backendUrl, timeoutMs) {
       count += transcriptQueue.pendingFiles(dir).length;
       await drainTranscriptDirectory(dir, (meta, body) => sendTranscriptChunk({ ...meta, queueDir: dir }, body, backendUrl, timeoutMs));
     } catch {
-      console.error("[skillmeter] Transcript queue unavailable; retained while other queues continue");
-      try {
-        transcriptQueue.writeDurable(path.join(dir, "diagnostic.json"),
-          JSON.stringify({ code: "queue-unavailable", at: new Date().toISOString() }));
-      } catch {
-        console.error("[skillmeter] Could not persist transcript queue diagnostic");
-      }
+      recordTranscriptQueueFailure(dir);
     }
   }
   return count;
@@ -903,19 +991,19 @@ async function drainPendingTranscripts(backendUrl, timeoutMs) {
  * Drain both durable queues once. Returns the number of queued items found
  * (pre-drain), which callers use to decide whether work remains.
  */
-async function drainQueuesOnce(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
+async function drainQueuesOnce(backendUrl, timeoutMs) {
   if (!retention.enforce()) return 0;
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Queue drain skipped (telemetry globally disabled)`);
     return 0;
   }
   const logs = await drainFailedLogs(backendUrl, timeoutMs);
-  const transcripts = await drainPendingTranscripts(undefined, timeoutMs);
+  const transcripts = await drainPendingTranscripts(backendUrl, timeoutMs);
   return logs + transcripts;
 }
 
 // Backwards-compatible alias retained for existing callers/tests.
-function retryFailedLogs(backendUrl = getBackendUrl(process.cwd())) {
+function retryFailedLogs(backendUrl) {
   void drainFailedLogs(backendUrl);
 }
 
@@ -1536,6 +1624,7 @@ module.exports = {
   getDeviceId,
   getOrCreateHashSalt,
   getLicenseToken,
+  getLicenseTokenUncached,
   getTelemetryGloballyDisabled,
   setTelemetryGloballyDisabled,
   tryRefreshLicense,
@@ -1577,6 +1666,7 @@ module.exports = {
   // Poison-batch handling + atomic writes
   atomicAppendLine,
   atomicWriteFileSync,
+  isAuthHttpStatus,
   isPermanentHttpStatus,
   salvageBatch,
   quarantineFile,
@@ -1626,6 +1716,9 @@ module.exports = {
   RETRY_DAEMON_LOCK_FILE,
   DEFAULT_BACKEND_URL,
   getBackendUrl,
+  markLicenseRejected,
+  clearLicenseRejected,
+  isLicenseRejected,
   AGENT_NAME,
   SETTINGS_RELATIVE,
 };

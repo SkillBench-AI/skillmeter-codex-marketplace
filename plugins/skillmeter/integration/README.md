@@ -1,4 +1,10 @@
-# Local synthetic transport contract
+# Transcript transport and local verification
+
+Run `npm run check` from the repo root for plugin-only checks. They cover chunk
+headers, scope/consent, auth containment, response loss, concurrent drains and
+SIGKILL recovery. No collector or pipeline deployment is required.
+
+## Optional cross-repository contract
 
 Run with the pipeline's locked Python 3.14 environment (`moto[s3]`, boto3 and
 skillbench-preprocessor installed), Node >=20, and collector Go 1.25.5 dependencies.
@@ -68,3 +74,40 @@ message and tool link; only opaque inputs and the now unavailable patch-derived
 path differ. The scripted analyzer omits optional tech-stack refinement because
 this fixture no longer discloses file paths, and omits productivity. Its report
 still must pass the existing ten-block threshold and ingest schema.
+
+## Queue and recovery
+
+Capture hints live in `logs/transcripts/captures-v1/`. Immutable gzip chunks,
+transaction manifests and raw-byte cursors live in `logs/transcripts/chunks-v1/`.
+Transactions publish chunks before advancing the cursor; restart recovery finishes
+published transactions. Rewrites start a higher reset generation. Transport UUIDs
+use raw position/content to preserve distinct records that sanitize identically.
+
+Chunks budget gzip/base64 bytes below 5 MiB including a 128 KiB envelope reserve;
+decoded records must remain below 32 MiB. Malformed/oversized input retains the
+source and cursor with a content-free diagnostic. Failed chunks and superseded
+reset generations remain subject to the seven-day retention, sign-out and consent
+retirement policy. Retirement journals prevent resets from restoring deleted data;
+automatic historical replay is outside this change.
+
+Queues created with an earlier owner-identity formula may not be eligible for
+delivery and remain subject to retention. Never edit their owner fields to force migration;
+select still-authorized source files for explicit recovery instead.
+
+Read-only inventory (from the plugin directory):
+
+```sh
+PLUGIN_DATA=/path/to/plugin-data node scripts/transcript_inventory.js
+```
+
+The existing collector accepts chunk headers and ignores the optional
+`X-Transcript-Protocol: codex-chunks-v1`. Collector #44 adds a 409 response when
+an append has no baseline, allowing a scoped full reset. Without that extension,
+resuming beyond the collector's today/yesterday window can yield a partial
+snapshot; the plugin fix alone does not establish multi-day continuity.
+
+Rollback: pause telemetry and retain the plugin data directory. The old client
+cannot read `chunks-v1`; do not relabel chunks as legacy snapshots or run old
+cleanup against them. Resume with a compatible client or select still-authorized
+sources for explicit recovery. Live transcript storage, installed-client behavior
+and report correctness are tracked separately in INF-231 / INF-210.

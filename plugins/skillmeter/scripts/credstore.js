@@ -15,30 +15,6 @@ const telemetryStore = require("./lib/telemetry-store");
 const { getLicenseOrgs } = require("./lib/jwt");
 const licenseIdentity = require("./lib/license-identity");
 
-function mutateStore(fn) {
-  fs.mkdirSync(path.dirname(CRED_FILE), {recursive:true, mode:0o700});
-  const release = require("./lib/transcript-delta").acquireLock(CRED_FILE + ".lock");
-  if (!release) throw new Error("credential-store-busy");
-  try {
-    const store = readStore();
-    const result = fn(store);
-    if (result === false) return false;
-    writeStore(store); _cache = store;
-    return result === undefined ? true : result;
-  } finally { release(); }
-}
-
-// Snapshot identity and intent before an asynchronous exchange. Token rotation
-// may only commit while that exact sign-in is still current.
-function recoverySnapshot() {
-  const s = readStore();
-  return {token:s.license_jwt || null, generation:s.auth_generation || null, marker:s.prior_signin || null};
-}
-function snapshotMatches(s, expected) {
-  return !s.signed_out && (s.license_jwt || null) === expected.token &&
-    (s.auth_generation || null) === expected.generation &&
-    JSON.stringify(s.prior_signin || null) === JSON.stringify(expected.marker);
-}
 function commitRecovery(jwt, expected) {
   const next = licenseIdentity.identity(jwt);
   const prior = expected.marker || licenseIdentity.identity(expected.token);
@@ -105,6 +81,91 @@ function writeStore(data) {
   }
 }
 
+// Raw file text, for detecting an interleaved write byte-for-byte. null when
+// the file is absent or unreadable.
+function readRaw() {
+  try { return fs.readFileSync(CRED_FILE, "utf8"); }
+  catch { return null; }
+}
+
+const PREEMPTED = Symbol("credential-store-preempted");
+
+// One locked read/modify/write attempt. Returns PREEMPTED when the state we
+// based the mutation on is no longer the state on disk.
+function mutateStoreOnce(fn) {
+  fs.mkdirSync(path.dirname(CRED_FILE), { recursive: true, mode: 0o700 });
+  const { acquireLock } = require("./lib/credential-lock");
+  const deadline = Date.now() + 1000;
+  let release;
+  while (!(release = acquireLock(`${CRED_FILE}.lock`))) {
+    if (Date.now() >= deadline) throw new Error("credential-store-busy");
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
+  }
+  try {
+    const baseline = readRaw();
+    const store = readStore();
+    const result = fn(store);
+    if (result === false) return false;
+    // Fence before persisting. Holding the lock is not by itself proof that we
+    // still hold it: the age backstop reaps a holder that was paused long
+    // enough (SIGSTOP, swap, a suspended VM), and a replacement writer may have
+    // committed in the meantime. Writing our pre-pause snapshot would roll that
+    // back silently — the shared file has no other guard, since commitSignin's
+    // `expected` check is optional and signin.js omits it.
+    if (!release.stillHeld() || readRaw() !== baseline) return PREEMPTED;
+    writeStore(store);
+    _cache = store;
+    return result === undefined ? true : result;
+  } finally { release(); }
+}
+
+// All Codex writers participate in the same read/modify/write lock. Other
+// clients must adopt this protocol too for cross-client serialization.
+//
+// A preempted attempt is retried rather than failed: `fn` is a transform over
+// whatever the store currently holds, so re-running it against the newer state
+// is exactly the intended outcome — our change lands on top of theirs instead
+// of replacing it.
+function mutateStore(fn) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    const outcome = mutateStoreOnce(fn);
+    if (outcome !== PREEMPTED) return outcome;
+  }
+  throw new Error("credential-store-busy");
+}
+
+// Snapshot disk state before a network exchange, never the process cache.
+// The generation also detects sign-out/sign-in cycles that reuse a JWT.
+function recoverySnapshot() {
+  const store = readStore();
+  return {
+    token: store.license_jwt || null,
+    generation: store.auth_generation || null,
+    deviceId: store.device_id || null,
+    signedOut: store.signed_out === true,
+    marker: store.prior_signin || null,
+  };
+}
+
+function snapshotMatches(store, expected) {
+  return !expected.signedOut && store.signed_out !== true &&
+    (store.license_jwt || null) === expected.token &&
+    (store.auth_generation || null) === expected.generation &&
+    (store.device_id || null) === expected.deviceId &&
+    JSON.stringify(store.prior_signin || null) === JSON.stringify(expected.marker);
+}
+
+function isRecoveryCurrent(expected) {
+  return snapshotMatches(readStore(), expected);
+}
+
+function commitRefresh(jwt, expected) {
+  return mutateStore(store => {
+    if (!snapshotMatches(store, expected)) return false;
+    store.license_jwt = jwt;
+  });
+}
+
 function readKeychain(service) {
   const account = process.env.USER || process.env.USERNAME || "";
   if (!account) return null;
@@ -134,11 +195,16 @@ function migrateFromKeychain() {
   }
 
   if (migrated) {
-    writeStore(store);
+    mutateStore(current => {
+      for (const key of Object.keys(KEYCHAIN_SERVICES)) {
+        if (key === "license_jwt" && current.signed_out) continue;
+        if (!current[key] && store[key]) current[key] = store[key];
+      }
+    });
     console.error("[skillmeter] Migrated credentials from Keychain to ~/.skillbench/credentials.json");
   }
 
-  return store;
+  return readStore();
 }
 
 function migrateFromFallbackFiles(logDir) {
@@ -170,11 +236,15 @@ function migrateFromFallbackFiles(logDir) {
   }
 
   if (migrated) {
-    writeStore(store);
+    mutateStore(current => {
+      for (const key of Object.keys(legacyMap)) {
+        if (!current[key] && store[key]) current[key] = store[key];
+      }
+    });
     console.error("[skillmeter] Migrated credentials from legacy fallback files");
   }
 
-  return store;
+  return readStore();
 }
 
 let _cache = null;
@@ -193,28 +263,39 @@ function loadStore(logDir) {
   return _cache;
 }
 
-function getDeviceId(logDir) {
+// Create-if-absent under the writer lock. A busy lock here almost always means
+// a sibling hook is creating the very same field — several fire at once on a
+// machine's first session — so we re-read instead of propagating the timeout.
+// getDeviceId/getOrCreateHashSalt are called on the hot hook path, where a
+// throw would fail the hook outright; every other writer keeps fail-fast.
+function ensureIdentityField(logDir, key, create) {
   const store = loadStore(logDir);
-  if (store.device_id) return store.device_id;
+  if (store[key]) return store[key];
+  try {
+    mutateStore(current => {
+      if (!current[key]) current[key] = create();
+    });
+  } catch (err) {
+    if (err && err.message === "credential-store-busy") {
+      const fresh = readStore();
+      _cache = fresh;
+      if (fresh[key]) return fresh[key];
+    }
+    throw err;
+  }
+  return _cache[key];
+}
 
-  const newId = crypto.randomUUID().toUpperCase();
-  store.device_id = newId;
-  writeStore(store);
-  _cache = store;
-  console.error("[skillmeter] New device ID created");
-  return newId;
+function getDeviceId(logDir) {
+  return ensureIdentityField(logDir, "device_id", () =>
+    crypto.randomUUID().toUpperCase()
+  );
 }
 
 function getOrCreateHashSalt(logDir) {
-  const store = loadStore(logDir);
-  if (store.hash_salt) return store.hash_salt;
-
-  const newSalt = crypto.randomBytes(16).toString("hex");
-  store.hash_salt = newSalt;
-  writeStore(store);
-  _cache = store;
-  console.error("[skillmeter] New hash salt created");
-  return newSalt;
+  return ensureIdentityField(logDir, "hash_salt", () =>
+    crypto.randomBytes(16).toString("hex")
+  );
 }
 
 function getLicenseToken(logDir) {
@@ -222,17 +303,37 @@ function getLicenseToken(logDir) {
   return store.license_jwt || null;
 }
 
-function setLicenseToken(jwt) {
+/**
+ * Read the license JWT straight from disk, bypassing the in-process cache.
+ *
+ * The retry daemon lives for hours and can outlast several sign-ins, sign-outs
+ * and token rotations performed by other processes. A cached read would pin it
+ * to the token that existed when it started, so the upload path uses this.
+ *
+ * A fresh read that finds nothing means nothing: we never fall back to a token
+ * this process cached earlier, because that token may have been signed out or
+ * removed by another client in the meantime. The one thing still worth doing is
+ * the one-time Keychain / legacy-file migration for a pre-migration install —
+ * and only when the fresh store shows no sign-out. That migration writes
+ * through to disk, so we re-read from disk rather than trusting its return.
+ *
+ * @param {string} [logDir] - legacy fallback location, for migration only.
+ * @returns {string|null} the stored license JWT, or null.
+ */
+function getLicenseTokenUncached(logDir) {
   const store = readStore();
-  if (jwt) {
-    store.license_jwt = jwt;
-  } else {
-    // Empty/falsey clears the stored token (used by the 401/403 retry path
-    // and force-refresh) without touching device identity.
-    delete store.license_jwt;
-  }
-  writeStore(store);
-  _cache = store;
+  if (store.signed_out === true) return null;
+  if (store.license_jwt) return store.license_jwt;
+  loadStore(logDir);
+  return readStore().license_jwt || null;
+}
+
+function setLicenseToken(jwt) {
+  mutateStore(store => {
+    if (jwt) store.license_jwt = jwt;
+    else delete store.license_jwt;
+    store.auth_generation = crypto.randomUUID();
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -296,16 +397,11 @@ function getTelemetryDisabled() {
 
 function setTelemetryDisabled(disabled) {
   telemetryStore.setGlobalEnabled(!disabled);
-  const store = readStore();
-  // An explicit toggle adopts the shared policy. Retaining a second OFF here
-  // would prevent another client from resuming that canonical decision.
-  delete store.telemetry_disabled;
-  writeStore(store);
-  _cache = store;
+  // Remove the legacy flag under the same lock as every credential writer.
+  mutateStore(store => { delete store.telemetry_disabled; });
 }
 
-// Drop license + org list atomically. Preserves device_id and hash_salt so the
-// machine identity survives a sign-out / sign-in cycle.
+// Keep identity while invalidating every in-flight authentication exchange.
 function signOut() {
   mutateStore(store => {
   delete store.license_jwt;
@@ -319,8 +415,6 @@ function signOut() {
   require("./lib/queue-retention").purgeAll();
 }
 
-// Called when the user explicitly signs in — clears the signed-out sentinel so
-// the next gh attempt is unblocked.
 function markEngaged() {
   if (getSignedOut()) require("./lib/queue-retention").purgeAll();
   mutateStore(store => {
@@ -352,9 +446,10 @@ function normalizeOrgs(orgs) {
 //
 // When `orgs` is an empty array, we store it explicitly as [] to distinguish
 // "intentionally narrowed to zero orgs" from "not signed in" (missing field).
-function commitSignin({ jwt, orgs, expectedGeneration }) {
+function commitSignin({ jwt, orgs, expectedGeneration, expected }) {
   const committed = mutateStore(store => {
   if (store.signed_out === true) return false;
+  if (expected && !snapshotMatches(store, expected)) return false;
   if (expectedGeneration !== undefined && (store.auth_generation || null) !== expectedGeneration) return false;
   store.license_jwt = jwt;
   store.allowed_github_orgs = normalizeOrgs(orgs);
@@ -403,7 +498,13 @@ module.exports = {
   getDeviceId,
   getOrCreateHashSalt,
   getLicenseToken,
+  getLicenseTokenUncached,
   setLicenseToken,
+  isRecoveryCurrent,
+  commitRefresh,
+  // The locked read/modify/write primitive every writer above goes through.
+  // Exported so the race suite can drive a preemption from inside a mutation.
+  mutateStore,
   isLicenseTokenExpired,
   getAllowedGitHubOrgs,
   hasExplicitOrgScope,

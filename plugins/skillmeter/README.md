@@ -148,72 +148,28 @@ from Claude Code while sharing the same `otel_logs` table.
 
 ### Durable uploads, background flush, and retry
 
-Lifecycle hooks persist small capture hints under `logs/transcripts/captures-v1/`.
-The detached drain stages sanitized immutable gzip chunks in
-`logs/transcripts/chunks-v1/{source-key}/batch-*/`. Each transaction has a manifest,
-chunk hashes, and a ready marker. The cursor is persisted only after every chunk
-is durable; restart recovery finishes published transactions before sending.
+Hooks save capture hints; the detached drain stages sanitized gzip chunks with
+`X-Chunk-Seq` and `X-Chunk-Reset`. A durable raw-byte cursor, prefix HMAC, and
+per-source lock preserve order across interruption and retries. Partial final
+lines wait for the next capture. Only acknowledged chunks are removed.
 
-The Codex cursor records complete raw byte position, prefix HMAC, file identity,
-sequence and reset generation. Partial final lines remain eligible on the next
-capture. Rewrites and replacements start a higher reset baseline; every later
-chunk carries that baseline so delayed old-generation appends cannot reappear.
-Records receive a transport UUID derived from raw position/content before
-sanitization, preserving separate records that redact to the same content.
+Capture and every send recheck the user/device, signout, allowed repository and
+consent. Ingest auth failures retain the shared licence; 401/403 request refresh.
+Unsent data expires after seven days and is retired on sign-out, licence revocation
+or consent withdrawal. Legacy snapshots are never automatically replayed.
 
-A per-source PID lock serializes staging and draining, including concurrent hook
-processes. Live locks are never stolen by age. Retries retain the exact gzip body,
-sequence and reset header. Only acknowledged chunks are removed. Chunk splitting
-uses actual gzip/base64 size plus a 128 KiB envelope reserve, capped at 5 MiB;
-individual decoded records must stay below the collector's 32 MiB default.
-Oversized or malformed complete records preserve the cursor/source and save a
-content-free diagnostic. Deployment-specific gateway limits still need verification.
+This draft adds expiry-time capture, bounded recovery backoff and prior-sign-in
+identity checks. Full broker-auth alignment remains pending; see
+`docs/lifecycle-implementation.md` in the marketplace repository.
 
-Capture and each upload recheck signout, global disable, current user/device,
-the licensed organization and canonical consent. Source `session_meta`/`turn_context` cwd values
-must remain in the authorized repository. Queues cannot move between principals.
-A rejected/expired token retains the queue until recovery or seven-day expiry;
-collector rejection never retries anonymously. A 402 from license refresh or
-activation revokes the sign-in and removes unsent telemetry. Event delivery
-follows the same authenticated-only rule.
+The existing collector accepts sequenced chunks. Collector #44 separately adds
+missing-baseline recovery for sessions resumed beyond its today/yesterday lookup;
+without it, multi-day continuity is not guaranteed. Pipeline #148 and a live
+report check are separate follow-ups to plugin delivery.
 
-`SessionStart` still recovers/seals orphaned event logs and starts the bounded
-retry monitor. Uploaded `.sent` files retain the 30-day cleanup policy. Unsent
-events, transcript chunks and legacy pending/poison payloads expire after seven
-days and are removed on sign-out. Legacy snapshots remain excluded from automatic
-upload. Retirement journals prevent deleted chunks from being reconstructed by
-a later baseline reset. Busy or interrupted removals are retried from a durable
-request. Damaged retirement journals block that source instead of guessing which
-bytes may be uploaded.
-
-ADR001 recovery rotates expired tokens through `/refresh`. Network errors,
-404, 5xx and malformed replies retain the token with bounded exponential backoff.
-Only 401/410 or a missing token with a prior sign-in may use silent GitHub
-activation. Recovery verifies the GitHub identity before exchange and the minted
-user, organization and audience before commit. `telemetry.js status` reports
-terminal outcomes and the next retry time. See `docs/lifecycle-implementation.md`
-in the marketplace repository for shared-client compatibility limits.
-
-For a content-free, read-only recovery inventory:
-
-```bash
-PLUGIN_DATA=/path/to/plugin-data node scripts/transcript_inventory.js
-```
-
-This reports counts and known diagnostics; old quarantine reasons may be unknown
-because the former client did not persist them. It never replays anything.
-Recovery must select still-authorized source files and pass them through the
-current sanitizer and scope gates. Do not bulk-replay historical queues.
-
-Rollback: the old client cannot read `chunks-v1`. Pause telemetry first and retain
-the entire plugin data directory; drain with the repaired client after validation,
-or keep the data for explicit recovery. Do not relabel chunks as legacy snapshots
-or run an older cleanup routine against retained transcript queues.
-
-The synthetic integration verifies multi-day storage continuity and the existing
-analyzer with scripted model responses. Real model execution, backend ingest/read,
-installed CLI/desktop behavior and correct-user dashboard evidence remain required.
-No release artifact or deployment is produced by these changes.
+For queue details, synthetic tests, recovery inventory and rollback, see the
+[integration guide](integration/README.md). Installed CLI/desktop capture and
+production transcript storage still require verification.
 
 
 ## Install

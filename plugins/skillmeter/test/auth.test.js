@@ -247,7 +247,7 @@ test("an untrusted activation override falls back to the prod default", () => {
   }
 });
 
-// --- authenticated upload + 401/403 clear-and-retry ------------------------
+// --- authenticated upload retains credentials on rejection ----------------
 
 test("transferEventLog attaches the JWT and marks the batch .sent on 2xx", async () => {
   const token = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
@@ -271,7 +271,8 @@ test("transferEventLog attaches the JWT and marks the batch .sent on 2xx", async
   }
 });
 
-test("transferEventLog retains the license and batch after one authenticated 401", async () => {
+for (const status of [401, 402, 403]) test(`transferEventLog retains the license and batch after authenticated ${status}`, async () => {
+  logger.clearLicenseRejected();
   const token = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
   credstore.setLicenseToken(token);
 
@@ -279,7 +280,7 @@ test("transferEventLog retains the license and batch after one authenticated 401
   const srv = await startServer((req, res) => {
     seen.push(req.headers["authorization"] || null);
     if (seen.length === 1) {
-      res.writeHead(401);
+      res.writeHead(status);
       res.end("nope");
     } else {
       res.writeHead(200);
@@ -294,7 +295,9 @@ test("transferEventLog retains the license and batch after one authenticated 401
     assert.equal(seen[0], `Bearer ${token}`, "first attempt is authenticated");
     assert.equal(credstore.getLicenseToken(), token, "rejected token is retained for recovery");
     assert.equal(fs.existsSync(logFile), true, "auth failure retains the batch");
+    assert.equal(logger.isLicenseRejected(), status !== 402);
   } finally {
+    logger.clearLicenseRejected();
     await srv.close();
   }
 });
