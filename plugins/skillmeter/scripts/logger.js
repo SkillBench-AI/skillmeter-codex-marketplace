@@ -830,15 +830,30 @@ async function uploadPendingTranscript(pendingPath, deviceId, backendUrl, timeou
     // recovery; never auto-migrate or quarantine historical data on startup.
     return "skip";
   }
-  const meta = transcriptQueue.metadata(pendingPath);
-  if (deviceId !== meta.scope.deviceId) return "skip";
   const dir = path.dirname(path.dirname(pendingPath));
-  let outcome = "skip";
-  await drainTranscriptDirectory(dir, async (chunk, body) => {
-    outcome = await sendTranscriptChunk({ ...chunk, queueDir: dir }, body, backendUrl, timeoutMs);
+  try {
+    const meta = transcriptQueue.metadata(pendingPath);
+    if (deviceId !== meta.scope.deviceId) return "skip";
+    let outcome = "skip";
+    await drainTranscriptDirectory(dir, async (chunk, body) => {
+      outcome = await sendTranscriptChunk({ ...chunk, queueDir: dir }, body, backendUrl, timeoutMs);
+      return outcome;
+    });
     return outcome;
-  });
-  return outcome;
+  } catch {
+    recordTranscriptQueueFailure(dir);
+    return "retry";
+  }
+}
+
+function recordTranscriptQueueFailure(dir) {
+  console.error("[skillmeter] Transcript queue unavailable; retained for retry");
+  try {
+    transcriptQueue.writeDurable(path.join(dir, "diagnostic.json"),
+      JSON.stringify({ code: "queue-unavailable", at: new Date().toISOString() }));
+  } catch {
+    console.error("[skillmeter] Could not persist transcript queue diagnostic");
+  }
 }
 
 function transferTranscript(transcriptPath, deviceId, backendUrl, context = {}) {
@@ -1205,13 +1220,7 @@ async function drainPendingTranscripts(backendUrl, timeoutMs) {
       count += transcriptQueue.pendingFiles(dir).length;
       await drainTranscriptDirectory(dir, (meta, body) => sendTranscriptChunk({ ...meta, queueDir: dir }, body, backendUrl, timeoutMs));
     } catch {
-      console.error("[skillmeter] Transcript queue unavailable; retained while other queues continue");
-      try {
-        transcriptQueue.writeDurable(path.join(dir, "diagnostic.json"),
-          JSON.stringify({ code: "queue-unavailable", at: new Date().toISOString() }));
-      } catch {
-        console.error("[skillmeter] Could not persist transcript queue diagnostic");
-      }
+      recordTranscriptQueueFailure(dir);
     }
   }
   return count;

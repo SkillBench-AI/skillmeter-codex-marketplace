@@ -32,7 +32,11 @@ for (const point of ["before-publish", "after-publish", "after-cursor"]) {
     assert.equal(child.signal, "SIGKILL", child.stderr.toString());
     const dir = queue.queueDirectories(f.root)[0];
     assert.ok(fs.existsSync(path.join(dir, "lock")), "killed process must leave its lock");
+    if (point === "before-publish") {
+      assert.equal(fs.readdirSync(dir).filter(name => name.startsWith(".stage-")).length, 1);
+    }
     queue.stage(f.root, f.source, scope, "salt");
+    assert.deepEqual(fs.readdirSync(dir).filter(name => name.startsWith(".stage-")), [], "unpublished crash artifacts are reaped");
     const sent = [];
     await queue.drainDirectory(dir, async (meta, body) => {
       sent.push({ meta, records: zlib.gunzipSync(body).toString().trim().split("\n").map(JSON.parse) });

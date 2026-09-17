@@ -301,3 +301,16 @@ test("a missing source in a legacy session hint does not block its surviving sou
   await logger.drainPendingTranscripts();
   assert.equal(calls, 1);
 });
+
+for (const corruption of ["chunk", "metadata", "cursor"]) test(`direct upload retains ${corruption} corruption with a retry outcome and diagnostic`, async () => {
+  const file = stage();
+  const dir = path.dirname(path.dirname(file));
+  const damaged = corruption === "chunk" ? file : corruption === "metadata"
+    ? path.join(path.dirname(file), "commit.json") : path.join(dir, "cursor.json");
+  fs.writeFileSync(damaged, "invalid fixture data that must not enter diagnostics");
+  const before = fs.readFileSync(file);
+  assert.equal(await upload(file), "retry");
+  assert.deepEqual(fs.readFileSync(file), before);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "diagnostic.json"))).code, "queue-unavailable");
+  assert.ok(!fs.readFileSync(path.join(dir, "diagnostic.json"), "utf8").includes("invalid fixture"));
+});
