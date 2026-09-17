@@ -52,10 +52,13 @@ test("token refresh for the same principal resumes pending chunks", async () => 
   assert.equal(await upload(file), "sent"); assert.equal(fs.existsSync(file), false);
 });
 
-for (const status of [400, 401, 403, 413, 429, 500]) test(`HTTP ${status} retains chunk and credentials without anonymous retry`, async () => {
+for (const status of [400, 401, 402, 403, 413, 429, 500]) test(`HTTP ${status} retains chunk and credentials without anonymous retry`, async () => {
   const file = stage(), before = fs.readFileSync(store); let calls = 0;
   global.fetch = async () => { calls++; return { ok: false, status }; };
-  await upload(file); assert.equal(calls, 1); assert.equal(fs.existsSync(file), true);
+  const outcome = await upload(file);
+  assert.equal(outcome, [401, 402, 403].includes(status) ? "auth" : "retry");
+  assert.equal(logger.isLicenseRejected(), [401, 403].includes(status));
+  assert.equal(calls, 1); assert.equal(fs.existsSync(file), true);
   assert.deepEqual(fs.readFileSync(store), before);
 });
 
@@ -201,4 +204,27 @@ test("failed transcript upload counts as queued work for the retry monitor", asy
   global.fetch = async () => ({ ok: true });
   assert.equal(await logger.drainPendingTranscripts("https://collector.invalid/logs/codex", 1000), 1);
   assert.equal(await logger.drainPendingTranscripts("https://collector.invalid/logs/codex", 1000), 0);
+});
+
+
+test("successful transcript delivery clears the rejected-license marker", async () => {
+  const file = stage();
+  global.fetch = async () => ({ ok: false, status: 401 });
+  assert.equal(await upload(file), "auth");
+  assert.equal(logger.isLicenseRejected(), true);
+  global.fetch = async () => ({ ok: true });
+  assert.equal(await upload(file), "sent");
+  assert.equal(logger.isLicenseRejected(), false);
+});
+
+test("chunk routing and authorization use one current credential snapshot", async () => {
+  const file = stage();
+  const rotated = jwt("synthetic-user", 4102444800, { jti: "new-token" });
+  save({ license_jwt: rotated });
+  global.fetch = async (url, options) => {
+    assert.equal(url, "https://synthetic.meter.skillbench.com/logs/codex/transcript");
+    assert.equal(options.headers.Authorization, `Bearer ${rotated}`);
+    return { ok: true };
+  };
+  assert.equal(await logger.processPendingTranscript(file, credentials.device_id), "sent");
 });

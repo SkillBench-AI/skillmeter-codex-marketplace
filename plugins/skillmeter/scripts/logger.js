@@ -82,6 +82,13 @@ function getLicenseToken() {
   return credstore.getLicenseToken(LOG_DIR);
 }
 
+// Uncached read for the upload path. The retry daemon can outlive several
+// sign-ins, so it must see a token another process refreshed rather than the
+// snapshot credstore cached when this process started.
+function getLicenseTokenUncached() {
+  return credstore.getLicenseTokenUncached(LOG_DIR);
+}
+
 function getTelemetryGloballyDisabled() {
   return credstore.getTelemetryDisabled();
 }
@@ -102,23 +109,38 @@ function setTelemetryGloballyDisabled(disabled) {
 // ---------------------------------------------------------------------------
 
 async function tryRefreshLicense(deviceId) {
-  const current = getLicenseToken();
-  if (current && !credstore.isLicenseTokenExpired(current)) {
+  // Preserve legacy migration, then snapshot the shared file rather than the
+  // token this daemon cached before another process signed in or out.
+  getLicenseTokenUncached();
+  const expected = credstore.recoverySnapshot();
+  if (expected.signedOut || !deviceId || expected.deviceId !== deviceId) return null;
+  const current = expected.token;
+  // A token that still looks fresh is normally left alone — the local expiry
+  // check is the whole point of the cheap short-circuit. The exception is a
+  // token the edge has actually rejected: `exp` says nothing about revocation
+  // or a rotated signing key, so an outstanding rejection forces the rotation
+  // that unwedges the queue.
+  if (current && !credstore.isLicenseTokenExpired(current) && !isLicenseRejected()) {
     return current;
   }
-  if (!deviceId) return null;
-  if (credstore.getSignedOut()) return null;
-
   // /refresh first when we have a token to rotate. refreshExpiredJwt returns
   // null on 410 (sliding window), 404 (endpoint not deployed), 401 (bad
   // signature), or any network/parse error — falling through to gh in all cases.
   if (current) {
-    const fresh = await refreshExpiredJwt(current, deviceId);
-    if (fresh) return fresh;
+    const fresh = await refreshExpiredJwt(current, deviceId, expected);
+    if (fresh) {
+      clearLicenseRejected();
+      return fresh;
+    }
   }
 
+  // A discarded refresh must not fall through to activation and undo the
+  // newer sign-in, token rotation, or sign-out that caused the discard.
+  if (!credstore.isRecoveryCurrent(expected)) return null;
   try {
-    return await trySilentGhActivate(deviceId);
+    const activated = await trySilentGhActivate(deviceId, { expected });
+    if (activated) clearLicenseRejected();
+    return activated;
   } catch {
     return null;
   }
@@ -415,7 +437,18 @@ function isValidBackendUrl(url) {
   }
 }
 
-function getBackendUrl() {
+/**
+ * Resolve the ingest URL for one specific license JWT.
+ *
+ * Routing and authorization MUST come from the same credential snapshot: if
+ * another process signs in to a different tenant mid-drain, deriving the host
+ * from one token and attaching another would send tenant B's JWT to tenant A's
+ * meter host. Callers therefore read their token once and pass it here.
+ *
+ * @param {string|null} token - license JWT to route by, or null when unknown.
+ * @returns {string} a validated https ingest URL.
+ */
+function getBackendUrlForToken(token) {
   const override = process.env.SKILLMETER_BACKEND_URL;
   if (override) {
     if (!isValidBackendUrl(override)) {
@@ -431,9 +464,7 @@ function getBackendUrl() {
   // meter host in its `aud` (audience) claim. Prefer a fresh token, but fall
   // back to the claim of an expired one (allow-expired) so a drain still reaches
   // the correct tenant host while a refresh is pending. Append the Codex ingest
-  // route, then fall through to the prod default when there's no usable token —
-  // preserving the unauthenticated upload path.
-  const token = getLicenseToken();
+  // route, then fall through to the prod default when there's no usable token.
   const endpoint =
     getEndpointFromToken(token) || getEndpointFromTokenAllowExpired(token);
   if (endpoint) {
@@ -448,6 +479,17 @@ function getBackendUrl() {
   }
 
   return DEFAULT_BACKEND_URL;
+}
+
+/**
+ * Ingest URL for the currently stored license. Convenience wrapper for callers
+ * that have no token in hand; the upload path uses getBackendUrlForToken with
+ * its own uncached read instead.
+ *
+ * @returns {string} a validated https ingest URL.
+ */
+function getBackendUrl() {
+  return getBackendUrlForToken(getLicenseToken());
 }
 
 const EVENT_TIMEOUT =
@@ -500,6 +542,36 @@ const ACTIVE_LOG_STALE_MS =
 const DRAIN_ONCE_LOCK_FILE = path.join(LOG_DIR, ".drain-once.lock");
 const DRAIN_ONCE_LOCK_STALE_MS = 30_000;
 
+// Set when the ingest edge rejects our license (401/403). A JWT can be revoked
+// or signed by a rotated key long before its `exp`, and the cheap local expiry
+// check cannot see that — so without this marker tryRefreshLicense would
+// short-circuit on a "still fresh" token and every sweep would resubmit the
+// same rejected credential until the batches aged out. Cleared as soon as a
+// rotation or a successful upload proves the credential works again.
+const LICENSE_REJECTED_FILE = path.join(LOG_DIR, ".license-rejected");
+
+/** Record that the ingest edge rejected the stored license. */
+function markLicenseRejected(status) {
+  try {
+    fs.mkdirSync(LOG_DIR, { recursive: true });
+    fs.writeFileSync(LICENSE_REJECTED_FILE, `${status} ${Date.now()}\n`);
+  } catch {}
+}
+
+/** Clear the rejection marker once the license is known to work. */
+function clearLicenseRejected() {
+  try { fs.unlinkSync(LICENSE_REJECTED_FILE); } catch {}
+}
+
+/** True while a rejection is outstanding, i.e. a refresh is owed. */
+function isLicenseRejected() {
+  try {
+    return fs.existsSync(LICENSE_REJECTED_FILE);
+  } catch {
+    return false;
+  }
+}
+
 // Retry-monitor singleton lock: ensures at most one long-running retry daemon
 // runs across concurrent Codex sessions on this machine. The daemon refreshes
 // the lock mtime as a heartbeat and removes it on exit.
@@ -508,8 +580,8 @@ const RETRY_DAEMON_LOCK_STALE_MS =
   parseInt(process.env.SKILLMETER_RETRY_DAEMON_STALE_MS || "", 10) || 5 * 60 * 1000;
 
 // Build the shared upload headers. The license JWT is passed explicitly (not
-// read here) so callers can decide whether to attach it — they drop an expired
-// token proactively and retry without auth after a 401/403.
+// read here), keeping routing and authorization on the same snapshot. Upload
+// callers retain queued data when authentication is unavailable or rejected.
 function commonHeaders(token, extra = {}) {
   const headers = {
     "Content-Type": "application/x-ndjson",
@@ -568,12 +640,22 @@ function atomicWriteFileSync(targetPath, data) {
 // ---------------------------------------------------------------------------
 // HTTP outcome classification
 //
-// 401/403 are handled separately (clear the token + retry without auth). Of the
-// remaining non-2xx responses we treat 408 (Request Timeout), 429 (Too Many
-// Requests), and every 5xx as transient (worth retrying) and any other 4xx as
-// permanent — the server is telling us this exact payload will never be
+// 401 / 402 / 403 are auth outcomes, never poison. Both ingest routes sit
+// behind the meter JWT authorizer, so an unauthenticated or stale-token request
+// is rejected at the edge and the collector never sees the payload — the batch
+// itself is still perfectly deliverable and only needs a valid license. We keep
+// it queued for the next refreshed session instead of spending the retry budget
+// (or quarantining it) over something the payload had nothing to do with.
+//
+// Of the remaining non-2xx responses we treat 408 (Request Timeout), 429 (Too
+// Many Requests), and every 5xx as transient (worth retrying) and any other 4xx
+// as permanent — the server is telling us this exact payload will never be
 // accepted, so it must not be retried forever.
 // ---------------------------------------------------------------------------
+function isAuthHttpStatus(status) {
+  return status === 401 || status === 402 || status === 403;
+}
+
 function isPermanentHttpStatus(status) {
   if (status === 408 || status === 429) return false;
   return status >= 400 && status < 500;
@@ -583,73 +665,78 @@ function isPermanentHttpStatus(status) {
 //   "sent"   — 2xx; the file was renamed to `.sent`.
 //   "poison" — permanent server rejection; the payload will never be accepted.
 //   "retry"  — transient failure (5xx / 408 / 429 / network / timeout).
+//   "auth"   — no valid license, or the edge rejected the token (401/402/403);
+//              the batch stays queued and its retry budget is untouched.
 //   "skip"   — nothing to do (missing file).
 // Standalone callers can ignore the value; processSealedBatch uses it to decide
 // between salvage, quarantine, and a bounded retry.
-function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVENT_TIMEOUT) {
+function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) {
   if (!logFile || !fs.existsSync(logFile)) return Promise.resolve("skip");
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Event log transfer skipped (telemetry globally disabled)`);
     return Promise.resolve("skip");
   }
 
-  const storedToken = getLicenseToken();
-  // Proactive: never send a JWT we already know is past its exp. The ingest
-  // endpoint accepts unauthenticated batches, so dropping the token still lets
-  // the upload through and the next session's refresh re-authenticates.
-  const initialToken = storedToken && !isJwtExpired(storedToken) ? storedToken : null;
-  if (storedToken && !initialToken) {
-    console.error(`[skillmeter] Event log: dropping expired license JWT before send`);
-  }
-
-  const compressed = zlib.gzipSync(fs.readFileSync(logFile));
   const baseName = path.basename(logFile);
 
-  const doPost = (token) =>
-    fetch(backendUrl, {
-      method: "POST",
-      headers: commonHeaders(token),
-      body: compressed,
-      signal: AbortSignal.timeout(timeoutMs),
-    });
+  // A valid (non-expired) license JWT is REQUIRED — the ingest route is behind
+  // the meter JWT authorizer and does not accept unauthenticated batches. No
+  // valid token → leave the batch queued for the next refreshed session rather
+  // than spend it on a request that cannot succeed. Read uncached so the
+  // long-lived retry daemon sees a token another process just refreshed.
+  const token = getLicenseTokenUncached();
+  if (!token || isJwtExpired(token)) {
+    console.error(
+      `[skillmeter] Event log: no valid license JWT — ${baseName} kept queued`
+    );
+    return Promise.resolve("auth");
+  }
+
+  // Route by the SAME token we are about to authenticate with, unless the
+  // caller pinned a URL (tests, SKILLMETER_BACKEND_URL). A drain that resolved
+  // the host up front could otherwise pair tenant A's endpoint with tenant B's
+  // JWT after a concurrent sign-in.
+  const url = backendUrl || getBackendUrlForToken(token);
+
+  const compressed = zlib.gzipSync(fs.readFileSync(logFile));
 
   const markSent = () => {
     try { fs.renameSync(logFile, `${logFile}.sent`); } catch {}
   };
 
-  const classify = (status) =>
-    isPermanentHttpStatus(status) ? "poison" : "retry";
-
   console.error(
     `[skillmeter] Transferring event log: ${baseName} (${compressed.length} bytes gzipped)`
   );
 
-  return doPost(initialToken)
+  return fetch(url, {
+    method: "POST",
+    headers: commonHeaders(token),
+    body: compressed,
+    signal: AbortSignal.timeout(timeoutMs),
+  })
     .then((res) => {
       if (res.ok) {
+        // Proof the stored credential works: drop any outstanding rejection.
+        clearLicenseRejected();
         console.error(`[skillmeter] Event log transferred: ${baseName}`);
         markSent();
         return "sent";
       }
-      // Reactive: the server rejected our Authorization header — clear the bad
-      // token so later requests don't reuse it, then retry once without auth.
-      if (initialToken && (res.status === 401 || res.status === 403)) {
+      // The edge rejected our token. Never clear it here: the credential file
+      // is shared with the Claude Code plugin, so dropping the JWT would sign
+      // the whole machine out of both agents. Rotation is the refresh /
+      // activation path's job; we just leave the batch queued for it.
+      if (isAuthHttpStatus(res.status)) {
+        // 402 is the organization's license state, which no rotation can fix;
+        // 401/403 mean this credential needs replacing, so owe a refresh.
+        if (res.status !== 402) markLicenseRejected(res.status);
         console.error(
-          `[skillmeter] Event log auth rejected (HTTP ${res.status}), clearing license and retrying without auth`
+          `[skillmeter] Event log auth rejected (HTTP ${res.status}) — license kept, ${baseName} kept queued`
         );
-        try { credstore.setLicenseToken(""); } catch {}
-        return doPost(null).then((res2) => {
-          if (res2.ok) {
-            console.error(`[skillmeter] Event log transferred on retry: ${baseName}`);
-            markSent();
-            return "sent";
-          }
-          console.error(`[skillmeter] Event log retry failed: HTTP ${res2.status}`);
-          return classify(res2.status);
-        });
+        return "auth";
       }
       console.error(`[skillmeter] Event log transfer failed: HTTP ${res.status}`);
-      return classify(res.status);
+      return isPermanentHttpStatus(res.status) ? "poison" : "retry";
     })
     .catch((err) => {
       console.error(`[skillmeter] Event log transfer error: ${err.message}`);
@@ -664,10 +751,10 @@ function transferEventLog(logFile, backendUrl = getBackendUrl(), timeoutMs = EVE
 // Legacy TRANSCRIPTS_PENDING_DIR snapshots remain available for selected recovery.
 // ---------------------------------------------------------------------------
 
-function transcriptScope(cwd) {
+function transcriptScope(cwd, token) {
   credstore.refreshFromDisk?.();
   if (getTelemetryGloballyDisabled() || credstore.getSignedOut()) return null;
-  const token = getLicenseToken();
+  token = token || getLicenseTokenUncached();
   if (!token || isJwtExpired(token)) return null;
   const decision = getRepoScopeDecision(cwd);
   if (!decision.allowed || !resolveTelemetryGate(getTelemetryOptIn(cwd), true).capture) return null;
@@ -680,8 +767,8 @@ function transcriptScope(cwd) {
   const owner = transcriptQueue.hmac(salt, JSON.stringify([claims.iss, claims.aud, claims.sub, identity || token]));
   return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner };
 }
-function scopeStillAllowed(scope) {
-  const current = transcriptScope(scope.cwd);
+function scopeStillAllowed(scope, token) {
+  const current = transcriptScope(scope.cwd, token);
   return current && ["repoRoot", "org", "deviceId", "owner"].every(k => current[k] === scope[k]);
 }
 function stageTranscriptForUpload(transcriptPath, context = {}) {
@@ -705,10 +792,10 @@ function stageTranscriptForUpload(transcriptPath, context = {}) {
 }
 
 async function sendTranscriptChunk(meta, compressed, backendUrl, timeoutMs) {
-  if (!scopeStillAllowed(meta.scope)) return "skip";
-  const token = getLicenseToken();
+  const token = getLicenseTokenUncached();
+  if (!token || isJwtExpired(token) || !scopeStillAllowed(meta.scope, token)) return "skip";
   try {
-    const res = await fetch(`${backendUrl || getBackendUrl(meta.scope.cwd)}/transcript`, {
+    const res = await fetch(`${backendUrl || getBackendUrlForToken(token)}/transcript`, {
       method: "POST",
       headers: commonHeaders(token, {
         "X-Device-ID": meta.scope.deviceId,
@@ -720,14 +807,18 @@ async function sendTranscriptChunk(meta, compressed, backendUrl, timeoutMs) {
       body: compressed,
       signal: AbortSignal.timeout(timeoutMs || TRANSCRIPT_TIMEOUT),
     });
-    if (res.ok) return "sent";
+    if (res.ok) {
+      clearLicenseRejected();
+      return "sent";
+    }
     if (res.status === 409 && (await res.json()).error === "transcript-baseline-missing") return "reset-required";
+    if (isAuthHttpStatus(res.status) && res.status !== 402) markLicenseRejected(res.status);
     // Auth rejection must not clear shared credentials or fall back to anonymous
     // transcript upload. Keep this chunk and all later chunks for scoped retry.
     if (meta.queueDir) transcriptQueue.writeDurable(path.join(meta.queueDir, "diagnostic.json"),
       JSON.stringify({ code: `http-${res.status}`, seq: meta.seq, at: new Date().toISOString() }));
     console.error(`[skillmeter] Transcript chunk ${meta.seq}: HTTP ${res.status}; retained`);
-    return (res.status === 401 || res.status === 403) ? "skip" : "retry";
+    return isAuthHttpStatus(res.status) ? "auth" : "retry";
   } catch { return "retry"; }
 }
 
@@ -849,7 +940,7 @@ function recoverStaleActiveLog() {
 }
 
 // Backwards-compatible flush: seal the active log and upload it immediately.
-function flushEventLog(backendUrl = getBackendUrl()) {
+function flushEventLog(backendUrl) {
   const sealed = sealEventLog();
   if (!sealed) return Promise.resolve();
   return transferEventLog(sealed, backendUrl);
@@ -1000,6 +1091,12 @@ async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
     return outcome;
   }
 
+  // Rejected at the authorizer (or never sent for want of a license): the
+  // payload was never judged, so the batch keeps its place in the queue and its
+  // attempt counter is left untouched. A signed-out week must not quarantine a
+  // batch the collector would happily accept.
+  if (outcome === "auth") return "auth";
+
   if (outcome === "poison") {
     const salv = salvageBatch(batchPath);
     if (salv.rewrote) {
@@ -1011,8 +1108,10 @@ async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
         clearBatchMeta(batchPath);
         return "sent";
       }
-      if (retryOutcome === "retry") {
-        return "retry";
+      if (retryOutcome === "retry" || retryOutcome === "auth") {
+        // The salvaged batch was never judged on its merits — a transient
+        // failure, or the license aged out between the two posts. Keep it.
+        return retryOutcome;
       }
       quarantineFile(batchPath, "still rejected after partial-rejection salvage");
       clearBatchMeta(batchPath);
@@ -1044,7 +1143,7 @@ async function processPendingTranscript(pendingPath, deviceId, backendUrl, timeo
   return uploadPendingTranscript(pendingPath, deviceId, backendUrl, timeoutMs);
 }
 
-async function drainFailedLogs(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
+async function drainFailedLogs(backendUrl, timeoutMs) {
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Event-log drain skipped (telemetry globally disabled)`);
     return 0;
@@ -1100,7 +1199,7 @@ async function drainPendingTranscripts(backendUrl, timeoutMs) {
  * Drain both durable queues once. Returns the number of queued items found
  * (pre-drain), which callers use to decide whether work remains.
  */
-async function drainQueuesOnce(backendUrl = getBackendUrl(process.cwd()), timeoutMs) {
+async function drainQueuesOnce(backendUrl, timeoutMs) {
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Queue drain skipped (telemetry globally disabled)`);
     return 0;
@@ -1111,7 +1210,7 @@ async function drainQueuesOnce(backendUrl = getBackendUrl(process.cwd()), timeou
 }
 
 // Backwards-compatible alias retained for existing callers/tests.
-function retryFailedLogs(backendUrl = getBackendUrl(process.cwd())) {
+function retryFailedLogs(backendUrl) {
   void drainFailedLogs(backendUrl);
 }
 
@@ -1743,6 +1842,7 @@ module.exports = {
   getDeviceId,
   getOrCreateHashSalt,
   getLicenseToken,
+  getLicenseTokenUncached,
   getTelemetryGloballyDisabled,
   setTelemetryGloballyDisabled,
   tryRefreshLicense,
@@ -1783,6 +1883,7 @@ module.exports = {
   // Poison-batch handling + atomic writes
   atomicAppendLine,
   atomicWriteFileSync,
+  isAuthHttpStatus,
   isPermanentHttpStatus,
   salvageBatch,
   quarantineFile,
@@ -1829,6 +1930,10 @@ module.exports = {
   RETRY_DAEMON_LOCK_FILE,
   DEFAULT_BACKEND_URL,
   getBackendUrl,
+  getBackendUrlForToken,
+  markLicenseRejected,
+  clearLicenseRejected,
+  isLicenseRejected,
   AGENT_NAME,
   SETTINGS_RELATIVE,
 };

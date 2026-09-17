@@ -27,6 +27,7 @@ require.cache[credentialModule] = {
     getDeviceId: () => "M0-SYNTHETIC-DEVICE",
     getOrCreateHashSalt: () => "m0-fixture-only-salt",
     getLicenseToken: () => token,
+    getLicenseTokenUncached: () => token,
     getSignedOut: () => false,
     getAllowedGitHubOrgs: () => ["synthetic"],
     getTelemetryDisabled: () => false,
