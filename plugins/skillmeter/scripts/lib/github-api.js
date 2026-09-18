@@ -1,9 +1,6 @@
 /**
- * GitHub REST API client used by the sign-in flow.
- *
- * Pure HTTP — no credstore or filesystem dependencies. Callers pass the
- * caller-resolved GitHub token in; this module only knows how to ask
- * GitHub about it.
+ * GitHub identity lookup for sign-in. Callers supply the token; this module
+ * does not read credentials or filesystem state.
  */
 
 /**

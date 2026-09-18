@@ -1,24 +1,8 @@
 #!/usr/bin/env node
 /**
- * Long-running retry monitor for failed uploads.
- *
- * Rationale: the SessionStart pass only retries pending uploads once. If the
- * backend is down when a session starts and recovers a few minutes in, sealed
- * event logs and staged transcripts would otherwise sit on disk until the
- * *next* session. This daemon closes that gap by sweeping the durable queues on
- * a loop while a session is active.
- *
- * Codex (unlike Claude Code) has no managed monitor lifecycle that would stop
- * this process at session end, so the daemon is a self-managed singleton:
- *
- *   - A heartbeat lock (`.retry-daemon.lock`) guarded by logger.js keeps at most
- *     one daemon running across concurrent sessions. We refresh it each sweep.
- *   - We self-terminate after MAX_LIFETIME_MS, or once the queues have been
- *     empty for MAX_IDLE_SWEEPS in a row, so we never orphan after Codex exits.
- *   - SIGTERM / SIGINT exit cleanly. Nothing on disk is lost on abrupt exit
- *     because sealed logs and staged transcripts survive for the next pass.
- *
- * Output contract: keep stdout silent and write diagnostics to stderr only.
+ * Retry durable uploads periodically after SessionStart.
+ * A heartbeat lock coordinates monitors across sessions. Idle and lifetime limits
+ * bound the detached process; queued data survives exit. Diagnostics use stderr.
  */
 
 const logger = require("../logger.js");
@@ -61,14 +45,8 @@ function shutdown(reason, code = 0) {
   process.exit(code);
 }
 
-// Proactively rotate the license JWT while a long session runs, off the hot
-// SessionStart hook path. tryRefreshLicense short-circuits with no network when
-// the cheap local isLicenseTokenExpired check says the token is still
-// comfortably valid (outside the 5-min expiry skew), so a healthy token costs
-// nothing here. On a session that outlives its token, the ~120s sweep keeps the
-// JWT inside the /refresh sliding window, so uploads stay authenticated without
-// the user re-signing in. Best-effort: any failure is logged and swallowed so
-// it never aborts the sweep or the drain below — the next sweep retries.
+// Refresh before each drain. Healthy tokens normally need no network call;
+// refresh errors leave the sweep running and can be retried on a later sweep.
 async function maybeRefreshLicense() {
   try {
     const deviceId = logger.getDeviceId();

@@ -3,35 +3,17 @@ name: check-repo-scope
 description: Check whether the current repo belongs in the user's allowed GitHub org scope.
 ---
 
-Use this skill when the user wants to know whether a workspace should be
-included in SkillBench collection.
+Inspect the nearest Git repository, resolve its GitHub remote owner and compare
+it with the user's allowed scope. Report whether it matches, is excluded, has
+no Git repository, or has no recognizable GitHub remote. Non-GitHub remotes are
+outside GitHub-owner filtering.
 
-Workflow:
+Scope can be narrowed through:
 
-1. Inspect the nearest Git repository for the current workspace.
-2. Resolve the best available Git remote and extract the GitHub org when
-   possible.
-3. Compare that org with any allowed-org list the user provides.
-4. Explain one of the following outcomes clearly:
-   - approved GitHub org match
-   - GitHub repo outside the allowed org list
-   - no Git repository
-   - no recognizable GitHub remote
-5. If the user wants to proceed with collection, suggest or run the matching
-   `skillbench collect --allowed-orgs ...` command.
+- `signin --org your-github-org`: stored sign-in scope.
+- `SKILLMETER_REPO_SCOPE_ORGS`: comma-separated environment filter.
+- `skillmeter.repoScopeOrgs` in `.codex/settings.local.json`: project filter.
 
-If the user belongs to several orgs but only wants some of them collected,
-point them at the narrowing allow-list (intersected with their signed-in orgs,
-so it can only restrict scope):
-
-- `signin --org skillbench-ai` — narrows the orgs persisted at sign-in (also
-  re-scopes an existing sign-in in place).
-- `SKILLMETER_REPO_SCOPE_ORGS="skillbench-ai"` — env var, machine-wide.
-- `{ "skillmeter": { "repoScopeOrgs": ["skillbench-ai"] } }` in
-  `<project>/.codex/settings.local.json` — per-project.
-
-Guardrails:
-
-- Keep the explanation concrete and repo-specific.
-- If the remote is not GitHub-backed, explain that SkillBench will treat it as
-  out of scope for GitHub-org filtering.
+Filters intersect with signed-in identities; they cannot add access. If the
+user requests a batch export, use the matching
+`skillbench collect --allowed-orgs ...` command.

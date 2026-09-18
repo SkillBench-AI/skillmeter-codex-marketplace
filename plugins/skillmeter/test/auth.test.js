@@ -1,14 +1,9 @@
 "use strict";
 
 /**
- * Unit tests for the identity/auth flow and JWT-derived endpoint routing
- * (SBEE-152). Run with:  node --test plugins/skillmeter/test/auth.test.js
- *
- * The tests isolate state by pointing HOME at a throwaway directory (so the
- * shared ~/.skillbench/credentials.json is never touched) and seeding a
- * device id + hash salt up front so credstore never reaches for the macOS
- * Keychain. All of this MUST happen before credstore/logger are required,
- * since CRED_FILE is resolved from os.homedir() at module load.
+ * Authentication and tenant routing tests.
+ * Set the temporary HOME and seed identity before requiring plugin modules;
+ * credential paths are resolved at import time and must not reach Keychain.
  */
 
 const os = require("os");
@@ -267,7 +262,7 @@ test("transferEventLog attaches the JWT and marks the batch .sent on 2xx", async
 
 // The credential file is shared with the Claude Code plugin, so an auth
 // failure here must never delete the token: doing so signs the whole machine
-// out of both agents (INF-200). The batch is re-sent once a refresh lands.
+// out of both agents. The batch is re-sent once a refresh lands.
 for (const status of [401, 402, 403]) {
   test(`transferEventLog keeps the license and the batch on HTTP ${status}`, async () => {
     const token = makeJwt({ exp: FUTURE });

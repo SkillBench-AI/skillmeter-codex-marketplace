@@ -1,8 +1,6 @@
 /**
- * License-JWT helpers: payload decode, expiry check, telemetry endpoint
- * resolution. No signature verification — these are trust-the-server-or-
- * rotate semantics; the plugin only uses claims to make local routing
- * decisions and to avoid sending tokens we know are already expired.
+ * Decode license claims for local routing and expiry checks.
+ * Signature verification remains the server's responsibility.
  */
 
 // 30-second grace window tolerates minor clock skew between client and server.
@@ -37,19 +35,10 @@ function isJwtExpired(token) {
 }
 
 /**
- * Resolve the per-tenant telemetry endpoint baked into the license JWT. The
- * activation Lambda mints the tenant's meter URL into the standard JWT `aud`
- * (audience) claim — the token's intended recipient IS the tenant's meter host
- * — so each tenant's traffic routes to its own meter hostname without per-tenant
- * plugin builds. (The legacy `telemetry_endpoint` claim is deprecated and no
- * longer consulted.)
+ * Read the HTTPS audience from an unexpired token, or return null.
+ * The legacy telemetry_endpoint claim is not used.
  *
- * Returns the claim host (no trailing slash) or null when no endpoint can be
- * resolved — when the token is absent, already expired, or the claim is missing
- * or not an https URL. The caller (getBackendUrl) falls back to the shipped
- * default in that case; it must never block uploads on a null here.
- *
- * @param {string} token - License JWT (raw, as stored in the credstore)
+ * @param {string} token
  * @returns {string|null}
  */
 function getEndpointFromToken(token) {
@@ -59,14 +48,10 @@ function getEndpointFromToken(token) {
 }
 
 /**
- * Like getEndpointFromToken but WITHOUT the expiry gate. The telemetry endpoint
- * is routing info (the per-tenant meter hostname) and stays valid after the
- * token has aged out — and the collector accepts unauthenticated uploads, so a
- * drain can still deliver to the correct tenant host while a refresh is pending
- * or failing. Never used for an auth decision; only to recover the destination
- * URL. Mirrors the Claude plugin's helper of the same name.
+ * Read the audience without checking expiry, for routing only.
+ * Upload callers still require a fresh token before sending.
  *
- * @param {string} token - License JWT (raw, as stored in the credstore)
+ * @param {string} token
  * @returns {string|null}
  */
 function getEndpointFromTokenAllowExpired(token) {
@@ -74,12 +59,8 @@ function getEndpointFromTokenAllowExpired(token) {
   return readEndpointClaim(token);
 }
 
-// Shared claim extraction. The endpoint is read from the standard `aud`
-// (audience) claim, which per RFC 7519 may be a string or an array of strings —
-// we take the first https origin. The claim is server-minted, but reject
-// anything that isn't a plain https origin so a malformed claim can't redirect
-// traffic to a non-TLS host. The legacy `telemetry_endpoint` claim is no longer
-// consulted.
+// Take the first HTTPS-prefixed aud value and remove trailing slashes.
+// The upload path separately validates the destination host.
 function readEndpointClaim(token) {
   const payload = decodeJwtPayload(token);
   if (!payload) return null;

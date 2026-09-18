@@ -1,18 +1,7 @@
 /**
- * GitHub org-scope resolution + narrowing.
- *
- * A signed-in account often belongs to several GitHub orgs. By default the
- * plugin captures telemetry for all of them, but a user can narrow scope to a
- * subset (e.g. only "skillbench-ai"). The same configuration is honored in two
- * places:
- *
- *   - at sign-in, to narrow which orgs get persisted into `allowed_github_orgs`
- *     (so the silent `gh` path doesn't silently enroll every org); and
- *   - at runtime, as the repo-scope gate's allow-list (see logger.js
- *     getRepoScopeDecision / getRepoScopeOrgFilter).
- *
- * Narrowing is always an *intersection* with the user's real memberships — it
- * can only restrict the captured set, never widen it.
+ * Resolve organization filters for sign-in and runtime repository checks.
+ * Explicit CLI scope controls stored memberships; environment and project filters
+ * narrow local evaluation. Filters intersect with memberships and cannot add access.
  */
 
 const { readSettingsFile, SETTINGS_RELATIVE } = require("./settings");

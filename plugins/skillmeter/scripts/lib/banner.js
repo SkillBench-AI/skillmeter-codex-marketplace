@@ -1,9 +1,6 @@
 /**
- * ASCII welcome banner shown on sign-in success. Kept in one place so the
- * signin script and any future in-Codex expansion render the exact same art.
- *
- * Inner box width (between the two │ chars) is 42 columns. Box-drawing glyphs
- * and ✓ all render single-column in modern terminals.
+ * Sign-in banner with a 42-column inner box. Box-drawing glyphs and the
+ * checkmark are assumed to occupy one terminal column each.
  */
 
 function welcomeBanner(orgs) {

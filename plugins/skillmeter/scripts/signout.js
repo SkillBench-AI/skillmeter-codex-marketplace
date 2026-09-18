@@ -1,16 +1,8 @@
 #!/usr/bin/env node
 /**
- * Sign the current machine out of SkillMeter:
- *   - Drop the license JWT and allowed-orgs list.
- *   - Enable the machine-global telemetry kill-switch so queued uploads pause.
- *   - Set `signed_out: true` so the next SessionStart doesn't silently re-mint a
- *     license via a still-authenticated gh CLI.
- *   - Preserve `device_id` and `hash_salt` — the machine identity is persistent
- *     and is reused if the user signs back in.
- *
- * The sign-in flow clears the `signed_out` flag on success.
- *
- * Run directly:  node scripts/signout.js
+ * Remove the shared license and allowed organizations, pause uploads and block
+ * silent reactivation. Preserve device ID and hash salt for the next sign-in.
+ * Usage: node scripts/signout.js.
  */
 
 const credstore = require("./credstore.js");

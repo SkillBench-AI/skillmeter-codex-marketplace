@@ -3,24 +3,16 @@ name: signout
 description: Sign out of SkillMeter and stop all Codex telemetry uploads on this machine.
 ---
 
-Use this skill when the user wants to sign out of SkillMeter, revoke the
-machine's stored license, or stop all telemetry uploads on the machine.
+Run the sign-out script when the user wants to remove the stored SkillMeter
+license and stop collection on this machine:
 
-Run the SkillMeter sign-out script:
-
-```bash
+```sh
 node "$PLUGIN_ROOT/scripts/signout.js"
 ```
 
-What it does:
+This removes the shared license and organization list, pauses telemetry, and
+blocks silent GitHub reactivation. Device ID, hash salt and queued uploads remain.
+Because Claude and Codex share credentials, removing the license affects both.
 
-- Drops the stored license JWT and the cached GitHub-org list.
-- Sets a `signed_out` sentinel so the next session does NOT silently re-mint a
-  license from a still-authenticated `gh` CLI.
-- Enables the machine-global telemetry kill-switch, leaving pending uploads
-  queued until the user signs in or runs the global enable command.
-- Preserves the machine `device_id` and `hash_salt`, so signing back in reuses
-  the same identity.
-
-After sign-out, hooks and background drains skip telemetry uploads until the
-user runs the sign-in flow or the global enable command. Report the script's result to the user.
+Report the result. Resuming the global toggle alone does not restore credentials;
+uploads require signing in again.

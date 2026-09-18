@@ -14,19 +14,8 @@ const {
 } = require("./logger.js");
 const { detectHarness } = require("./harness.js");
 
-// Pre-hook work: rotate a missing/near-expiry license JWT via /refresh (or the
-// silent gh fallback) BEFORE the SessionStart event is built, gated, and logged.
-// Mirrors the Claude plugin's awaited prepareSession(): earlier this ran
-// fire-and-forget from afterLog, so the triggering session kept running with the
-// still-expired token and its own SessionStart event was uploaded unauthenticated
-// (transferEventLog drops an expired JWT before sending). Awaiting the refresh
-// here persists the fresh token first, so the current session's event uploads
-// authenticated and later drains re-resolve the per-tenant endpoint.
-//
-// Best-effort by construction: tryRefreshLicense is internally bounded (the
-// /refresh call has a 5s AbortSignal.timeout) and swallows every failure to
-// null; the surrounding Codex hook timeout (~10s) is the hard ceiling. This
-// never throws and never blocks the session on a hung network.
+// Await refresh before evaluating capture scope or building SessionStart.
+// Refresh errors are ignored; upload callers still enforce token validity.
 async function prepareSession() {
   const deviceId = getDeviceId();
   if (!deviceId || getTelemetryGloballyDisabled()) return;
@@ -38,11 +27,8 @@ async function prepareSession() {
 function buildSessionStartEvent(input, ctx) {
   return {
     source: input.source,
-    // Harness metadata (SBEE-163): presence/shape of the developer's harness
-    // (instruction files, skills, hooks, plugin/agent info). Detected once at
-    // session start and attached here so it flows through the same
-    // sanitizeEventData boundary as every other event field. Metadata only —
-    // no raw harness file contents.
+    // Collect configuration names/counts and bounded custom skill bodies.
+    // runHook sanitizes this block with the rest of the event.
     harness: detectHarness(ctx.cwd, {
       hashSalt: ctx.hashSalt,
       pluginRoot: PLUGIN_ROOT,
@@ -55,10 +41,7 @@ function buildSessionStartEvent(input, ctx) {
   };
 }
 
-// React to the gate runHook already resolved (capture decision stays central —
-// runHook exits when gate.capture is false regardless). Consent is in-context
-// only: opted-in or owned-org auto-enable captures; otherwise we print the
-// enable/disable commands and stay "not configured". No OS dialog.
+// Report the capture decision already resolved by runHook.
 function onGate({ gate, cwd }) {
   if (gate.capture) {
     const note =
@@ -66,11 +49,8 @@ function onGate({ gate, cwd }) {
         ? "(telemetry auto-enabled — repo owned by allowed org)"
         : "(activated)";
     process.stderr.write(`SkillMeter v${PLUGIN_VERSION} ${note}\n`);
-    // Recover an un-rotated event log left by a crashed session, drain the
-    // durable queues once now (detached, non-blocking), and start the
-    // long-running retry monitor so transient outages still drain mid-
-    // session. Cleanup prunes uploaded/aged-out files. This runs before the
-    // SessionStart event is appended, so recovery targets prior sessions.
+    // Recover prior queues before appending this SessionStart event.
+    // Detached workers handle uploads and retries.
     recoverStaleActiveLog();
     spawnDetachedDrain();
     spawnRetryDaemon();
@@ -94,10 +74,7 @@ function runSessionStartHook() {
   return runHook("SessionStart", buildSessionStartEvent, { onGate });
 }
 
-// Refresh the license first (awaited), then run the telemetry hook. Sequenced
-// so the fresh token is persisted before runHook resolves the gate and appends
-// the SessionStart event, matching the Claude plugin. prepareSession never
-// rejects, but .catch keeps the finally chain honest.
+// Attempt refresh before logging; a refresh failure must not skip the hook.
 function main() {
   return prepareSession()
     .catch(() => {})

@@ -1,18 +1,8 @@
 "use strict";
 
 /**
- * Unit tests for the default privacy posture / repo-scope gating (SBEE-153).
- * Run with:  node --test plugins/skillmeter/test/repo-scope.test.js
- *
- * Like auth.test.js, these isolate state by pointing HOME at a throwaway dir
- * (so the shared ~/.skillbench/credentials.json is never touched) and seeding
- * a device id + hash salt up front so credstore never reaches for the macOS
- * Keychain. This MUST happen before credstore/logger are required, since
- * CRED_FILE is resolved from os.homedir() at module load.
- *
- * The contract under test mirrors the Claude plugin exactly: with no signed-in
- * orgs every event is dropped (`not_activated`); there is no permissive
- * allow-all default and no per-project allow-list.
+ * Repository eligibility tests with temporary HOME and seeded credentials.
+ * No stored identities means no capture; configured scope can only narrow access.
  */
 
 const os = require("os");

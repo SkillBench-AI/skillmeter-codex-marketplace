@@ -1,11 +1,8 @@
 "use strict";
 
 /**
- * Unit tests for the shared org-scope resolver + narrowing helper used by both
- * the runtime repo-scope gate and the sign-in flow (SBEE org narrowing).
- *
- * Like the other suites, this isolates state by pointing HOME at a throwaway
- * dir before requiring any plugin module, and clears the env var between cases.
+ * Shared organization-scope resolution and narrowing.
+ * Isolate HOME before importing modules and reset environment overrides per case.
  */
 
 const os = require("os");

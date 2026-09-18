@@ -1,13 +1,7 @@
 #!/usr/bin/env node
 /**
- * Core logging library for the SkillMeter Codex plugin.
- *
- * Each hook script delegates to runHook(), which appends a structured NDJSON
- * record to the per-plugin log file. Stop / SubagentStop flush the batch to
- * the SkillBench ingest endpoint via gzip + POST.
- *
- * The on-wire NDJSON envelope is intentionally the same shape the Claude Code
- * plugin emits, so the backend collector lambda can accept both feeds.
+ * Shared hook logging, transcript staging and durable uploads.
+ * Hooks append sanitized NDJSON; detached workers gzip and send queued data.
  */
 
 const crypto = require("crypto");
@@ -97,16 +91,8 @@ function setTelemetryGloballyDisabled(disabled) {
   return credstore.setTelemetryDisabled(disabled);
 }
 
-// ---------------------------------------------------------------------------
-// License refresh
-//
-// Try the Lambda's /refresh endpoint first (no GitHub round-trip, works for
-// users without gh-cli), then fall back to the silent gh /activate path on
-// 410 / 404 / network failure. Called once per SessionStart so the hook
-// architecture itself rate-limits it to at-most-once-per-session. Best effort:
-// every failure returns null and the session continues unauthenticated, leaving
-// the on-disk queue for the next refreshed session to drain.
-// ---------------------------------------------------------------------------
+// License recovery tries /refresh before GitHub activation. SessionStart and
+// background drains call this helper; failures leave queued data for later retry.
 
 async function tryRefreshLicense(deviceId) {
   // Preserve legacy migration, then snapshot the shared file rather than the
@@ -115,11 +101,7 @@ async function tryRefreshLicense(deviceId) {
   const expected = credstore.recoverySnapshot();
   if (expected.signedOut || !deviceId || expected.deviceId !== deviceId) return null;
   const current = expected.token;
-  // A token that still looks fresh is normally left alone — the local expiry
-  // check is the whole point of the cheap short-circuit. The exception is a
-  // token the edge has actually rejected: `exp` says nothing about revocation
-  // or a rotated signing key, so an outstanding rejection forces the rotation
-  // that unwedges the queue.
+  // Skip refresh for healthy tokens unless ingest has rejected the credential.
   if (current && !credstore.isLicenseTokenExpired(current) && !isLicenseRejected()) {
     return current;
   }
@@ -146,16 +128,11 @@ async function tryRefreshLicense(deviceId) {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Per-cwd settings
-// ---------------------------------------------------------------------------
 
-// Codex doesn't define a single per-cwd settings file. We adopt
-// ${cwd}/.codex/settings.local.json under a "skillmeter" namespace so the
-// per-project opt-in (and dev backend/activation overrides) are project-local
-// and survive `git clone` policies chosen by the user (the file is typically
-// gitignored or workspace-only). Repo-scope is NOT configured here — it derives
-// from the signed-in user's GitHub identities (see getRepoScopeDecision).
+// Project settings live under skillmeter in .codex/settings.local.json.
+// They control collection and development overrides; repository filters can only
+// narrow the GitHub identities stored at sign-in.
 const SETTINGS_RELATIVE = path.join(".codex", "settings.local.json");
 
 function readSettingsFile(cwd) {
@@ -267,29 +244,16 @@ function getRemoteUrlsForRepo(repoRoot) {
   }
 }
 
-// Optional narrowing allow-list of GitHub orgs. When configured, repo-scope is
-// restricted to the *intersection* of this list and the signed-in user's org
-// memberships, so a user whose account belongs to several orgs can scope
-// telemetry to just one (e.g. only "skillbench-ai"). The filter can only narrow
-// the captured set, never widen it — an org you aren't a member of is still
-// blocked even if it's listed. Returns null when unconfigured, preserving the
-// default "all signed-in orgs" behavior. Resolution (env → per-project setting)
-// lives in lib/org-scope so the sign-in flow narrows identically.
+// Intersect configured repository scope with stored GitHub identities.
+// Unconfigured scope keeps all stored identities. Resolution is shared with
+// sign-in through lib/org-scope (environment before project settings).
 function getRepoScopeOrgFilter(cwd) {
   return resolveOrgScope({ cwd });
 }
 
-// Decide whether an event from `cwd` is in-scope. Telemetry fires only in
-// repos whose GitHub remote belongs to the signed-in user's own login or one
-// of their org memberships, captured from `GET /user` + `GET /user/orgs` at
-// signin and stored in ~/.skillbench/credentials.json. With no signed-in orgs
-// the result is `not_activated` and everything is dropped — there is no
-// permissive "unscoped"/allow-all default. Non-git directories, non-GitHub
-// remotes, and repos outside the allowed orgs are all blocked.
-//
-// The signed-in org set may be further narrowed by an optional org filter
-// (getRepoScopeOrgFilter); when set, only repos in orgs that are both
-// signed-in *and* on the filter are in scope.
+// Allow GitHub repositories owned by a stored identity, optionally narrowed by
+// configured filters. Missing identities, non-Git directories, non-GitHub remotes
+// and other owners are excluded.
 function getRepoScopeDecision(cwd) {
   const signedInOrgs = credstore.getAllowedGitHubOrgs();
   if (signedInOrgs.length === 0) {
@@ -342,11 +306,9 @@ function getRepoScopeDecision(cwd) {
   };
 }
 
-// Codex Bash hooks expose tool_input.command; apply_patch can include path-like
-// fields. We hash any value that looks like a filesystem location or raw shell
-// command so the upload never contains a literal user path. Secret / PII
-// scrubbing of the remaining string values is handled by the central
-// sanitizeEventData boundary in runHook, so this stage only owns path hashing.
+// Hash values under recognized path, command and patch keys. Other strings
+// pass through the central secret/email sanitizer; arbitrary paths in free text
+// are not covered by this key-based pass.
 const PATH_KEYS = new Set([
   "file_path",
   "filePath",
@@ -376,39 +338,17 @@ function getTimestamp() {
   return new Date().toISOString();
 }
 
-// ---------------------------------------------------------------------------
 // Transfer configuration
-// ---------------------------------------------------------------------------
 
 // The Codex ingest path mirrors /logs/claude but on a sibling /logs/codex
 // route. The collector lambda treats `${backendUrl}/transcript` as the
 // transcript handler.
 const INGEST_ROUTE = "/logs/codex";
 
-// The published SkillMeter Codex plugin ships pointing at the prod collector.
-// The ingest endpoint is resolved at upload time in this order (matching the
-// Claude plugin's approach — environment selection lives on the activation side
-// via `activate_url`/SKILLMETER_ACTIVATE_URL, and the upload host is read back
-// out of the license JWT rather than configured separately):
-//   1. SKILLMETER_BACKEND_URL env var (full ingest URL; dev/test bypass that
-//      skips the JWT entirely — point it at a fake server without a token).
-//   2. JWT-derived per-tenant endpoint: the `aud` (audience) claim of the
-//      license JWT, with the /logs/codex route appended. This routes each
-//      tenant's traffic to its own meter host without per-tenant plugin builds.
-//      (The legacy `telemetry_endpoint` claim is deprecated and no longer read.)
-//      The claim is read even from an expired token (allow-expired) so a drain
-//      still reaches the right host while a refresh is pending — the collector
-//      accepts unauthenticated uploads, and routing is not an auth decision.
-//   3. DEFAULT_BACKEND_URL (prod) — fallback when unauthenticated or the JWT
-//      carries no endpoint.
-// The env override (1) is user-supplied so it's validated against the
-// trusted-domain allow-list; the JWT endpoint (2) is server-minted and trusted
-// as-is (see lib/jwt.js).
-// Prod telemetry lives on the greenfield skillbench.ai zone: the activation
-// Lambda mints the per-tenant meter URL into the `aud` claim, of the form
-// https://{slug}.meter.skillbench.ai (prod) / https://{slug}.meter.dev.skillbench.com
-// (dev). This default is only the unauthenticated fallback — real routing comes
-// from the JWT claim.
+// Resolve the ingest URL from a trusted override, then the token audience,
+// then the default below. Both overrides and token-derived URLs are validated.
+// An expired audience can supply routing information, but sending still requires
+// a fresh license; an override does not bypass authentication.
 const DEFAULT_BACKEND_URL = "https://api.meter.skillbench.ai/logs/codex";
 
 // Trusted domain patterns for backend URL validation. Prod tenants are on
@@ -438,15 +378,11 @@ function isValidBackendUrl(url) {
 }
 
 /**
- * Resolve the ingest URL for one specific license JWT.
+ * Resolve routing from the same token used for authorization, so a concurrent
+ * sign-in cannot pair one tenant's endpoint with another tenant's token.
  *
- * Routing and authorization MUST come from the same credential snapshot: if
- * another process signs in to a different tenant mid-drain, deriving the host
- * from one token and attaching another would send tenant B's JWT to tenant A's
- * meter host. Callers therefore read their token once and pass it here.
- *
- * @param {string|null} token - license JWT to route by, or null when unknown.
- * @returns {string} a validated https ingest URL.
+ * @param {string|null} token
+ * @returns {string} validated HTTPS ingest URL.
  */
 function getBackendUrlForToken(token) {
   const override = process.env.SKILLMETER_BACKEND_URL;
@@ -496,31 +432,14 @@ const EVENT_TIMEOUT =
   parseInt(process.env.SKILLMETER_TIMEOUT || "10", 10) * 1000;
 const TRANSCRIPT_TIMEOUT = 30_000;
 
-// How long we keep uploaded `.sent` event logs, quarantined poison batches, and
-// staged transcripts before the cleanup sweep deletes them. 30 days survives
-// vacations and short outages while keeping disks from filling if ingest breaks
-// for weeks.
+// Retention for sent event logs, poison batches and orphaned event sidecars.
+// Transcript chunks and legacy snapshots are excluded from automatic cleanup.
 const CLEANUP_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
-// ---------------------------------------------------------------------------
-// Poison-batch / retry bounds
-//
-// A "poison batch" is a sealed event log the backend will never accept —
-// usually because the payload is malformed (HTTP 400/413/422). Retrying it
-// forever wastes bandwidth and keeps the queue from ever draining, so failed
-// batches are bounded two ways and then quarantined (moved aside, not deleted)
-// so they stop being retried but remain available for forensics until the
-// 30-day cleanup removes them:
-//
-//   - max-retry: a batch that keeps failing transiently is quarantined after
-//     MAX_BATCH_RETRIES attempts (tracked in a `.meta` sidecar).
-//   - max-age:   a batch we've been unable to deliver for longer than
-//     BATCH_MAX_AGE_MS (derived from the seal timestamp in its filename) is
-//     treated as undeliverable and quarantined regardless of attempt count.
-//
-// Permanent HTTP errors short-circuit both bounds: we try a partial-rejection
-// salvage (drop only the invalid NDJSON lines) once, then quarantine.
-// ---------------------------------------------------------------------------
+// Event retry bounds
+// Transient failures are quarantined at the attempt or age limit. Permanent
+// rejections first attempt partial salvage, then quarantine. Poison batches remain
+// until the cleanup retention limit. Transcript retention is separate.
 const POISON_DIR = path.join(LOG_DIR, "poison");
 
 const MAX_BATCH_RETRIES =
@@ -542,12 +461,8 @@ const ACTIVE_LOG_STALE_MS =
 const DRAIN_ONCE_LOCK_FILE = path.join(LOG_DIR, ".drain-once.lock");
 const DRAIN_ONCE_LOCK_STALE_MS = 30_000;
 
-// Set when the ingest edge rejects our license (401/403). A JWT can be revoked
-// or signed by a rotated key long before its `exp`, and the cheap local expiry
-// check cannot see that — so without this marker tryRefreshLicense would
-// short-circuit on a "still fresh" token and every sweep would resubmit the
-// same rejected credential until the batches aged out. Cleared as soon as a
-// rotation or a successful upload proves the credential works again.
+// Ingest 401/403 forces refresh even if the token has not expired locally.
+// Successful rotation or upload clears the marker.
 const LICENSE_REJECTED_FILE = path.join(LOG_DIR, ".license-rejected");
 
 /** Record that the ingest edge rejected the stored license. */
@@ -594,14 +509,12 @@ function commonHeaders(token, extra = {}) {
   return headers;
 }
 
-// ---------------------------------------------------------------------------
 // Atomic write helpers
 //
 // Hooks from concurrent Codex processes can write to the queue at the same
 // time, and a process can be killed mid-write. Both can leave interleaved or
 // half-written ("invalid") lines that later poison an upload. These helpers
 // keep on-disk artifacts line-atomic and whole-file-atomic respectively.
-// ---------------------------------------------------------------------------
 
 // Append a single newline-terminated record in one O_APPEND write. POSIX makes
 // each write() to an append-mode fd advance the offset atomically, so a single
@@ -637,21 +550,8 @@ function atomicWriteFileSync(targetPath, data) {
   }
 }
 
-// ---------------------------------------------------------------------------
-// HTTP outcome classification
-//
-// 401 / 402 / 403 are auth outcomes, never poison. Both ingest routes sit
-// behind the meter JWT authorizer, so an unauthenticated or stale-token request
-// is rejected at the edge and the collector never sees the payload — the batch
-// itself is still perfectly deliverable and only needs a valid license. We keep
-// it queued for the next refreshed session instead of spending the retry budget
-// (or quarantining it) over something the payload had nothing to do with.
-//
-// Of the remaining non-2xx responses we treat 408 (Request Timeout), 429 (Too
-// Many Requests), and every 5xx as transient (worth retrying) and any other 4xx
-// as permanent — the server is telling us this exact payload will never be
-// accepted, so it must not be retried forever.
-// ---------------------------------------------------------------------------
+// HTTP outcomes: retain auth failures (401/402/403) without spending retry budget.
+// Retry 408, 429 and 5xx; other 4xx enter partial salvage or quarantine.
 function isAuthHttpStatus(status) {
   return status === 401 || status === 402 || status === 403;
 }
@@ -679,11 +579,8 @@ function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) {
 
   const baseName = path.basename(logFile);
 
-  // A valid (non-expired) license JWT is REQUIRED — the ingest route is behind
-  // the meter JWT authorizer and does not accept unauthenticated batches. No
-  // valid token → leave the batch queued for the next refreshed session rather
-  // than spend it on a request that cannot succeed. Read uncached so the
-  // long-lived retry daemon sees a token another process just refreshed.
+  // Read a fresh token from disk. Missing or expired credentials leave the
+  // batch queued without a request or a retry-budget charge.
   const token = getLicenseTokenUncached();
   if (!token || isJwtExpired(token)) {
     console.error(
@@ -722,10 +619,8 @@ function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) {
         markSent();
         return "sent";
       }
-      // The edge rejected our token. Never clear it here: the credential file
-      // is shared with the Claude Code plugin, so dropping the JWT would sign
-      // the whole machine out of both agents. Rotation is the refresh /
-      // activation path's job; we just leave the batch queued for it.
+      // Keep the shared token and queued batch on ingest rejection.
+      // Credential recovery belongs to the refresh/activation path.
       if (isAuthHttpStatus(res.status)) {
         // 402 is the organization's license state, which no rotation can fix;
         // 401/403 mean this credential needs replacing, so owe a refresh.
@@ -744,12 +639,10 @@ function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) {
     });
 }
 
-// ---------------------------------------------------------------------------
 // Transcript staging + upload
 //
 // Immutable sanitized chunks and their cursor commit before any network call.
 // Legacy TRANSCRIPTS_PENDING_DIR snapshots remain available for selected recovery.
-// ---------------------------------------------------------------------------
 
 function transcriptScope(cwd, token) {
   credstore.refreshFromDisk?.();
@@ -912,9 +805,7 @@ function stageRequestedTranscripts() {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Event-log sealing + crash recovery
-// ---------------------------------------------------------------------------
 
 /**
  * Seal the active event log into a retryable batch (`events.jsonl.<ts>`). This
@@ -983,9 +874,7 @@ function flushEventLog(backendUrl) {
   return transferEventLog(sealed, backendUrl);
 }
 
-// ---------------------------------------------------------------------------
 // Durable-queue listing + draining
-// ---------------------------------------------------------------------------
 
 function listSealedEventLogs() {
   if (!fs.existsSync(LOG_DIR)) return [];
@@ -1005,9 +894,7 @@ function listPendingTranscripts() {
   return transcriptQueue.queueDirectories(TRANSCRIPT_CHUNKS_DIR).flatMap(transcriptQueue.pendingFiles);
 }
 
-// ---------------------------------------------------------------------------
 // Poison-batch handling: attempt tracking, partial-rejection salvage, quarantine
-// ---------------------------------------------------------------------------
 
 // Per-batch attempt counter. Kept in a `.meta` sidecar rather than the filename
 // so the batch path (and the drain-list regex) stays stable across retries.
@@ -1245,9 +1132,7 @@ function retryFailedLogs(backendUrl) {
   void drainFailedLogs(backendUrl);
 }
 
-// ---------------------------------------------------------------------------
 // Detached drain spawn (one-shot)
-// ---------------------------------------------------------------------------
 
 function shouldSpawnDrainOnce() {
   try {
@@ -1277,11 +1162,8 @@ function clearDrainOnceLock() {
 }
 
 /**
- * Spawn a detached one-shot drain so the hook returns without waiting on
- * network I/O. The child inherits the environment and re-resolves the backend
- * URL itself — that keeps the JWT-derived per-tenant endpoint correct (freezing
- * it into SKILLMETER_BACKEND_URL would make the child re-validate a tenant host
- * against the trusted-domain allow-list and fall back to the default).
+ * Spawn a detached drain that resolves credentials and routing when it sends.
+ * Do not freeze a tenant endpoint into the child's environment.
  */
 function spawnDetachedDrain() {
   if (!shouldSpawnDrainOnce()) return false;
@@ -1303,14 +1185,9 @@ function spawnDetachedDrain() {
   }
 }
 
-// ---------------------------------------------------------------------------
-// Retry monitor (long-running, self-spawned singleton)
-//
-// Codex has no managed monitor lifecycle (unlike Claude Code), so we launch the
-// retry daemon detached from SessionStart and rely on a heartbeat lock to keep
-// it a singleton across concurrent sessions. The daemon self-terminates on
-// idle / max-lifetime so it never orphans.
-// ---------------------------------------------------------------------------
+// Retry monitor
+// SessionStart launches a detached worker coordinated by a heartbeat lock.
+// Idle and maximum-lifetime limits bound its lifetime.
 
 function isProcessAlive(pid) {
   if (!pid || Number.isNaN(pid)) return false;
@@ -1393,14 +1270,11 @@ function spawnRetryDaemon() {
   }
 }
 
-// ---------------------------------------------------------------------------
 // Cleanup + final-session sealing
-// ---------------------------------------------------------------------------
 
 /**
- * Delete uploaded `.sent` event logs and staged transcripts older than
- * CLEANUP_MAX_AGE_MS so nothing accumulates forever once it has been uploaded
- * (or has aged out as undeliverable).
+ * Delete old sent event logs, poison batches and orphaned event files.
+ * Keep transcript chunks and legacy snapshots available for selected recovery.
  */
 function cleanupStaleFiles() {
   const now = Date.now();
@@ -1619,17 +1493,10 @@ function readStdin() {
   });
 }
 
-// ---------------------------------------------------------------------------
-// Telemetry opt-in management
-//
-// Consent is collected entirely in-context: an explicit per-project opt-in
-// (`telemetry.js enable/disable`, stored in `.codex/settings.local.json`) plus
-// owned-org auto-enable, so a repo owned by an allowed org captures without any
-// prompt. There is deliberately no OS-native dialog — Codex hooks usually run
-// without a TTY, and a system pop-up reads as spyware, fatigues users across
-// repos, and can't render on headless/SSH/CI. This matches the Claude Code
-// plugin and the VS Code extension, so consent is consistent across products.
-// ---------------------------------------------------------------------------
+// Telemetry opt-in
+// Eligible repositories auto-enable unless opted out in project settings.
+// The global pause overrides project choices. Hooks print controls without an
+// OS dialog. This is the released Codex policy, not Claude's repo-selection flow.
 
 function telemetryCliCommand(action) {
   return `node ${JSON.stringify(path.join(PLUGIN_ROOT, "scripts", "telemetry.js"))} ${action}`;
@@ -1679,16 +1546,8 @@ function writeTelemetryConsentFallback(cwd, stream = process.stderr) {
 }
 
 /**
- * Resolve the per-project telemetry gate, combining the explicit opt-in setting
- * with owned-org auto-enable (parity with the Claude Code plugin):
- *
- *   - explicit `false` → off  (user opted out; always respected)
- *   - explicit `true`  → on   (subject to the repo-scope gate downstream)
- *   - unset (`null`)   → on **only when the repo is owned by an allowed org**
- *                        ("auto_org"); otherwise off ("not_enabled")
- *
- * Pure function — no I/O — so the policy can be reasoned about and tested
- * directly.
+ * Resolve project consent: explicit false stops capture; explicit true enables
+ * it subject to repository scope. An unset choice enables eligible repositories.
  *
  * @param {boolean|null} optIn - getTelemetryOptIn(cwd) result
  * @param {boolean} repoOrgOwned - repoScopeDecision.allowed
@@ -1719,9 +1578,7 @@ function defaultGateMessaging(eventName, gate) {
   }
 }
 
-// ---------------------------------------------------------------------------
 // runHook — shared driver for every Codex hook script
-// ---------------------------------------------------------------------------
 
 /**
  * Common runtime for hook scripts.
@@ -1833,13 +1690,8 @@ async function runHook(eventName, buildData, options = {}) {
     ...eventData,
   };
 
-  // Single deterministic pre-upload sanitization boundary (SBEE-155). Every
-  // hook routes its event data through here, so raw user content — the
-  // submitted prompt, last_assistant_message, tool descriptions, tool
-  // arguments, and tool output — is scrubbed of Tier 1 secrets and Tier 2
-  // identifiers before it is ever written to the durable queue or uploaded.
-  // Running it centrally means a new hook field can't accidentally bypass the
-  // sanitizer, and the redaction counts/types travel with the event.
+  // Sanitize every hook field before writing to the durable event queue.
+  // Attach redaction counts and detector types, without matched values.
   const { value: data, meta } = sanitizeEventData(rawData);
   if (meta.tier1 > 0 || meta.tier2 > 0) {
     data._sanitization = meta;

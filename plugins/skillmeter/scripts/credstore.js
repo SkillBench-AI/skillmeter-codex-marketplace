@@ -4,12 +4,9 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-// Credentials are intentionally shared with the SkillMeter Claude Code plugin so
-// that the same device.id and hash salt apply across both agents. The SkillBench
-// analyzer keys off ResourceAttributes['service.device.id'] and downstream
-// dashboards expect a single stable identity per machine. The license JWT and
-// allowed-org list are shared too: a user who signs in via either plugin is
-// authenticated for both.
+// Claude and Codex share this file, including device ID, hash salt and license.
+// Credential format compatibility and writer coordination are separate concerns;
+// sharing the file does not establish compatibility with every client version.
 const CRED_FILE = path.join(os.homedir(), ".skillbench", "credentials.json");
 
 const KEYCHAIN_SERVICES = {
@@ -30,11 +27,8 @@ function writeStore(data) {
   const dir = path.dirname(CRED_FILE);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 
-  // Atomic write: write payload to a sibling tempfile, fsync, then rename into
-  // place. POSIX rename within the same filesystem is atomic — readers see
-  // either the old file or the new file, never a partial write. This matters
-  // for the license JWT: commitSignin re-reads and writes under a signed-out
-  // race, and a half-written token would brick auth for both plugins.
+  // Write and fsync a sibling file before renaming it over the store.
+  // Readers see a complete old or new file; the writer lock serializes mutations.
   const tempPath = `${CRED_FILE}.tmp.${process.pid}.${Date.now()}`;
   let fd;
   try {
@@ -78,12 +72,8 @@ function mutateStoreOnce(fn) {
     const store = readStore();
     const result = fn(store);
     if (result === false) return false;
-    // Fence before persisting. Holding the lock is not by itself proof that we
-    // still hold it: the age backstop reaps a holder that was paused long
-    // enough (SIGSTOP, swap, a suspended VM), and a replacement writer may have
-    // committed in the meantime. Writing our pre-pause snapshot would roll that
-    // back silently — the shared file has no other guard, since commitSignin's
-    // `expected` check is optional and signin.js omits it.
+    // A paused writer may lose its lock to the age backstop. Check ownership
+    // and the disk snapshot before persisting so a superseded attempt retries.
     if (!release.stillHeld() || readRaw() !== baseline) return PREEMPTED;
     writeStore(store);
     _cache = store;
@@ -91,13 +81,9 @@ function mutateStoreOnce(fn) {
   } finally { release(); }
 }
 
-// All Codex writers participate in the same read/modify/write lock. Other
-// clients must adopt this protocol too for cross-client serialization.
-//
-// A preempted attempt is retried rather than failed: `fn` is a transform over
-// whatever the store currently holds, so re-running it against the newer state
-// is exactly the intended outcome — our change lands on top of theirs instead
-// of replacing it.
+// All Codex writers use this read/modify/write lock; other clients must adopt
+// the protocol for cross-client serialization. Retry preempted mutations against
+// the latest store rather than overwriting a replacement writer.
 function mutateStore(fn) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const outcome = mutateStoreOnce(fn);
@@ -233,11 +219,8 @@ function loadStore(logDir) {
   return _cache;
 }
 
-// Create-if-absent under the writer lock. A busy lock here almost always means
-// a sibling hook is creating the very same field — several fire at once on a
-// machine's first session — so we re-read instead of propagating the timeout.
-// getDeviceId/getOrCreateHashSalt are called on the hot hook path, where a
-// throw would fail the hook outright; every other writer keeps fail-fast.
+// Create missing identity fields under the writer lock. On lock timeout, re-read:
+// a concurrent hook may have created the field. Other writers fail on timeout.
 function ensureIdentityField(logDir, key, create) {
   const store = loadStore(logDir);
   if (store[key]) return store[key];
@@ -274,21 +257,12 @@ function getLicenseToken(logDir) {
 }
 
 /**
- * Read the license JWT straight from disk, bypassing the in-process cache.
+ * Read the license from disk so long-lived drains observe rotation and sign-out.
+ * Never fall back to a cached token when it is absent. Legacy migration is allowed
+ * only without a sign-out marker, and its result is re-read from disk.
  *
- * The retry daemon lives for hours and can outlast several sign-ins, sign-outs
- * and token rotations performed by other processes. A cached read would pin it
- * to the token that existed when it started, so the upload path uses this.
- *
- * A fresh read that finds nothing means nothing: we never fall back to a token
- * this process cached earlier, because that token may have been signed out or
- * removed by another client in the meantime. The one thing still worth doing is
- * the one-time Keychain / legacy-file migration for a pre-migration install —
- * and only when the fresh store shows no sign-out. That migration writes
- * through to disk, so we re-read from disk rather than trusting its return.
- *
- * @param {string} [logDir] - legacy fallback location, for migration only.
- * @returns {string|null} the stored license JWT, or null.
+ * @param {string} [logDir] - legacy migration location.
+ * @returns {string|null}
  */
 function getLicenseTokenUncached(logDir) {
   const store = readStore();
@@ -306,9 +280,7 @@ function setLicenseToken(jwt) {
   });
 }
 
-// ---------------------------------------------------------------------------
 // License-JWT expiry hint
-// ---------------------------------------------------------------------------
 
 /**
  * Decode the payload section of a JWT without verifying the signature.
@@ -344,19 +316,10 @@ function isLicenseTokenExpired(token, skewSeconds = LICENSE_EXPIRY_SKEW_SECONDS)
   return payload.exp <= Math.floor(Date.now() / 1000) + skewSeconds;
 }
 
-// ---------------------------------------------------------------------------
 // Sign-in / sign-out lifecycle
-// ---------------------------------------------------------------------------
 
-// `signed_out` is set by the signout flow. It blocks the silent gh fallback so
-// a still-authenticated gh CLI doesn't auto-resignin on the next SessionStart.
-// `telemetry_disabled` is the machine-global kill switch shared by CLI toggles
-// and signout; hooks and drains must not upload while it is true.
-// `markEngaged()` (called from signin) clears both sentinels.
-//
-// Reads bypass the cache so a setter run by another process is reflected
-// immediately — relevant when signin runs as a long-lived background poll while
-// the user might invoke signout from a fresh hook process.
+// Sign-out blocks silent GitHub reactivation and sets the global upload pause.
+// markEngaged() clears both flags. Read them from disk to observe other processes.
 function getSignedOut() {
   return readStore().signed_out === true;
 }
@@ -423,10 +386,9 @@ function commitSignin({ jwt, orgs, expected }) {
 }
 
 /**
- * GitHub identities (user login + org logins) the activated user belongs to.
- * Empty array means "not activated" OR "intentionally narrowed to zero orgs".
- * Use hasExplicitOrgScope() to distinguish these cases. Stored at sign-in for
- * future repo-scope gating parity with the Claude plugin.
+ * Stored GitHub user and organization logins used for repository scope.
+ * An empty array may mean no sign-in or explicit empty scope;
+ * hasExplicitOrgScope() distinguishes them.
  */
 function getAllowedGitHubOrgs() {
   const store = loadStore();

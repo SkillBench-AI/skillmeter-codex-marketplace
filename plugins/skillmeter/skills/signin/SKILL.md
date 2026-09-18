@@ -3,46 +3,28 @@ name: signin
 description: Sign in to SkillMeter with GitHub so Codex telemetry is authenticated and routed to your tenant.
 ---
 
-Use this skill when the user wants to sign in to SkillMeter, authenticate Codex
-telemetry, or fix uploads that are being rejected/unauthenticated.
+Run GitHub sign-in when the user wants to authenticate SkillMeter or recover
+rejected uploads:
 
-Run the SkillMeter sign-in flow:
-
-```bash
+```sh
 node "$PLUGIN_ROOT/scripts/signin.js"
 ```
 
-To scope telemetry to specific GitHub org(s) instead of every org the account
-belongs to, pass `--org` (repeatable, or comma-separated):
+To narrow collection to selected GitHub organizations, pass `--org` (repeatable
+or comma-separated). It intersects with actual memberships; on an existing
+sign-in it updates stored scope without repeating authentication:
 
-```bash
-node "$PLUGIN_ROOT/scripts/signin.js" --org skillbench-ai
+```sh
+node "$PLUGIN_ROOT/scripts/signin.js" --org your-github-org
 ```
 
-This is the fix for "the silent `gh` sign-in enrolled all my orgs": only the
-listed orgs (intersected with the user's real memberships) are persisted. If the
-user is already signed in, re-running with `--org` re-scopes the stored list in
-place without a full re-auth.
+The script uses the authenticated GitHub CLI when available, otherwise a device
+flow. Relay the device code and verification URL verbatim. When prompted,
+tell the user to approve in their browser and re-run sign-in to confirm.
 
-What it does:
+Successful sign-in stores the license and organization scope in the shared
+`~/.skillbench/credentials.json` and clears the global telemetry pause.
+Uploads use the license's `aud` claim for tenant routing.
 
-1. Tries a silent sign-in via `gh auth token` when the GitHub CLI is already
-   authenticated.
-2. Otherwise prints a GitHub device-login code and verification URL. Relay the
-   code and URL to the user verbatim so they can approve in their browser.
-3. On approval it exchanges the GitHub token for a SkillMeter license JWT and
-   stores it (with the user's GitHub orgs, narrowed to `--org`/the configured
-   scope when set) in `~/.skillbench/credentials.json`.
-4. Clears any machine-global telemetry stop flag set by sign-out.
-
-After sign-in, every Codex upload is authenticated with the license JWT and
-routed to the per-tenant endpoint carried in the JWT's `telemetry_endpoint`
-claim — no further configuration needed.
-
-Reporting:
-
-- If the output contains the ASCII welcome banner (box-drawing characters),
-  reproduce it verbatim inside a fenced code block so the alignment is
-  preserved.
-- If the output asks the user to approve a device code on GitHub, surface the
-  code, the URL, and the instruction to re-run sign-in to confirm.
+If the script prints a welcome banner, reproduce it in a fenced code block to
+preserve alignment. Report the result without exposing credentials.

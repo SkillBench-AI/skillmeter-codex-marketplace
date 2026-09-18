@@ -2,7 +2,7 @@
 
 ## Summary
 
-<!-- What changed and why. Link the issue, e.g. SBEE-160. -->
+<!-- What changed and why. Link the relevant issue. -->
 
 ## Telemetry / privacy impact
 
@@ -17,3 +17,7 @@
 ## Release notes
 
 <!-- One line for the changelog/release, or "n/a" for internal-only changes. -->
+
+<!-- Keep public docs concise: usage, contracts, ADRs and reproducible checks.
+Record internal coordination and historical checkpoints in Linear.
+Do not commit generated telemetry or test receipts. -->

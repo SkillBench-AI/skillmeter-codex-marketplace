@@ -1,17 +1,9 @@
 "use strict";
 
 /**
- * Unit tests for upload durability: poison-batch handling, partial-rejection
- * salvage, max-retry / max-age give-up, atomic writes, and cleanup (SBEE-154).
- * Run with:  node --test plugins/skillmeter/test/durability.test.js
- *
- * Like the other suites, state is isolated by pointing HOME at a throwaway dir
- * (so ~/.skillbench/credentials.json is never touched) and seeding a device id
- * + hash salt up front so credstore never reaches the macOS Keychain. We also
- * point PLUGIN_DATA at a temp dir so the durable queue lives under tmp, and cap
- * the retry budget low so the max-retry path is cheap to exercise. All of this
- * MUST happen before logger is required, since those paths/limits are resolved
- * at module load.
+ * Event salvage, retry limits and queue cleanup tests.
+ * Set temporary HOME/PLUGIN_DATA and retry limits before importing modules;
+ * seed identity to avoid Keychain access.
  */
 
 const os = require("os");

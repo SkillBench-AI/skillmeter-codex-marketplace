@@ -1,25 +1,10 @@
 const crypto = require("crypto");
 const fs = require("fs");
 
-// ---------------------------------------------------------------------------
-// Sanitization policy (SBEE-155, SANITIZATION_EPIC.md tasks 2.1 / 2.2b)
-//
-// Codex lifecycle hooks upload raw user content — the submitted `prompt`, the
-// `last_assistant_message`, tool descriptions, tool arguments, tool output, and
-// the full session transcript. None of that may leave the machine carrying a
-// Tier 1 secret (api keys, tokens, private keys, .env credentials, …). This
-// module is the single deterministic boundary that scrubs every string before
-// it is written to the durable queue or staged for upload.
-//
-// Design rules drawn from the epic:
-//   - Tier 1 is fail-closed: when a value looks like a secret we redact it. Over-
-//     redacting is acceptable; leaking is not.
-//   - We never store or log the original secret value — only its detector type,
-//     tier, field location, and the action taken.
-//   - Detection is deterministic regex, with a small allow-list for obvious
-//     placeholders (`example`, `dummy`, `test-token`, …) to limit false
-//     positives without weakening real-secret recall.
-// ---------------------------------------------------------------------------
+// Sanitize event and transcript strings before queueing. Tier 1 detects secrets;
+// Tier 2 currently detects email addresses. Redaction metadata contains detector
+// types and counts, never the matched values. A small placeholder allow-list
+// reduces false positives; these rules do not detect all sensitive content.
 
 const POLICY_VERSION = "2.0.0";
 
@@ -80,7 +65,6 @@ function shannonEntropy(str) {
   return entropy;
 }
 
-// ---------------------------------------------------------------------------
 // Tier 1 detectors
 //
 // Each detector pairs a `type` label with a global regex. `value` describes
@@ -88,7 +72,6 @@ function shannonEntropy(str) {
 // match; a number keeps the surrounding structure and redacts only that group
 // (used for `KEY=value` assignments and `Authorization:` headers so the field
 // name survives for analysis while the credential does not).
-// ---------------------------------------------------------------------------
 
 // `keywords` are lowercase mandatory substrings drawn from each rule's own
 // regex prefixes — a cheap pre-filter that skips the rule when absent (perf,
@@ -179,13 +162,8 @@ const TIER1_DETECTORS = [
   },
 ];
 
-// ---------------------------------------------------------------------------
-// Tier 2 detectors (identity)
-//
-// Tier 2 is harder and intentionally conservative here: only emails, which are
-// reliably detectable. Names / customer dictionaries are out of scope for this
-// boundary and tracked separately in the epic (task 3.x).
-// ---------------------------------------------------------------------------
+// Tier 2 covers email addresses. Context-dependent identifiers such as names
+// and customer references are not detected here.
 
 const TIER2_DETECTORS = [
   {
@@ -255,10 +233,7 @@ function containsTier1(input) {
   return redactString(input).redactions.some((r) => r.tier === "tier1");
 }
 
-// Object-key names that force Tier-1 redaction of their string value even when
-// the value matches no detector. Mirrors the Claude / session-collector
-// scrubDeep key-name rule so a credential under an api_key/token/password key
-// can't leak just because it lacks a recognizable token shape.
+// Secret-labelled keys force redaction even without a recognized token format.
 const SECRET_KEY_PATTERNS = [
   /api[_-]?key/i,
   /token/i,
@@ -343,9 +318,7 @@ function sanitizeLine(obj, hashSalt) {
   return redactDeep(obj);
 }
 
-// Codex session transcripts are JSONL records similar in shape to Claude Code
-// transcripts. We strip cwd/path-style fields, redact secrets/PII from every
-// string, and emit a JSONL buffer the caller can gzip and POST.
+// Hash structured path fields and redact record strings into a JSONL buffer.
 function sanitizeTranscript(transcriptPath, hashSalt) {
   const raw = fs.readFileSync(transcriptPath, "utf8");
   const lines = raw.split("\n");
