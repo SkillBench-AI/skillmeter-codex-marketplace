@@ -28,7 +28,7 @@ function writeStore(data) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 
   // Write and fsync a sibling file before renaming it over the store.
-  // Readers see a complete old or new file; the writer lock serializes mutations.
+  // Readers see a complete old or new file. Rename does not validate lock ownership.
   const tempPath = `${CRED_FILE}.tmp.${process.pid}.${Date.now()}`;
   let fd;
   try {
@@ -56,8 +56,8 @@ function readRaw() {
 
 const PREEMPTED = Symbol("credential-store-preempted");
 
-// One locked read/modify/write attempt. Returns PREEMPTED when the state we
-// based the mutation on is no longer the state on disk.
+// One locked read/modify/write attempt. PREEMPTED means a changed snapshot or
+// lost lock was detected; the checks are not atomic with the write.
 function mutateStoreOnce(fn) {
   fs.mkdirSync(path.dirname(CRED_FILE), { recursive: true, mode: 0o700 });
   const { acquireLock } = require("./lib/credential-lock");
@@ -72,8 +72,8 @@ function mutateStoreOnce(fn) {
     const store = readStore();
     const result = fn(store);
     if (result === false) return false;
-    // A paused writer may lose its lock to the age backstop. Check ownership
-    // and the disk snapshot before persisting so a superseded attempt retries.
+    // Retry if takeover or a changed snapshot is already visible. Takeover
+    // after this check can still race with writeStore's rename.
     if (!release.stillHeld() || readRaw() !== baseline) return PREEMPTED;
     writeStore(store);
     _cache = store;
@@ -81,9 +81,9 @@ function mutateStoreOnce(fn) {
   } finally { release(); }
 }
 
-// All Codex writers use this read/modify/write lock; other clients must adopt
-// the protocol for cross-client serialization. Retry preempted mutations against
-// the latest store rather than overwriting a replacement writer.
+// Codex writers use this lock and retry detected preemption against fresh state.
+// Other clients must coordinate writes too; the current protocol still has
+// check-to-write and check-to-unlink races during stale takeover.
 function mutateStore(fn) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const outcome = mutateStoreOnce(fn);

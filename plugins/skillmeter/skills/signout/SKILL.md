@@ -4,13 +4,13 @@ description: Sign out of SkillMeter and stop all Codex telemetry uploads on this
 ---
 
 Run the sign-out script when the user wants to remove the stored SkillMeter
-license and stop collection on this machine:
+license and pause uploads on this machine:
 
 ```sh
 node "$PLUGIN_ROOT/scripts/signout.js"
 ```
 
-This removes the shared license and organization list, pauses telemetry, and
+This removes the shared license and organization list, pauses uploads, and
 blocks silent GitHub reactivation. Device ID, hash salt and queued uploads remain.
 Because Claude and Codex share credentials, removing the license affects both.
 

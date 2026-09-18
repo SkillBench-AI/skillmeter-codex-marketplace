@@ -10,7 +10,7 @@ function alive(pid) {
 }
 
 // Age backstop for abandoned locks, unreadable owners and reused PIDs.
-// It can also reclaim a paused live writer; callers must check ownership.
+// It can reclaim a paused live writer; ownership checks do not fence later writes.
 const STALE_MS = 60_000;
 
 // Respect live or unknown owners until the age backstop is reached.
@@ -49,7 +49,8 @@ function acquireLock(file, depth = 0) {
     }
     if (heldByLiveOwner(readOwner(file), stat)) return null;
 
-    // Serialize reapers so two of them cannot unlink successive owners.
+    // Coordinate stale cleanup. Normal acquire/release does not take this lock,
+    // so a replacement can still appear between the stale check and unlink.
     const releaseReaper = acquireLock(`${file}.reap`, depth + 1);
     if (!releaseReaper) return null;
     try {
@@ -69,8 +70,8 @@ function acquireLock(file, depth = 0) {
     return acquireLock(file, depth + 1);
   }
 
-  // The age backstop can replace a paused holder. Callers must check this
-  // before writing; release must not remove a replacement owner.
+  // Detect replacement by the age backstop. This check is not atomic with a
+  // caller's write or release's unlink; neither operation is fenced by it.
   const ownedByUs = () => readOwner(file)?.token === token;
 
   const release = () => {
