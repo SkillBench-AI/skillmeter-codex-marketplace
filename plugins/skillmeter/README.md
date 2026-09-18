@@ -10,10 +10,10 @@ In Codex, ask SkillMeter to sign you in, sign you out, or check whether the
 current repository is in scope. The bundled skills are listed below.
 
 For terminal commands, set `PLUGIN_ROOT` to the **Installed plugin root** printed
-by `codex plugin add`. For a default 0.5.0 installation:
+by `codex plugin add`. For a default 0.5.1 installation:
 
 ```sh
-export PLUGIN_ROOT="$HOME/.codex/plugins/cache/skillbench/skillmeter/0.5.0"
+export PLUGIN_ROOT="$HOME/.codex/plugins/cache/skillbench/skillmeter/0.5.1"
 ```
 
 Run project controls from the repository you want to configure:
@@ -39,7 +39,7 @@ Global pause retains queued data for later delivery; it does not delete it.
 ## Collection scope
 
 A valid sign-in, a recognized GitHub repository, and an allowed remote owner
-are required. In 0.5.0:
+are required. In 0.5.x:
 
 - Eligible repositories auto-enable when no project choice has been made.
 - An explicit project opt-out stops collection even for an allowed owner.
