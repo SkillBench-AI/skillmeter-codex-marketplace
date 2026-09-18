@@ -134,6 +134,7 @@ test("missing server baseline requests a durable full reset and resumes", async 
   };
   assert.equal(await upload(file), "sent");
   assert.deepEqual(requests.map(r=>[r.headers["X-Chunk-Seq"],r.headers["X-Chunk-Reset"]]), [["2","1"],["3","3"]]);
+  assert.deepEqual(requests.map(r=>r.headers["X-Transcript-Protocol"]), ["chunks-v1", "chunks-v1"]);
   const records=require("node:zlib").gunzipSync(requests[1].body).toString().trim().split("\n");
   assert.equal(records.length, 2);
   assert.equal(logger.listPendingTranscripts().length, 0);
