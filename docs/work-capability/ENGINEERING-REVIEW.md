@@ -1,5 +1,10 @@
 # Local ChatGPT Work: engineering review packet
 
+**September 18 update:** source foundations and synthetic tests have been
+refreshed. Read [the current checkpoint](FOUNDATION-20260918.md) first for exact
+revisions, the nine-file Work delta and remaining #37/#148 dependencies. The
+September 16 native evidence below is historical, not a fresh canary on this code.
+
 Updated September 16, 2026 after the repaired native app-restart canary. Ready for scoped engineering review; production Work delivery remains disabled. The user deferred a full Mac restart, and the temporary plugin and queued payloads have been removed. This packet replaces the earlier review status; dated evidence remains historical.
 
 ## Scope and current result

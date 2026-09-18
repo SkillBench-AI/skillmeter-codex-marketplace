@@ -1,3 +1,13 @@
+# Work foundations refreshed, September 18, 2026
+
+See [FOUNDATION-20260918.md](FOUNDATION-20260918.md) for the current source,
+tests and resume steps. Plugin source 946683f incorporates latest #37; pipeline
+source ce9fb978 incorporates current main while retaining #148. Fresh synthetic
+checks pass. Neither Work delta applies directly to main without its repair
+foundation. No native canary, installed-plugin change or Work upload occurred.
+Local preparation uses separate worktrees/branches; original dirty checkouts and
+old Work worktrees are preserved. Earlier checkpoints below are historical.
+
 # Work branches backed up remotely, September 16, 2026
 
 User requested remote backup. Successfully pushed origin/codex/work-capability-20260915 (initial backup2655398; subsequent documentation commit records publication) and origin/codex/work-normalization-20260915 at3abe812f98e625ff17e5719c816edfa31275ddcf. Upstream tracking is set. Review packet and unsent draft now include branch links. Plugin implementation remains274899d. No force push, tag, PR creation/update, merge, release, deployment or message to engineering.
