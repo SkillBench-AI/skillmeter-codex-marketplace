@@ -12,12 +12,12 @@ Exit 0 means all checks passed. Exit 1 means at least one acceptance failure or
 fixture error; exit 2 means the runner itself could not start. Each child has a
 10-second limit. The report contains case names and assertion labels only.
 
-This is a strict acceptance suite against accepted
+The suite covers the draft's implementation of the pinned
 [ADR001](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/0ea513751149a23fcc063fb8f045794657ceb031/docs/adr/001-license-token-lifecycle.md),
-decisions 2–4. The original baseline was 7 passes and 27 failures. After the
-repair, all 55 cases pass. `npm run check` and GitHub CI now require this suite;
-there are no expected-failure annotations, skips or automatic corrections.
-A green offline result is not a live release approval. Keep PR #37 draft.
+decisions 2–4. Current Claude broker authentication supersedes parts of that
+contract; see [compatibility](../../../../docs/claude-parity.md#compatibility).
+`npm run check` and CI require this suite. Passing it does not prove compatibility
+with current Claude or live delivery.
 
 | Requirement | Checks |
 | --- | --- |
@@ -51,5 +51,4 @@ This is a bounded offline contract. It does not prove simultaneous writes by
 current Claude and Codex clients, OS/runtime behavior across an installed-client
 upgrade, actual server TTL/signature enforcement, or dashboard user mapping.
 Retention cases set payload mtimes explicitly; clock control does not advance
-real sleeps or OS process lifetime. Those limits and the exact canary steps are
-recorded in `docs/lifecycle-checkpoint.md`.
+real sleeps or OS process lifetime. 

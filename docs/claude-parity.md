@@ -40,8 +40,14 @@ identity. Offline stdin-to-queue-to-gzip tests verify the identity and fresh
 policy 3.1.0 counts, including zeros; OFF, undecided and excluded repositories
 produce no event payload. No additional transcript content is disclosed.
 
-ADR001 lifecycle source work now passes the 55-case offline acceptance suite.
-See `docs/lifecycle-implementation.md` for the additive recovery identity fields,
-Codex lock adaptation and cross-client writer limitation. INF-195 per-file
-consent, stage-2 sanitization, release ownership and live validation remain
-separate. See the checkpoint for the exact live-canary gates.
+## Compatibility
+
+The lifecycle implementation also references the pinned Claude ADR001. Current
+Claude broker sign-in is not implemented: identity recovery still assumes
+GitHub-issued credentials. Claude does not participate in Codex's credential
+write lock, and ingest-rejection bookkeeping is not token/generation-bound.
+Offline tests do not establish cross-client compatibility or live delivery.
+
+Follow the [Claude ADRs](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/tree/main/docs/adr)
+and their implementation for policy changes; amend the canonical ADR when a new
+decision is needed. The pin above records this draft's source, not current parity.

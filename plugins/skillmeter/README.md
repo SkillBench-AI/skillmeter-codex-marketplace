@@ -160,7 +160,7 @@ or consent withdrawal. Legacy snapshots are never automatically replayed.
 
 This draft adds expiry-time capture, bounded recovery backoff and prior-sign-in
 identity checks. Full broker-auth alignment remains pending; see
-`docs/lifecycle-implementation.md` in the marketplace repository.
+`docs/claude-parity.md` in the marketplace repository.
 
 The existing collector accepts sequenced chunks. Collector #44 separately adds
 missing-baseline recovery for sessions resumed beyond its today/yesterday lookup;
@@ -292,8 +292,7 @@ baseline recovery. Historical snapshots are never automatically migrated.
 Events are stored in queues bound to repository, principal, device and consent
 identity. Without a host data directory, Codex uses `~/.skillbench/codex` rather
 than its versioned installation directory. `SKILLMETER_STATE_DIR` supports
-isolated development. See `docs/codex-parity-checkpoint.md` in the repository for
-current validation limits and the required installed-client canary.
+isolated development. Installed-client behavior and cross-client compatibility still require validation.
 
 ## Identity & authentication
 
