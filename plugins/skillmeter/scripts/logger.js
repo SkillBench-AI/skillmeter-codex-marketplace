@@ -514,7 +514,7 @@ async function sendTranscriptChunk(meta, compressed, backendUrl, timeoutMs) {
       headers: commonHeaders(token, {
         "X-Device-ID": meta.scope.deviceId,
         "X-Transcript-ID": meta.transcriptId,
-        "X-Transcript-Protocol": "codex-chunks-v1",
+        "X-Transcript-Protocol": "chunks-v1",
         "X-Chunk-Seq": String(meta.seq),
         "X-Chunk-Reset": String(meta.reset),
       }),

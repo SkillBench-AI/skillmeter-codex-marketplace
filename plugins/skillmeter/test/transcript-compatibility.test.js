@@ -78,6 +78,7 @@ test("real staged request satisfies the collector chunk-header contract", async 
   const headers = new Headers(request.headers);
   assert.equal(headers.get("x-device-id"), "M0-SYNTHETIC-DEVICE");
   assert.equal(headers.get("x-transcript-id"), "codex-m0.jsonl");
+  assert.equal(headers.get("x-transcript-protocol"), "chunks-v1");
   assert.equal(headers.get("authorization"), `Bearer ${token}`);
   const quarantined = fs.existsSync(path.join(logger.POISON_DIR, path.basename(pending)));
   t.diagnostic(JSON.stringify({ chunkSeq: headers.get("x-chunk-seq"), outcome, quarantined }));

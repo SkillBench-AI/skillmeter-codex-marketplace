@@ -101,7 +101,9 @@ PLUGIN_DATA=/path/to/plugin-data node scripts/transcript_inventory.js
 ```
 
 The existing collector accepts chunk headers and ignores the optional
-`X-Transcript-Protocol: codex-chunks-v1`. Collector #44 adds a 409 response when
+`X-Transcript-Protocol: chunks-v1`. This wire protocol name is separate from the
+on-disk `logs/transcripts/chunks-v1/` format, which is unchanged in 0.5.1.
+Collector #44 adds a 409 response when
 an append has no baseline, allowing a scoped full reset. Without that extension,
 resuming beyond the collector's today/yesterday window can yield a partial
 snapshot; the plugin fix alone does not establish multi-day continuity.
@@ -109,5 +111,5 @@ snapshot; the plugin fix alone does not establish multi-day continuity.
 Rollback: pause telemetry and retain the plugin data directory. The old client
 cannot read `chunks-v1`; do not relabel chunks as legacy snapshots or run old
 cleanup against them. Resume with a compatible client or select still-authorized
-sources for explicit recovery. Live transcript storage, installed-client behavior
-and report correctness are tracked separately in INF-231 / INF-210.
+sources for explicit recovery. Offline tests do not establish installed-client behavior, live transcript
+storage or report correctness.

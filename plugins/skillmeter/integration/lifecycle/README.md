@@ -51,4 +51,4 @@ This is a bounded offline contract. It does not prove simultaneous writes by
 current Claude and Codex clients, OS/runtime behavior across an installed-client
 upgrade, actual server TTL/signature enforcement, or dashboard user mapping.
 Retention cases set payload mtimes explicitly; clock control does not advance
-real sleeps or OS process lifetime. 
+real sleeps or OS process lifetime.
