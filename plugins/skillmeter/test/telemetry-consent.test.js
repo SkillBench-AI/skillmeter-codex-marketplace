@@ -1,14 +1,8 @@
 "use strict";
 
 /**
- * Unit tests for in-context telemetry consent (SBEE-157).
- *
- * Consent is collected entirely in-context: an explicit per-project opt-in plus
- * owned-org auto-enable. There is no OS-native dialog (removed — Codex hooks run
- * without a TTY, and system pop-ups read as spyware / can't render headless).
- * This mirrors the Claude Code plugin and the VS Code extension.
- *
- * Run with: node --test plugins/skillmeter/test/telemetry-consent.test.js
+ * Project opt-out and eligible-repository auto-enable behavior.
+ * Consent messaging stays in the hook output; no OS dialog is used.
  */
 
 const os = require("os");

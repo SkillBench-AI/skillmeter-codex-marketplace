@@ -36,6 +36,8 @@ dist/
 # Local user settings
 .codex/settings.local.json
 
-# Local developer notes
+# Local instructions; root contributor conventions are shared.
 CLAUDE.md
 AGENTS.md
+!/CLAUDE.md
+!/AGENTS.md

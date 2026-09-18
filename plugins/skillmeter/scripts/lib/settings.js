@@ -1,11 +1,6 @@
 /**
- * Per-project settings reader for the auth flow.
- *
- * Codex doesn't define a single per-cwd settings file, so the plugin adopts
- * `<cwd>/.codex/settings.local.json` under a `skillmeter` namespace (the same
- * file logger.js uses for telemetry opt-in and repo-scope). This module exposes
- * the string-setting accessor the activation-URL and GitHub-client-id resolvers
- * need without dragging in the rest of logger.js.
+ * Read skillmeter settings from <cwd>/.codex/settings.local.json.
+ * Shared by authentication URL and client-ID resolution without importing logger.
  */
 
 const fs = require("fs");

@@ -1,20 +1,8 @@
 #!/usr/bin/env node
 /**
- * Interactive sign-in flow for the SkillMeter Codex plugin.
- *
- *   1. Try silent sign-in using `gh auth token` when the GitHub CLI is already
- *      logged in.
- *   2. Otherwise start the GitHub OAuth device flow: print the user code and
- *      verification URL to stdout, then either poll inline (real TTY) or hand
- *      off polling to a detached child process (non-TTY runners that buffer
- *      output until exit).
- *   3. The poll exchanges the GitHub access token + device_id at the SkillMeter
- *      activation endpoint, fetches the user's GitHub identities, and stores the
- *      license JWT + orgs in credstore. Once a license is present, every hook
- *      upload routes to the JWT's per-tenant `aud` (audience) endpoint and is
- *      authenticated with the JWT.
- *
- * Run directly:  node scripts/signin.js
+ * Sign in with the GitHub CLI or device flow, then persist the license and scope.
+ * Without a TTY, device polling runs in a detached child so the code can be shown
+ * before the runner exits. Usage: node scripts/signin.js [--org org].
  */
 
 const credstore = require("./credstore.js");

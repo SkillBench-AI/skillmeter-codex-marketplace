@@ -1,22 +1,9 @@
 "use strict";
 
 /**
- * Unit tests for the retry monitor's proactive license refresh (TEL-5) and its
- * self-termination lifecycle. Run with:
- *   node --test plugins/skillmeter/test/retry-daemon.test.js
- *
- * State is isolated by pointing HOME + PLUGIN_DATA at throwaway dirs (so the
- * shared ~/.skillbench/credentials.json and the real durable queue are never
- * touched) and seeding a device id + hash salt up front so credstore never
- * reaches the macOS Keychain. All of this MUST happen before logger is required,
- * since those paths are resolved at module load.
- *
- * The refresh endpoint is domain-gated (getRefreshUrl only accepts trusted
- * skillbench hosts), so the network path can't be pointed at a localhost server.
- * Instead we exercise the real logger.tryRefreshLicense with a stubbed
- * global.fetch (the domain gate never runs because nothing hits the network),
- * and monkeypatch logger.* for the failure-isolation cases — the daemon reads
- * logger.tryRefreshLicense / logger.drainQueuesOnce as properties at call time.
+ * Retry-monitor refresh and lifecycle tests. Isolate HOME and PLUGIN_DATA
+ * before importing modules. Stub fetch because refresh accepts trusted hosts only;
+ * stub logger methods for failure-isolation cases.
  */
 
 const os = require("os");

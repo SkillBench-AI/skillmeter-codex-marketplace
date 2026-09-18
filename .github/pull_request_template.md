@@ -2,7 +2,7 @@
 
 ## Summary
 
-<!-- What changed and why. Link the issue, e.g. SBEE-160. -->
+<!-- What changed and why. Link the relevant issue. -->
 
 ## Telemetry / privacy impact
 
@@ -17,3 +17,5 @@
 ## Release notes
 
 <!-- One line for the changelog/release, or "n/a" for internal-only changes. -->
+
+<!-- Follow AGENTS.md for public documentation and comment conventions. -->

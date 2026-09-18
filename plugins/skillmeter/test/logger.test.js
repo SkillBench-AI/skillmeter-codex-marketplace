@@ -1,16 +1,8 @@
 "use strict";
 
 /**
- * Unit tests for two core logger.js functions that were previously uncovered
- * (SBEE-159): the path-hashing pass `sanitizeToolData` and the ingest-endpoint
- * resolver `getBackendUrl`.
- *
- * Run with:  node --test plugins/skillmeter/test/logger.test.js
- *
- * As with the other suites, state is isolated by pointing HOME at a throwaway
- * dir and seeding a device id + hash salt so credstore never reaches for the
- * macOS Keychain. This MUST happen before credstore/logger are required, since
- * CRED_FILE is resolved from os.homedir() at module load.
+ * Structured path hashing and ingest URL resolution.
+ * Set temporary HOME and seed identity before importing cached credential paths.
  */
 
 const os = require("os");

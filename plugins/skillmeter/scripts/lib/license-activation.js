@@ -1,14 +1,6 @@
 /**
- * License activation orchestrator.
- *
- * Owns the silent `gh auth token` fallback path, the JWT /refresh round-trip,
- * and activation-endpoint URL resolution. Storage lives in credstore (license
- * JWT, allowed orgs, signed-out sentinel); HTTP lives in lib/github-api (org
- * lookup). This module wires the two together.
- *
- * The exported surface (`getActivateUrl`, `getRefreshUrl`, `refreshExpiredJwt`,
- * `trySilentGhActivate`) is what the sign-in entrypoint and the hook-runtime
- * refresh path consume.
+ * License refresh, GitHub activation and endpoint configuration.
+ * Credential persistence lives in credstore; GitHub lookup lives in github-api.
  */
 
 const { execSync } = require("child_process");
@@ -17,12 +9,8 @@ const { fetchUserGitHubOrgs } = require("./github-api");
 const { getSkillmeterStringSetting } = require("./settings");
 const { resolveOrgScope, narrowOrgsToScope } = require("./org-scope");
 
-// Default points at prod. The prod control plane lives on the greenfield
-// `skillbench.ai` zone (api.skillbench.ai), matching the Claude plugin and the
-// infra `api_domain_name` — NOT skillbench.com, which has no DNS record.
-// Devs/agents override via SKILLMETER_ACTIVATE_URL (e.g.
-// https://api.dev.skillbench.com/activate) or a `skillmeter.activate_url` entry
-// in the project's .codex/settings.local.json.
+// Override activation via SKILLMETER_ACTIVATE_URL or skillmeter.activate_url.
+// Refresh uses the same host.
 const DEFAULT_ACTIVATE_URL = "https://api.skillbench.ai/activate";
 
 // Trusted domain patterns for activation URL validation. Prod is on
@@ -69,11 +57,7 @@ function getActivateUrl() {
   return DEFAULT_ACTIVATE_URL;
 }
 
-// The /refresh endpoint sits next to /activate on the same host. Derive the URL
-// from getActivateUrl so the same host configuration covers both. If the
-// activate URL doesn't end with /activate (e.g. a dev override with a custom
-// path), append /refresh to the base path — keeps weird overrides at least
-// roundtrippable.
+// Derive /refresh from the configured activation URL, preserving a custom base path.
 function getRefreshUrl() {
   const url = getActivateUrl();
   if (url.endsWith("/activate")) return url.slice(0, -"/activate".length) + "/refresh";
@@ -81,18 +65,9 @@ function getRefreshUrl() {
 }
 
 /**
- * Rotate an existing license JWT through the Lambda's /refresh endpoint.
- * The server validates the signature, enforces a sliding window against
- * `original_iat`, re-confirms org purchase, and mints a fresh JWT — no
- * GitHub round-trip, so this works for users without `gh` installed.
- *
- * Returns the new JWT string on success, or `null` for any failure
- * (signature invalid, sliding window exceeded, license cancelled, network
- * error, endpoint not yet deployed). The caller is expected to fall back to
- * silent gh /activate on null.
- *
- * A response superseded by another sign-in/rotation/sign-out is discarded.
- * The caller must recheck its snapshot before attempting silent activation.
+ * Rotate a license through /refresh. Return the new JWT or null on failure.
+ * Discard responses superseded by another credential change. Before falling
+ * back to GitHub activation, callers must recheck the original snapshot.
  */
 async function refreshExpiredJwt(jwt, deviceId, expected = credstore.recoverySnapshot()) {
   if (!jwt || !deviceId) return null;
@@ -157,19 +132,9 @@ async function refreshExpiredJwt(jwt, deviceId, expected = credstore.recoverySna
 }
 
 /**
- * Attempt to activate silently using `gh auth token` if the user already has
- * the GitHub CLI authenticated. Returns the license JWT on success, null
- * otherwise.
- *
- * Failures are not retried within the same hook — tryRefreshLicense is called
- * once per SessionStart, so the hook architecture itself gives us a natural
- * "at-most-once-per-session" rate limit. Anything that fails here just returns
- * null; the caller leaves the on-disk queue for the next session to drain.
- *
- * `options.orgScope` (an explicit org allow-list, e.g. from `signin --org`)
- * narrows which fetched memberships are persisted. When omitted, the scope is
- * resolved from SKILLMETER_REPO_SCOPE_ORGS / the project setting so even the
- * hook-triggered silent refresh stays narrowed.
+ * Activate with the current GitHub CLI identity. Return the license or null.
+ * The caller controls retry timing. Explicit options.orgScope narrows stored
+ * memberships; environment and project scope apply to local evaluation only.
  */
 async function trySilentGhActivate(deviceId, options = {}) {
   if (credstore.getSignedOut()) {

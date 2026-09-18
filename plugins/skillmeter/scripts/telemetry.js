@@ -1,18 +1,7 @@
 #!/usr/bin/env node
 /**
- * Toggle SkillMeter telemetry for the current Codex project.
- *
- * Usage:
- *   node telemetry.js enable
- *   node telemetry.js disable
- *   node telemetry.js enable --global
- *   node telemetry.js disable --global
- *   node telemetry.js status
- *
- * The per-project opt-in flag lives in
- * ${cwd}/.codex/settings.local.json under the `skillmeter` namespace.
- * The global kill-switch lives in ~/.skillbench/credentials.json so it applies
- * to every Codex project on the machine.
+ * Set project consent in .codex/settings.local.json or the shared global pause.
+ * Usage: node scripts/telemetry.js <enable|disable|status> [--global].
  */
 
 const {

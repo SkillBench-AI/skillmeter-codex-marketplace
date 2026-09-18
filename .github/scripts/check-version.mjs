@@ -1,21 +1,8 @@
 #!/usr/bin/env node
-// Validate the plugin version and (optionally) that a release tag matches it.
+// Validate MAJOR.MINOR.PATCH (no suffixes) and an optional matching v-prefixed tag.
+// The plugin manifest is the version source of truth. Exit 1 on failure.
 //
-// The plugin manifest is the single source of truth for the version. Two things
-// are enforced for production-grade release hygiene:
-//
-//   1. The version is *clean* SemVer: MAJOR.MINOR.PATCH with no pre-release or
-//      build-metadata suffix (e.g. "0.2.0", not "0.2.0+codex.20260616192913").
-//      Codex/marketplace tooling sorts and de-dupes on the bare version, so a
-//      build-metadata suffix is what we are deliberately moving away from here.
-//   2. On a tagged release the tag is "v<version>" and matches the manifest, so
-//      a tag can never ship a build whose manifest says something different.
-//
-// Usage:
-//   node .github/scripts/check-version.mjs               # validate manifest only
-//   node .github/scripts/check-version.mjs --tag v0.2.0  # also match against tag
-//
-// Exits 0 on success, 1 on any validation failure.
+// Usage: node .github/scripts/check-version.mjs [--tag v0.5.1]
 
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

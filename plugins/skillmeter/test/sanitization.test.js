@@ -1,22 +1,8 @@
 "use strict";
 
 /**
- * Unit + end-to-end tests for pre-upload content sanitization (SBEE-155).
- * Run with:  node --test plugins/skillmeter/test/sanitization.test.js
- *
- * Two layers are covered:
- *   1. The deterministic detector library in scripts/sanitizer.js — Tier 1
- *      secret redaction, Tier 2 email redaction, recursive walking, the
- *      placeholder allow-list, transcript scrubbing, and the no-original-value
- *      metadata contract.
- *   2. An end-to-end check that the live lifecycle hooks (user_prompt_submit,
- *      post_tool_use, permission_request) actually route raw `prompt`,
- *      `tool_response`, and approval `description` content through that boundary
- *      before writing the durable event log — i.e. a seeded secret never lands
- *      on disk in the queue that gets uploaded.
- *
- * As with the other suites, state is isolated by pointing HOME at a throwaway
- * dir so the shared ~/.skillbench/credentials.json is never touched.
+ * Detector and hook-to-queue sanitization tests using synthetic secrets.
+ * Keep HOME isolated from real credentials.
  */
 
 const os = require("os");
@@ -312,11 +298,7 @@ test("PermissionRequest hook redacts secrets in the approval description", () =>
   assert.ok(rec.data.description.includes(R));
 });
 
-// --- Shared cross-surface secret-fixture parity corpus ---------------------
-// Loads the vendored copy of skillbench-docs/eval/secret-corpus/corpus.json and
-// asserts every fixture is redacted. Tier-1 misses fail the build (blocks
-// merge), so Tier-1 recall can't silently diverge from the Claude / session
-// collector sanitizers. See SANITIZATION_EPIC.md Task 5.2.
+// Shared secret corpus: preserve detector coverage across client implementations.
 const SECRET_CORPUS = JSON.parse(
   fs.readFileSync(path.join(__dirname, "fixtures", "secret-corpus.json"), "utf8")
 );

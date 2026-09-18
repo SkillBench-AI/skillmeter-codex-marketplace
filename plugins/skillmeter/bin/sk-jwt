@@ -1,17 +1,7 @@
 #!/usr/bin/env node
 /**
- * sk-jwt — print the stored SkillMeter license JWT metadata in a
- * human-readable form. Never prints the raw token body. Shows:
- *   - org identifiers derived from the `org` claim
- *   - GitHub user id from the `github_id` claim
- *   - the telemetry endpoint (the `aud` audience claim) used for per-tenant routing
- *   - iat / exp in ISO form, and whether the token is currently valid
- *   - the device id stored alongside the JWT
- *
- * This is the Codex counterpart to the Claude plugin's `sk-jwt` debug tool.
- *
- * Usage:
- *   node bin/sk-jwt
+ * Print stored license claims, expiry and device ID without the raw JWT.
+ * Usage: node bin/sk-jwt.
  */
 const path = require("path");
 

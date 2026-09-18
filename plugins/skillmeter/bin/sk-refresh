@@ -1,16 +1,7 @@
 #!/usr/bin/env node
 /**
- * sk-refresh — clear the stored license JWT and run the sign-in / activation
- * flow immediately. Useful for:
- *   - swapping tenants (pull a fresh JWT with a new telemetry_endpoint)
- *   - recovering from a revoked/rotated license without waiting for the natural
- *     expiry + SessionStart refresh
- *   - testing the silent-gh activation path
- *
- * This is the Codex counterpart to the Claude plugin's `sk-refresh` tool.
- *
- * Usage:
- *   node bin/sk-refresh
+ * Clear the stored license and start sign-in again.
+ * Usage: node bin/sk-refresh.
  */
 const path = require("path");
 
