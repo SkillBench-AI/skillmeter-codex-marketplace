@@ -1,8 +1,15 @@
 # Credential reconciliation for PRs 37 and 38
 
-Engineering review packet, September 15, 2026. This is a proposed reconciliation
-plan, not an approved shared credential contract. No conflicts were resolved,
-authentication settings changed, or releases published in this milestone.
+Updated September 18, 2026: #35/#38 are merged into main. This draft now
+incorporates their transcript fixes, credential writer lock, device-aware
+snapshots and ingest-rejection refresh trigger while retaining #37's consent,
+identity and retention checks. The five synthetic contract probes pass on the
+combined working tree. This does not establish cross-client broker compatibility.
+
+Still pending: Homin's broker-auth alignment, a common lock protocol across
+clients, token/generation-bound rejection bookkeeping, and installed-client /
+live validation. The comparisons and receipts below describe September 15
+revisions, not the current draft.
 
 ## Exact comparison and evidence
 
@@ -110,21 +117,21 @@ decisions remain the reference; the shared-file additions below are proposals.
   green suites with compatibility.
 - [x] Map Codex to ADR001 decisions 2–4 and ADR002 stage-1 policy 3.1.0 using
   the pinned Claude source and existing tests.
-- [ ] Agree the common writer lock and stale-owner recovery protocol, then
-  port #38's all-writer/device fixes and token-bound rejection recovery into
-  the combined candidate with targeted regression tests.
-- [ ] Run the combined candidate's existing 414+55 cases and the relevant #38
-  race cases. Adapt assertions where the accepted ADR intentionally narrows
-  behavior, including transient failure fallback and identity changes.
+- [x] Port #38's credential writer lock and device-aware snapshots into the
+  combined candidate; preserve identity checks and test stale commits.
+- [ ] Agree the cross-client lock protocol and bind rejection bookkeeping to
+  the token/generation used by each request.
+- [x] Validate the combined candidate: 449 Node tests, 55 offline lifecycle
+  cases and five credential contract probes pass. Race tests retain account /
+  device / generation protections under the lifecycle API and single-flight lock.
 - [ ] Confirm canonical GitHub/broker identity fields, issuer/audience handling
   and the target dashboard user with Seungho/Homin (INF-200, INF-177, DAS-301).
 - [ ] Verify Claude and VS Code implement the agreed shared mutation protocol.
   The pinned Claude 0.34.1 credstore uses atomic writes without this Codex lock;
   this audit does not claim either client passes the new contract.
-- [ ] Reconcile the recorded landing-order proposals and release version.
-  #38 proposes 0.4.2; #37 is 0.4.1. Do not ship a downgrade or publish an
-  intermediate plugin that expects an unavailable collector/parser. Marketplace
-  main is a release channel; merging is not a harmless preparation step.
+- [ ] Finalize #37's release scope/version (0.6.0 proposed). Main is now 0.5.0;
+  this draft inherits that version until its own release change. Marketplace
+  main is a release channel, so keep this unfinished candidate draft.
 - [ ] Confirm stage-2 rollout status with its owner. ADR002's stage-2 engine and
   measurement/gating work is separate; stage-1 parity does not establish it.
 - [ ] Run the approved same-object pipeline comparison, then one fresh scoped

@@ -122,6 +122,16 @@ function recover(dir) {
   if (cursor && (cursor.version !== 1 || !Number.isSafeInteger(cursor.seq) || cursor.seq < 1)) {
     throw new Error("invalid-cursor");
   }
+  // Both callers hold the queue lock. Unpublished staging directories cannot
+  // belong to a live writer and are not referenced by a committed cursor.
+  let reaped = false;
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory() && /^\.stage-[a-f0-9-]{36}$/.test(entry.name)) {
+      fs.rmSync(path.join(dir, entry.name), { recursive: true, force: true });
+      reaped = true;
+    }
+  }
+  if (reaped) syncDir(dir);
   for (const group of groups(dir)) {
     const commit = readJson(path.join(group, "commit.json"));
     if (!cursor || commit.cursor.seq > cursor.seq) {
@@ -360,4 +370,4 @@ async function drainDirectory(dir, send) {
   } finally { release(); }
 }
 module.exports = { stage, observeConsent, encodeChunks, acquireLock, recover, queueDirectories, pendingFiles, metadata, readRetirement,
-  drainDirectory, writeDurable, hmac, MAX_ENVELOPE, ENVELOPE_RESERVE, MAX_RECORD };
+  drainDirectory, writeDurable, hmac, MAX_ENVELOPE, ENVELOPE_RESERVE, MAX_RECORD, STAGE_BYTES };

@@ -25,6 +25,7 @@ const stage = () => logger.stageTranscriptForUpload(source, { cwd: repo });
 const upload = file => logger.processPendingTranscript(file, credentials.device_id, "https://synthetic.meter.skillbench.com/logs/codex", 1000);
 beforeEach(() => {
   save({});
+  delete process.env.SKILLMETER_BACKEND_URL;
   require("../scripts/lib/telemetry-store").authorizeOrganizationRepositories("synthetic", ["synthetic/repo"], true);
   fs.rmSync(logger.LOG_DIR, { recursive: true, force: true });
   fs.rmSync(path.join(repo, ".codex"), { recursive: true, force: true });
@@ -56,10 +57,13 @@ test("token refresh for the same principal resumes pending chunks", async () => 
   assert.equal(await upload(file), "sent"); assert.equal(fs.existsSync(file), false);
 });
 
-for (const status of [400, 401, 403, 413, 429, 500]) test(`HTTP ${status} retains chunk and credentials without anonymous retry`, async () => {
+for (const status of [400, 401, 402, 403, 413, 429, 500]) test(`HTTP ${status} retains chunk and credentials without anonymous retry`, async () => {
   const file = stage(), before = fs.readFileSync(store); let calls = 0;
   global.fetch = async () => { calls++; return { ok: false, status }; };
-  await upload(file); assert.equal(calls, 1); assert.equal(fs.existsSync(file), true);
+  const outcome = await upload(file);
+  assert.equal(outcome, [401, 402, 403].includes(status) ? "auth" : "retry");
+  assert.equal(logger.isLicenseRejected(), [401, 403].includes(status));
+  assert.equal(calls, 1); assert.equal(fs.existsSync(file), true);
   assert.deepEqual(fs.readFileSync(store), before);
 });
 
@@ -213,4 +217,120 @@ test("failed transcript upload counts as queued work for the retry monitor", asy
   global.fetch = async () => ({ ok: true });
   assert.equal(await logger.drainPendingTranscripts("https://synthetic.meter.skillbench.com/logs/codex", 1000), 1);
   assert.equal(await logger.drainPendingTranscripts("https://synthetic.meter.skillbench.com/logs/codex", 1000), 0);
+});
+
+
+test("successful transcript delivery clears the rejected-license marker", async () => {
+  const file = stage();
+  global.fetch = async () => ({ ok: false, status: 401 });
+  assert.equal(await upload(file), "auth");
+  assert.equal(logger.isLicenseRejected(), true);
+  global.fetch = async () => ({ ok: true });
+  assert.equal(await upload(file), "sent");
+  assert.equal(logger.isLicenseRejected(), false);
+});
+
+test("chunk routing and authorization use one current credential snapshot", async () => {
+  const file = stage();
+  const rotated = jwt("synthetic-user", 4102444800, { jti: "new-token" });
+  save({ license_jwt: rotated });
+  global.fetch = async (url, options) => {
+    assert.equal(url, "https://synthetic.meter.skillbench.com/logs/codex/transcript");
+    assert.equal(options.headers.Authorization, `Bearer ${rotated}`);
+    return { ok: true };
+  };
+  assert.equal(await logger.processPendingTranscript(file, credentials.device_id), "sent");
+});
+
+for (const changedPrincipal of [false, true]) test(`broker credential rotation ${changedPrincipal ? "blocks a different user" : "preserves the same user's queue"}`, async () => {
+  const brokerToken = (user, jti) => jwt("tenant-uuid", 4102444800, {
+    github_id: undefined, broker_sub: user, jti,
+  });
+  save({ license_jwt: brokerToken("broker-user-a", "old") });
+  const brokerSource = path.join(root, "broker.jsonl");
+  fs.writeFileSync(brokerSource, "");
+  logger.observeTranscriptConsent(brokerSource, repo);
+  fs.writeFileSync(brokerSource, line("broker message after consent"));
+  const file = logger.stageTranscriptForUpload(brokerSource, { cwd: repo });
+  assert.ok(file);
+  const rotated = brokerToken(changedPrincipal ? "broker-user-b" : "broker-user-a", "new");
+  save({ license_jwt: rotated });
+  let calls = 0;
+  global.fetch = async (_, options) => {
+    calls++;
+    assert.equal(options.headers.Authorization, `Bearer ${rotated}`);
+    return { ok: true };
+  };
+  assert.equal(await upload(file), changedPrincipal ? "skip" : "sent");
+  assert.equal(calls, changedPrincipal ? 0 : 1);
+  assert.equal(fs.existsSync(file), changedPrincipal);
+});
+
+test("combined drain honors an explicit transcript endpoint override", async () => {
+  process.env.SKILLMETER_BACKEND_URL = "https://override.meter.skillbench.com/logs/codex";
+  const file = stage();
+  global.fetch = async (url) => {
+    assert.equal(url, "https://override.meter.skillbench.com/logs/codex/transcript");
+    return { ok: true };
+  };
+  assert.equal(await logger.drainQueuesOnce("https://override.meter.skillbench.com/logs/codex", 1000), 1);
+  assert.equal(fs.existsSync(file), false);
+});
+
+test("later parent hooks preserve a subagent source in the same session", async () => {
+  const agentSource = path.join(root, "agent.jsonl");
+  fs.writeFileSync(agentSource, "");
+  logger.observeTranscriptConsent(agentSource, repo);
+  fs.writeFileSync(agentSource, line("subagent message"));
+  logger.requestTranscriptCapture({ cwd: repo, session_id: "parent", transcript_path: source, agent_transcript_path: agentSource });
+  logger.requestTranscriptCapture({ cwd: repo, session_id: "parent", transcript_path: source });
+  const transcripts = new Set();
+  global.fetch = async (_, options) => {
+    transcripts.add(options.headers["X-Transcript-ID"]);
+    return { ok: true };
+  };
+  await logger.drainPendingTranscripts();
+  assert.deepEqual([...transcripts].sort(), ["agent.jsonl", "synthetic.jsonl"]);
+});
+
+test("one detached sweep drains a final transcript larger than the staging budget", async () => {
+  const records = Array.from({ length: 10 }, (_, i) => line(`${i}:` + "x".repeat(1024 * 1024)));
+  fs.writeFileSync(source, records.join(""));
+  logger.requestTranscriptCapture({ cwd: repo, session_id: "large-final", transcript_path: source });
+  let delivered = 0;
+  global.fetch = async (_, options) => {
+    delivered += require("node:zlib").gunzipSync(options.body).toString().trim().split("\n").length;
+    return { ok: true };
+  };
+  await logger.drainPendingTranscripts();
+  assert.equal(delivered, 10);
+  assert.equal(logger.listPendingTranscripts().length, 0);
+});
+
+test("a missing source in a legacy session hint does not block its surviving source", async () => {
+  logger.requestTranscriptCapture({ cwd: repo, session_id: "legacy", transcript_path: source });
+  const names = fs.readdirSync(logger.TRANSCRIPT_CAPTURES_DIR).filter(n => n.endsWith(".json"));
+  const hint = path.join(logger.TRANSCRIPT_CAPTURES_DIR, names[0]);
+  const capture = JSON.parse(fs.readFileSync(hint));
+  capture.paths.unshift(path.join(root, "missing-agent.jsonl"));
+  const legacyName = names[0].slice(0, 64) + ".json";
+  fs.unlinkSync(hint);
+  fs.writeFileSync(path.join(logger.TRANSCRIPT_CAPTURES_DIR, legacyName), JSON.stringify(capture));
+  let calls = 0;
+  global.fetch = async () => { calls++; return { ok: true }; };
+  await logger.drainPendingTranscripts();
+  assert.equal(calls, 1);
+});
+
+for (const corruption of ["chunk", "metadata", "cursor"]) test(`direct upload retains ${corruption} corruption with a retry outcome and diagnostic`, async () => {
+  const file = stage();
+  const dir = path.dirname(path.dirname(file));
+  const damaged = corruption === "chunk" ? file : corruption === "metadata"
+    ? path.join(path.dirname(file), "commit.json") : path.join(dir, "cursor.json");
+  fs.writeFileSync(damaged, "invalid fixture data that must not enter diagnostics");
+  const before = fs.readFileSync(file);
+  assert.equal(await upload(file), "retry");
+  assert.deepEqual(fs.readFileSync(file), before);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "diagnostic.json"))).code, "queue-unavailable");
+  assert.ok(!fs.readFileSync(path.join(dir, "diagnostic.json"), "utf8").includes("invalid fixture"));
 });
