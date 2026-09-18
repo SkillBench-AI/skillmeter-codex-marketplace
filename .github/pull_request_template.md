@@ -18,6 +18,4 @@
 
 <!-- One line for the changelog/release, or "n/a" for internal-only changes. -->
 
-<!-- Keep public docs concise: usage, contracts, ADRs and reproducible checks.
-Record internal coordination and historical checkpoints in Linear.
-Do not commit generated telemetry or test receipts. -->
+<!-- Follow AGENTS.md for public documentation and comment conventions. -->
