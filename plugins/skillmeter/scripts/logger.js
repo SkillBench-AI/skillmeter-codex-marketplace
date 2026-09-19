@@ -10,7 +10,7 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 const zlib = require("zlib");
-const { sanitizeEventData } = require("./sanitizer");
+const { sanitizeEventData, redactDeep } = require("./sanitizer");
 const credstore = require("./credstore");
 const transcriptQueue = require("./lib/transcript-delta");
 const {
@@ -306,32 +306,10 @@ function getRepoScopeDecision(cwd) {
   };
 }
 
-// Hash values under recognized path, command and patch keys. Other strings
-// pass through the central secret/email sanitizer; arbitrary paths in free text
-// are not covered by this key-based pass.
-const PATH_KEYS = new Set([
-  "file_path",
-  "filePath",
-  "path",
-  "command",
-  "cwd",
-  "patch",
-]);
-
+// Compatibility helper for callers that sanitize tool data independently.
+// Hook builders pass raw fields to runHook's single sanitization boundary.
 function sanitizeToolData(obj, hashSalt) {
-  if (!obj || typeof obj !== "object") return obj;
-
-  const result = Array.isArray(obj) ? [] : {};
-  for (const [key, val] of Object.entries(obj)) {
-    if (PATH_KEYS.has(key) && typeof val === "string") {
-      result[key] = hashHmac(val, hashSalt);
-    } else if (val && typeof val === "object") {
-      result[key] = sanitizeToolData(val, hashSalt);
-    } else {
-      result[key] = val;
-    }
-  }
-  return result;
+  return redactDeep(obj, [], hashSalt);
 }
 
 function getTimestamp() {
@@ -1675,7 +1653,7 @@ async function runHook(eventName, buildData, options = {}) {
 
   const rawData = {
     transcript_path: getTranscriptId(input.transcript_path),
-    cwd: hashHmac(cwd, hashSalt),
+    cwd,
     repo_scope: repoScopeDecision.scope,
     repo_classification: repoScopeDecision.classification,
     repo_root: repoScopeDecision.repoRoot
@@ -1692,11 +1670,10 @@ async function runHook(eventName, buildData, options = {}) {
 
   // Sanitize every hook field before writing to the durable event queue.
   // Attach redaction counts and detector types, without matched values.
-  const { value: data, meta } = sanitizeEventData(rawData);
-  if (meta.tier1 > 0 || meta.tier2 > 0) {
-    data._sanitization = meta;
+  const { value: data, meta } = sanitizeEventData(rawData, hashSalt);
+  if (meta.secrets > 0 || meta.pii > 0) {
     console.error(
-      `[skillmeter] ${eventName}: redacted ${meta.tier1} secret(s) and ${meta.tier2} identifier(s) before upload`
+      `[skillmeter] ${eventName}: redacted ${meta.secrets} secret(s) and ${meta.pii} identifier(s) before upload`
     );
   }
 

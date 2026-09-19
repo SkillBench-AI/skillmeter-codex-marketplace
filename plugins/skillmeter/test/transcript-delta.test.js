@@ -127,3 +127,32 @@ test("bounded capture resumes from the last complete raw position", t => {
   for (let i = 0; i < 100; i++) { const result = f.stage({ stageBytes: 1000 }); if (!result.files.length) break; all.push(...f.records(result.files)); }
   assert.equal(all.length, 10000); assert.equal(new Set(all.map(r => r.uuid)).size, 10000);
 });
+
+test("queued tool pairs preserve linkage and sanitize JSON arguments before gzip", t => {
+  const f = fixture(t);
+  const input = [
+    { type: "response_item", uuid: "synthetic-source-call", payload: {
+      type: "function_call", name: "read_file", call_id: "synthetic-call",
+      arguments: JSON.stringify({ file_path: "/private/undisclosed/src/customer.ts", password: "synthetic-password", note: "用户@example.com" }),
+    }, _sanitization: { policyVersion: "3.1.0", secrets: 0 } },
+    { type: "response_item", uuid: "synthetic-source-result", payload: {
+      type: "function_call_output", call_id: "synthetic-call", output: "contact 用户@example.com",
+    } },
+  ];
+  fs.writeFileSync(f.source, input.map(JSON.stringify).join("\n") + "\n");
+  const result = f.stage();
+  const records = f.records(result.files);
+  assert.equal(records.length, 2);
+  assert.deepEqual(records.map(r => r._codex_source_uuid), input.map(r => r.uuid));
+  assert.equal(records[0].payload.call_id, records[1].payload.call_id);
+  const args = JSON.parse(records[0].payload.arguments);
+  assert.match(args.file_path, /^\/[a-f0-9]{12}\/[a-f0-9]{12}\/src\/[a-f0-9]{12}\.ts$/);
+  assert.equal(args.password, "[REDACTED_SECRET]");
+  assert.equal(args.note, "[EMAIL]");
+  assert.equal(records[1].payload.output, "contact [EMAIL]");
+  assert.equal(records[0]._sanitization.secrets, 1);
+  assert.equal(records[0]._sanitization.counts.path, 3);
+  assert.equal(records[0]._sanitization.counts.email, 1);
+  assert.equal(JSON.stringify(records).includes("synthetic-password"), false);
+  assert.equal(f.stage().status, "unchanged");
+});
