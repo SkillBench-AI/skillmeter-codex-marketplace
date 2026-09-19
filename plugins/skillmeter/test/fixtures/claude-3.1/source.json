@@ -1,0 +1,32 @@
+{
+  "repository": "SkillBench-AI/skillmeter-claude-code-marketplace",
+  "revision": "a50a38e98dc1302cb8a952adac00ee90e0d9f55a",
+  "policyVersion": "3.1.0",
+  "files": [
+    {
+      "local": "scripts/lib/sanitize.js",
+      "upstream": "scripts/lib/sanitize.js",
+      "sha256": "4d067d3efbea443f63fa7bf205844dadc2c6dd6e3fcc6d96dbd8a65924e7f235"
+    },
+    {
+      "local": "scripts/lib/rules.js",
+      "upstream": "scripts/lib/rules.js",
+      "sha256": "74f821d52450a7c7be7c10f2a2c1f6c5958a1d8e2314c8bcaebca83600ea0669"
+    },
+    {
+      "local": "scripts/lib/path-vocabulary.json",
+      "upstream": "scripts/lib/path-vocabulary.json",
+      "sha256": "ff133f66d53ae5c7d12c300725d6664d7cbe696fab27ad3c8129c0fceb4b3bd6"
+    },
+    {
+      "local": "test/fixtures/claude-3.1/pii-corpus.json",
+      "upstream": "test/fixtures/pii-corpus.json",
+      "sha256": "cbfaca57fb16575441b4724f796ef70756ddfa54aaae26219671d6ab19a6264a"
+    },
+    {
+      "local": "test/fixtures/secret-corpus.json",
+      "upstream": "test/fixtures/secret-corpus.json",
+      "sha256": "cdd6aec983390cf10804a3298552c372f53a6d7691dcd051c314ad8eac9e801a"
+    }
+  ]
+}

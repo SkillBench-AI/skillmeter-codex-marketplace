@@ -59,9 +59,12 @@ test("sanitizeToolData hashes every path-like key", () => {
 
   for (const key of Object.keys(input)) {
     assert.notEqual(out[key], input[key], `${key} should be hashed`);
-    // 12-char HMAC hex prefix (see hashHmac).
-    assert.match(out[key], /^[0-9a-f]{12}$/, `${key} should be a 12-char hex hash`);
-    assert.equal(out[key], logger.hashHmac(input[key], SALT), `${key} hash must be deterministic`);
+    // File fields use Claude's segment policy; other fields remain opaque.
+    assert.match(out[key], /[0-9a-f]{12}/, `${key} should contain a path hash`);
+    const expected = ["file_path", "filePath"].includes(key)
+      ? require("../scripts/lib/sanitize").hashPathSegments(input[key], SALT)
+      : logger.hashHmac(input[key], SALT);
+    assert.equal(out[key], expected, `${key} follows the shared path policy`);
   }
 });
 
@@ -105,7 +108,7 @@ test("sanitizeToolData only hashes string path values, not numbers/objects", () 
   // pass through untouched.
   assert.equal(out.command, 42);
   assert.equal(out.path.nested, "/a");
-  assert.match(out.file_path, /^[0-9a-f]{12}$/);
+  assert.match(out.file_path, /^\/(?:[0-9a-f]{12}\/){2}[0-9a-f]{12}$/);
 });
 
 test("sanitizeToolData returns non-object inputs unchanged", () => {

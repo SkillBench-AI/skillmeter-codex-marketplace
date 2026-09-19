@@ -10,10 +10,10 @@ In Codex, ask SkillMeter to sign you in, sign you out, or check whether the
 current repository is in scope. The bundled skills are listed below.
 
 For terminal commands, set `PLUGIN_ROOT` to the **Installed plugin root** printed
-by `codex plugin add`. For a default 0.5.1 installation:
+by `codex plugin add`. For a default 0.6.0 installation:
 
 ```sh
-export PLUGIN_ROOT="$HOME/.codex/plugins/cache/skillbench/skillmeter/0.5.1"
+export PLUGIN_ROOT="$HOME/.codex/plugins/cache/skillbench/skillmeter/0.6.0"
 ```
 
 Run project controls from the repository you want to configure:
@@ -39,7 +39,7 @@ Global pause retains queued data for later delivery; it does not delete it.
 ## Collection scope
 
 A valid sign-in, a recognized GitHub repository, and an allowed remote owner
-are required. In 0.5.x:
+are required. In 0.6.0:
 
 - Eligible repositories auto-enable when no project choice has been made.
 - An explicit project opt-out stops collection even for an allowed owner.
@@ -66,10 +66,15 @@ Collected data can include:
 - Configuration names and counts, plus bounded descriptions and bodies of
   custom project/user skills. This is **not metadata-only collection**.
 
-Known secrets and email addresses are redacted before upload. Structured paths,
-commands and patches are hashed with a per-device salt. Names and ordinary
-conversation content may remain readable; sanitization does not guarantee that
-all personal or confidential information is removed.
+Policy 3.1.0 redacts recognized secrets, email addresses, VCS author names,
+phone numbers, IP addresses, national identifiers and payment-card numbers with
+typed placeholders. File-path fields retain hierarchy, extensions and approved
+technical vocabulary; other segments are hashed. Directory fields, commands and
+patches are hashed whole with a per-device salt. Free text hashes the home prefix.
+
+Names, addresses and confidential free text may remain readable. Stage-2
+sanitization is separate; this plugin does not guarantee complete PII removal.
+See the [shared policy and Codex adapter](../../docs/sanitizer-parity.md).
 
 Credentials, device ID and hash salt live in `~/.skillbench/credentials.json`.
 Queued telemetry lives under the plugin data directory's `logs/` folder.
