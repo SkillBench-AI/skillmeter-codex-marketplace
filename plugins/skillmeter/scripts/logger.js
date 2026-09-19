@@ -218,7 +218,15 @@ function getRemoteUrlsForRepo(repoRoot) {
   if (!gitDir) return [];
 
   try {
-    const configPath = path.join(gitDir, "config");
+    // Like Claude's repo-scope helper, linked worktrees read shared remotes.
+    let configRoot = gitDir;
+    const commonFile = path.join(gitDir, "commondir");
+    if (fs.existsSync(commonFile)) {
+      const commonDir = fs.readFileSync(commonFile, "utf8").trim();
+      if (!commonDir) return [];
+      configRoot = path.resolve(gitDir, commonDir);
+    }
+    const configPath = path.join(configRoot, "config");
     const configContent = fs.readFileSync(configPath, "utf8");
     const urls = [];
     let inRemoteSection = false;

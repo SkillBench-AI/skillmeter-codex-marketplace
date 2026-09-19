@@ -8,6 +8,7 @@
 const os = require("os");
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "sk-scope-home-"));
 process.env.HOME = tmpHome;
@@ -248,3 +249,78 @@ test("an empty/whitespace filter is ignored => all signed-in orgs allowed", () =
     delete process.env.SKILLMETER_REPO_SCOPE_ORGS;
   }
 });
+
+// Real Git layouts catch differences that hand-written .git/config fixtures miss.
+function makeWorktree(t, remoteUrl) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "sk-scope-worktree-"));
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const repo = path.join(root, "main");
+  const worktree = path.join(root, "linked");
+  const git = (...args) => execFileSync("git", args, {
+    env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" }, stdio: "pipe",
+  }).toString().trim();
+  git("init", "-q", repo);
+  git("-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid",
+    "-c", "commit.gpgsign=false", "-c", "core.hooksPath=/dev/null",
+    "commit", "--allow-empty", "-qm", "fixture");
+  git("-C", repo, "remote", "add", "origin", remoteUrl);
+  git("-C", repo, "worktree", "add", "--detach", worktree);
+  const gitDir = git("-C", worktree, "rev-parse", "--absolute-git-dir");
+  return { repo, worktree, gitDir };
+}
+
+for (const absolute of [false, true]) {
+  test(`linked worktree uses ${absolute ? "absolute" : "relative"} commondir remote`, (t) => {
+    signInWithOrgs(["acme"]);
+    const { repo, worktree, gitDir } = makeWorktree(t, "https://github.com/acme/widgets.git");
+    const commonFile = path.join(gitDir, "commondir");
+    assert.equal(path.isAbsolute(fs.readFileSync(commonFile, "utf8").trim()), false);
+    if (absolute) fs.writeFileSync(commonFile, path.join(repo, ".git") + "\n");
+    // A relative gitdir pointer is also valid; resolve it from the worktree root.
+    fs.writeFileSync(path.join(worktree, ".git"), `gitdir: ${path.relative(worktree, gitDir)}\n`);
+    const nested = path.join(worktree, "src");
+    fs.mkdirSync(nested);
+    assert.deepEqual(logger.getRepoScopeDecision(nested), {
+      ...logger.getRepoScopeDecision(repo), repoRoot: worktree,
+    });
+    assert.equal(logger.getRepoScopeDecision(nested).allowed, true);
+  });
+}
+
+test("linked worktree outside signed-in orgs remains blocked", (t) => {
+  signInWithOrgs(["acme"]);
+  const { repo, worktree } = makeWorktree(t, "https://github.com/other/widgets.git");
+  assert.deepEqual(logger.getRepoScopeDecision(worktree), {
+    ...logger.getRepoScopeDecision(repo), repoRoot: worktree,
+  });
+  assert.equal(logger.getRepoScopeDecision(worktree).allowed, false);
+});
+
+test("linked worktree still honors the project org filter", (t) => {
+  signInWithOrgs(["acme", "other"]);
+  const { worktree } = makeWorktree(t, "https://github.com/acme/widgets.git");
+  writeRepoScopeSetting(worktree, ["other"]);
+  const decision = logger.getRepoScopeDecision(worktree);
+  assert.equal(decision.allowed, false);
+  assert.equal(decision.classification, "github_org_mismatch");
+});
+
+for (const broken of ["missing-common-directory", "missing-config", "unreadable-commondir", "empty-commondir"]) {
+  test(`linked worktree fails closed with ${broken}`, (t) => {
+    signInWithOrgs(["acme"]);
+    const { repo, worktree, gitDir } = makeWorktree(t, "https://github.com/acme/widgets.git");
+    const commonFile = path.join(gitDir, "commondir");
+    if (broken === "missing-common-directory") fs.writeFileSync(commonFile, "missing\n");
+    if (broken === "empty-commondir") fs.writeFileSync(commonFile, "\n");
+    if (broken === "missing-config") fs.unlinkSync(path.join(repo, ".git", "config"));
+    if (broken === "unreadable-commondir") {
+      fs.unlinkSync(commonFile);
+      fs.mkdirSync(commonFile);
+    }
+    // Never fall back to a private config when shared metadata is invalid.
+    fs.writeFileSync(path.join(gitDir, "config"), '[remote "origin"]\nurl = https://github.com/acme/widgets.git\n');
+    const decision = logger.getRepoScopeDecision(worktree);
+    assert.equal(decision.allowed, false);
+    assert.equal(decision.classification, "no_github_remote");
+  });
+}

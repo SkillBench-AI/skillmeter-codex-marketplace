@@ -12,7 +12,7 @@ transcripts, and custom skill content. Sanitization reduces exposure; it does
 not make arbitrary content anonymous. Read the [data and scope guide](plugins/skillmeter/README.md#data-and-privacy)
 before enabling collection.
 
-In 0.5.x, repositories owned by your allowed GitHub identities **auto-enable
+In 0.6.x, repositories owned by your allowed GitHub identities **auto-enable
 unless you opt out**. Other repositories remain outside the collection scope.
 This differs from Claude's newer explicit repository-selection flow.
 
