@@ -1,11 +1,5 @@
 #!/usr/bin/env node
-// Structural validation of the marketplace + plugin manifests.
-//
-// This guards the metadata the Codex/Claude plugin browsers actually read, so a
-// malformed manifest or a marketplace entry that points at a missing plugin
-// directory is caught in CI instead of at install time. It is intentionally
-// dependency-free (plain JSON parsing + filesystem checks).
-//
+// Validate marketplace/plugin JSON and referenced plugin directories.
 // Usage: node .github/scripts/validate-manifests.mjs
 
 import { readFileSync, existsSync, statSync } from "node:fs";

@@ -1,14 +1,9 @@
 "use strict";
 
 /**
- * Unit tests for the identity/auth flow and JWT-derived endpoint routing
- * (SBEE-152). Run with:  node --test plugins/skillmeter/test/auth.test.js
- *
- * The tests isolate state by pointing HOME at a throwaway directory (so the
- * shared ~/.skillbench/credentials.json is never touched) and seeding a
- * device id + hash salt up front so credstore never reaches for the macOS
- * Keychain. All of this MUST happen before credstore/logger are required,
- * since CRED_FILE is resolved from os.homedir() at module load.
+ * Authentication and tenant routing tests.
+ * Set the temporary HOME and seed identity before requiring plugin modules;
+ * credential paths are resolved at import time and must not reach Keychain.
  */
 
 const os = require("os");
@@ -19,7 +14,6 @@ const http = require("http");
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "sk-auth-home-"));
 process.env.HOME = tmpHome;
 process.env.USERPROFILE = tmpHome;
-process.env.PLUGIN_DATA = path.join(tmpHome, "plugin-data");
 delete process.env.SKILLMETER_BACKEND_URL;
 delete process.env.SKILLMETER_ACTIVATE_URL;
 delete process.env.SKILLMETER_GITHUB_CLIENT_ID;
@@ -62,24 +56,19 @@ function startServer(handler) {
     const server = http.createServer(handler);
     server.listen(0, "127.0.0.1", () => {
       const { port } = server.address();
-      const nativeFetch = global.fetch;
-      global.fetch = (url, options) => {
-        assert.equal(new URL(url).origin, "https://acme.meter.skillbench.com");
-        return nativeFetch(`http://127.0.0.1:${port}${new URL(url).pathname}`, options);
-      };
       resolve({
         url: `http://127.0.0.1:${port}`,
-        close: () => { global.fetch = nativeFetch; return new Promise((r) => server.close(r)); },
+        close: () => new Promise((r) => server.close(r)),
       });
     });
   });
 }
 
 function tmpLogFile(contents) {
-  let dir;
-  try { dir = require("../testing/authorized-queue").authorizedQueue(logger).root; }
-  catch { dir = fs.mkdtempSync(path.join(os.tmpdir(), "sk-auth-log-")); }
-  const p = path.join(dir, "events.jsonl." + Date.now());
+  const p = path.join(
+    fs.mkdtempSync(path.join(os.tmpdir(), "sk-auth-log-")),
+    "events.jsonl.1700000000000"
+  );
   fs.writeFileSync(p, contents);
   return p;
 }
@@ -126,12 +115,12 @@ test("getEndpointFromToken rejects expired tokens, missing/non-https claims", ()
 
 // --- credstore lifecycle ---------------------------------------------------
 
-test("commitSignin scope comes from the license, ignoring legacy memberships", () => {
-  const token = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
+test("commitSignin stores the license + normalized orgs; signOut clears them", () => {
+  const token = makeJwt({ exp: FUTURE });
   const ok = credstore.commitSignin({ jwt: token, orgs: ["Acme", "acme", " Beta ", ""] });
   assert.equal(ok, true);
   assert.equal(credstore.getLicenseToken(), token);
-  assert.deepEqual(credstore.getAllowedGitHubOrgs(), ["acme"]);
+  assert.deepEqual(credstore.getAllowedGitHubOrgs(), ["acme", "beta"]);
   assert.equal(credstore.getSignedOut(), false);
   assert.equal(credstore.getTelemetryDisabled(), false);
 
@@ -166,7 +155,7 @@ test("global telemetry switch blocks event-log uploads without consuming the que
   const logFile = tmpLogFile('{"a":1}\n');
 
   try {
-    const outcome = await logger.transferEventLog(logFile, "https://acme.meter.skillbench.com/logs/codex", 5000);
+    const outcome = await logger.transferEventLog(logFile, `${srv.url}/logs/codex`, 5000);
     assert.equal(outcome, "skip");
     assert.equal(sawRequest, false);
     assert.equal(fs.existsSync(logFile), true, "queued batch remains for later");
@@ -195,7 +184,7 @@ test("setLicenseToken('') clears the stored token", () => {
 
 test("getBackendUrl routes to the JWT per-tenant endpoint with /logs/codex", () => {
   credstore.markEngaged();
-  credstore.setLicenseToken(makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} }));
+  credstore.setLicenseToken(makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com" }));
   // tmpHome has no .codex/settings.local.json, so settings don't interfere.
   assert.equal(logger.getBackendUrl(tmpHome), "https://acme.meter.skillbench.com/logs/codex");
 });
@@ -247,10 +236,10 @@ test("an untrusted activation override falls back to the prod default", () => {
   }
 });
 
-// --- authenticated upload retains credentials on rejection ----------------
+// --- authenticated upload + auth-failure containment -----------------------
 
 test("transferEventLog attaches the JWT and marks the batch .sent on 2xx", async () => {
-  const token = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
+  const token = makeJwt({ exp: FUTURE });
   credstore.setLicenseToken(token);
 
   let sawAuth = null;
@@ -262,7 +251,7 @@ test("transferEventLog attaches the JWT and marks the batch .sent on 2xx", async
   const logFile = tmpLogFile('{"a":1}\n');
 
   try {
-    await logger.transferEventLog(logFile, "https://acme.meter.skillbench.com/logs/codex", 5000);
+    await logger.transferEventLog(logFile, `${srv.url}/logs/codex`, 5000);
     assert.equal(sawAuth, `Bearer ${token}`);
     assert.equal(fs.existsSync(`${logFile}.sent`), true);
     assert.equal(fs.existsSync(logFile), false);
@@ -271,54 +260,191 @@ test("transferEventLog attaches the JWT and marks the batch .sent on 2xx", async
   }
 });
 
-for (const status of [401, 402, 403]) test(`transferEventLog retains the license and batch after authenticated ${status}`, async () => {
-  logger.clearLicenseRejected();
-  const token = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
-  credstore.setLicenseToken(token);
+// The credential file is shared with the Claude Code plugin, so an auth
+// failure here must never delete the token: doing so signs the whole machine
+// out of both agents. The batch is re-sent once a refresh lands.
+for (const status of [401, 402, 403]) {
+  test(`transferEventLog keeps the license and the batch on HTTP ${status}`, async () => {
+    const token = makeJwt({ exp: FUTURE });
+    credstore.setLicenseToken(token);
 
-  const seen = [];
-  const srv = await startServer((req, res) => {
-    seen.push(req.headers["authorization"] || null);
-    if (seen.length === 1) {
+    const seen = [];
+    const srv = await startServer((req, res) => {
+      seen.push(req.headers["authorization"] || null);
       res.writeHead(status);
       res.end("nope");
-    } else {
-      res.writeHead(200);
-      res.end("ok");
+    });
+    const logFile = tmpLogFile('{"a":1}\n');
+
+    try {
+      const outcome = await logger.transferEventLog(
+        logFile,
+        `${srv.url}/logs/codex`,
+        5000
+      );
+      assert.equal(outcome, "auth");
+      assert.deepEqual(seen, [`Bearer ${token}`], "no anonymous retry");
+      assert.equal(credstore.getLicenseToken(), token, "license survives");
+      assert.equal(fs.existsSync(logFile), true, "batch stays queued");
+      assert.equal(fs.existsSync(`${logFile}.sent`), false);
+    } finally {
+      try { fs.unlinkSync(logFile); } catch {}
+      await srv.close();
     }
   });
-  const logFile = tmpLogFile('{"a":1}\n');
+}
 
-  try {
-    await logger.transferEventLog(logFile, "https://acme.meter.skillbench.com/logs/codex", 5000);
-    assert.equal(seen.length, 1, "must not retry anonymously");
-    assert.equal(seen[0], `Bearer ${token}`, "first attempt is authenticated");
-    assert.equal(credstore.getLicenseToken(), token, "rejected token is retained for recovery");
-    assert.equal(fs.existsSync(logFile), true, "auth failure retains the batch");
-    assert.equal(logger.isLicenseRejected(), status !== 402);
-  } finally {
-    logger.clearLicenseRejected();
-    await srv.close();
-  }
-});
+test("transferEventLog never sends unauthenticated with an expired JWT", async () => {
+  const expired = makeJwt({ exp: PAST });
+  credstore.setLicenseToken(expired);
 
-test("transferEventLog retains an expired-token batch without any request", async () => {
-  credstore.setLicenseToken(makeJwt({ exp: PAST }));
-
-  let sawAuth = "unset";
-  const srv = await startServer((req, res) => {
-    sawAuth = req.headers["authorization"] || null;
+  let sawRequest = false;
+  const srv = await startServer((_req, res) => {
+    sawRequest = true;
     res.writeHead(200);
     res.end("ok");
   });
   const logFile = tmpLogFile('{"a":1}\n');
 
   try {
-    await logger.transferEventLog(logFile, "https://acme.meter.skillbench.com/logs/codex", 5000);
-    assert.equal(sawAuth, "unset", "expired token prevents sending");
-    assert.equal(fs.existsSync(logFile), true);
+    const outcome = await logger.transferEventLog(
+      logFile,
+      `${srv.url}/logs/codex`,
+      5000
+    );
+    assert.equal(outcome, "auth");
+    assert.equal(sawRequest, false, "the ingest route rejects anonymous posts");
+    assert.equal(credstore.getLicenseToken(), expired, "expired license is kept for /refresh");
+    assert.equal(fs.existsSync(logFile), true, "batch stays queued");
+    assert.equal(fs.existsSync(`${logFile}.sent`), false);
   } finally {
+    try { fs.unlinkSync(logFile); } catch {}
     await srv.close();
+  }
+});
+
+// Routing and authorization must come from one credential snapshot: a drain
+// that resolved the host up front could otherwise pair tenant A's endpoint with
+// tenant B's JWT after a concurrent sign-in.
+test("transferEventLog routes by the same token it authenticates with", async () => {
+  const token = makeJwt({
+    exp: FUTURE,
+    aud: "https://tenantb.meter.skillbench.com",
+  });
+  credstore.setLicenseToken(token);
+
+  const realFetch = global.fetch;
+  let seen = null;
+  global.fetch = async (url, options) => {
+    seen = { url, auth: options.headers["Authorization"] };
+    return { ok: true, status: 200 };
+  };
+  const logFile = tmpLogFile('{"a":1}\n');
+
+  try {
+    // No explicit backendUrl: the transfer resolves its own from the token.
+    await logger.transferEventLog(logFile);
+    assert.equal(seen.url, "https://tenantb.meter.skillbench.com/logs/codex");
+    assert.equal(seen.auth, `Bearer ${token}`);
+  } finally {
+    global.fetch = realFetch;
+    try { fs.unlinkSync(`${logFile}.sent`); } catch {}
+  }
+});
+
+// `exp` says nothing about revocation or a rotated signing key, so a rejected
+// token that still looks fresh must not be resubmitted every sweep forever.
+test("an authenticated rejection forces the next refresh to rotate", async () => {
+  const token = makeJwt({ exp: FUTURE });
+  credstore.setLicenseToken(token);
+  logger.clearLicenseRejected();
+
+  const srv = await startServer((_req, res) => {
+    res.writeHead(401);
+    res.end("nope");
+  });
+  const logFile = tmpLogFile('{"a":1}\n');
+
+  try {
+    await logger.transferEventLog(logFile, `${srv.url}/logs/codex`, 5000);
+    assert.equal(logger.isLicenseRejected(), true, "a refresh is now owed");
+
+    // Must differ from `token`: an identical payload would let the assertion
+    // pass even if the rejected credential were returned unchanged.
+    const fresh = makeJwt({ exp: FUTURE, jti: "rotated" });
+    const realFetch = global.fetch;
+    let refreshCalls = 0;
+    global.fetch = async () => {
+      refreshCalls += 1;
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ token: fresh }),
+        text: async () => "",
+      };
+    };
+    try {
+      const rotated = await logger.tryRefreshLicense("TEST-DEVICE");
+      assert.equal(refreshCalls, 1, "the rejection defeats the freshness short-circuit");
+      assert.equal(rotated, fresh);
+      assert.notEqual(rotated, token, "the rejected credential is not reused");
+      assert.equal(credstore.getLicenseTokenUncached(), fresh, "rotation is persisted");
+    } finally {
+      global.fetch = realFetch;
+    }
+    assert.equal(logger.isLicenseRejected(), false, "marker cleared once rotated");
+  } finally {
+    try { fs.unlinkSync(logFile); } catch {}
+    await srv.close();
+  }
+});
+
+// The shared credential file has several writers. A fresh read that finds no
+// token must mean "no token", never "reuse the one this process cached".
+test("getLicenseTokenUncached never resurrects a token another client removed", () => {
+  const token = makeJwt({ exp: FUTURE });
+  credstore.setLicenseToken(token);
+  assert.equal(credstore.getLicenseToken(), token, "cache is warm");
+
+  const credFile = path.join(tmpHome, ".skillbench", "credentials.json");
+  const raw = JSON.parse(fs.readFileSync(credFile, "utf8"));
+  delete raw.license_jwt;
+  fs.writeFileSync(credFile, JSON.stringify(raw) + "\n");
+
+  assert.equal(credstore.getLicenseToken(), token, "the cached read still sees it");
+  assert.equal(credstore.getLicenseTokenUncached(), null, "the fresh read does not");
+});
+
+test("getLicenseTokenUncached returns null while signed out", () => {
+  credstore.setLicenseToken(makeJwt({ exp: FUTURE }));
+  assert.notEqual(credstore.getLicenseTokenUncached(), null);
+
+  const credFile = path.join(tmpHome, ".skillbench", "credentials.json");
+  const raw = JSON.parse(fs.readFileSync(credFile, "utf8"));
+  raw.signed_out = true;
+  fs.writeFileSync(credFile, JSON.stringify(raw) + "\n");
+
+  try {
+    assert.equal(credstore.getLicenseTokenUncached(), null);
+  } finally {
+    credstore.markEngaged();
+  }
+});
+
+test("legacy transcript snapshots remain queued without an unsequenced upload", async () => {
+  const token = makeJwt({ exp: FUTURE });
+  credstore.setLicenseToken(token);
+  const pending = tmpLogFile('{"type":"message"}\n');
+  const realFetch = global.fetch;
+  global.fetch = async () => assert.fail("legacy snapshot must not be uploaded");
+  try {
+    const outcome = await logger.uploadPendingTranscript(pending, "TEST-DEVICE");
+    assert.equal(outcome, "skip");
+    assert.equal(credstore.getLicenseToken(), token, "license survives");
+    assert.equal(fs.existsSync(pending), true, "snapshot stays pending");
+  } finally {
+    global.fetch = realFetch;
+    fs.unlinkSync(pending);
   }
 });
 
@@ -329,13 +455,13 @@ test("prepareSession refreshes an expired token so the current session is authen
 
   // Seed an expired license JWT — the state that used to leave the triggering
   // session unauthenticated when the refresh ran fire-and-forget from afterLog.
-  const expired = makeJwt({ exp: PAST, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
-  const fresh = makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com", github_id: 123, org: {login:"acme"} });
+  const expired = makeJwt({ exp: PAST });
+  const fresh = makeJwt({ exp: FUTURE });
   credstore.setLicenseToken(expired);
   assert.equal(credstore.isLicenseTokenExpired(expired), true);
 
-  // Stub the /refresh round-trip. The coordinator validates identity and
-  // persists the returned token; with fetch mocked, getRefreshUrl's domain gate is
+  // Stub the /refresh round-trip. refreshExpiredJwt POSTs via global fetch and
+  // persists payload.token; with fetch mocked, getRefreshUrl's domain gate is
   // irrelevant because nothing touches the network.
   const realFetch = global.fetch;
   let refreshCalls = 0;
@@ -374,7 +500,7 @@ test("prepareSession refreshes an expired token so the current session is authen
   });
   const logFile = tmpLogFile('{"event":"SessionStart"}\n');
   try {
-    await logger.transferEventLog(logFile, "https://acme.meter.skillbench.com/logs/codex", 5000);
+    await logger.transferEventLog(logFile, `${srv.url}/logs/codex`, 5000);
     assert.equal(
       sawAuth,
       `Bearer ${fresh}`,

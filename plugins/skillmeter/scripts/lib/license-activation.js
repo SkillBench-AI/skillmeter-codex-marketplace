@@ -1,33 +1,16 @@
 /**
- * License activation orchestrator.
- *
- * Owns the silent `gh auth token` fallback path, the JWT /refresh round-trip,
- * and activation-endpoint URL resolution. Storage lives in credstore (license
- * JWT, allowed orgs, signed-out sentinel); HTTP lives in lib/github-api (org
- * lookup). This module wires the two together.
- *
- * The exported surface (`getActivateUrl`, `getRefreshUrl`, `refreshExpiredJwt`,
- * `trySilentGhActivate`) is what the sign-in entrypoint and the hook-runtime
- * refresh path consume.
+ * License refresh, GitHub activation and endpoint configuration.
+ * Credential persistence lives in credstore; GitHub lookup lives in github-api.
  */
 
 const { execSync } = require("child_process");
 const credstore = require("../credstore");
 const { fetchUserGitHubOrgs } = require("./github-api");
-const fs = require("node:fs"), path = require("node:path");
-const { STATE_DIR } = require("./config");
-const status = require("./license-status");
-const identity = require("./license-identity");
-const { acquireLock } = require("./transcript-delta");
 const { getSkillmeterStringSetting } = require("./settings");
 const { resolveOrgScope, narrowOrgsToScope } = require("./org-scope");
 
-// Default points at prod. The prod control plane lives on the greenfield
-// `skillbench.ai` zone (api.skillbench.ai), matching the Claude plugin and the
-// infra `api_domain_name` — NOT skillbench.com, which has no DNS record.
-// Devs/agents override via SKILLMETER_ACTIVATE_URL (e.g.
-// https://api.dev.skillbench.com/activate) or a `skillmeter.activate_url` entry
-// in the project's .codex/settings.local.json.
+// Override activation via SKILLMETER_ACTIVATE_URL or skillmeter.activate_url.
+// Refresh uses the same host.
 const DEFAULT_ACTIVATE_URL = "https://api.skillbench.ai/activate";
 
 // Trusted domain patterns for activation URL validation. Prod is on
@@ -74,138 +57,189 @@ function getActivateUrl() {
   return DEFAULT_ACTIVATE_URL;
 }
 
-// The /refresh endpoint sits next to /activate on the same host. Derive the URL
-// from getActivateUrl so the same host configuration covers both. If the
-// activate URL doesn't end with /activate (e.g. a dev override with a custom
-// path), append /refresh to the base path — keeps weird overrides at least
-// roundtrippable.
+// Derive /refresh from the configured activation URL, preserving a custom base path.
 function getRefreshUrl() {
   const url = getActivateUrl();
   if (url.endsWith("/activate")) return url.slice(0, -"/activate".length) + "/refresh";
   return url.replace(/\/?$/, "/refresh");
 }
 
-// Match Claude's outcome protocol; never log HTTP bodies or exception text.
-async function exchange(url, bearer, deviceId) {
+/**
+ * Rotate a license through /refresh. Return the new JWT or null on failure.
+ * Discard responses superseded by another credential change. Before falling
+ * back to GitHub activation, callers must recheck the original snapshot.
+ */
+async function refreshExpiredJwt(jwt, deviceId, expected = credstore.recoverySnapshot()) {
+  if (!jwt || !deviceId) return null;
+  if (expected.token !== jwt || expected.deviceId !== deviceId ||
+      !credstore.isRecoveryCurrent(expected)) return null;
+
+  const url = getRefreshUrl();
+
   let res;
   try {
-    res = await fetch(url, {method:"POST", headers:{Authorization:`Bearer ${bearer}`, "Content-Type":"application/json"},
-      body:JSON.stringify({device_id:deviceId}), signal:AbortSignal.timeout(5000)});
-  } catch { return {outcome:"transient", message:"network error"}; }
-  if (res.status === 402) return {outcome:"revoked", status:402};
-  if ([401,410].includes(res.status)) return {outcome:"rejected", status:res.status};
-  if (!res.ok) return {outcome:"transient", status:res.status, message:`HTTP ${res.status}`};
-  let payload;
-  try { payload = await res.json(); } catch { return {outcome:"transient", message:"invalid JSON"}; }
-  if (!identity.identity(payload?.token) || credstore.isLicenseTokenExpired(payload.token, 0)) {
-    return {outcome:"transient", message:"invalid issued token"};
-  }
-  return {outcome:"issued", token:payload.token};
-}
-async function refreshExpiredJwt(jwt, deviceId) {
-  return exchange(getRefreshUrl(), jwt, deviceId);
-}
-
-async function silentGhActivate(deviceId, options = {}, expected = credstore.recoverySnapshot()) {
-  if (credstore.getSignedOut()) return {outcome:"signed_out"};
-  if (deviceId !== expected.deviceId || !credstore.isRecoveryCurrent(expected)) return {outcome:"superseded"};
-  const prior = expected.marker || identity.identity(expected.token);
-  if (!options.interactive && !prior) return {outcome:"signin_required"};
-  let ghToken;
-  try { ghToken = execSync("gh auth token", {encoding:"utf8", stdio:["pipe","pipe","ignore"], timeout:3000}).trim(); }
-  catch { return {outcome:"gh_unauthenticated"}; }
-  if (!ghToken) return {outcome:"gh_unauthenticated"};
-  if (!options.interactive) {
-    let res, user;
-    try {
-      res = await fetch("https://api.github.com/user", {headers:{Authorization:`Bearer ${ghToken}`, "User-Agent":"skillmeter-cli"}, signal:AbortSignal.timeout(5000)});
-      if (!res.ok) return {outcome:res.status === 401 ? "gh_unauthenticated" : "transient", message:"GitHub identity unavailable"};
-      user = await res.json();
-    } catch { return {outcome:"transient", message:"GitHub identity unavailable"}; }
-    if (!Number.isSafeInteger(user?.id)) return {outcome:"transient", message:"invalid GitHub identity"};
-    if (user.id !== prior.github_id) return {outcome:"identity_mismatch"};
-  }
-  const issued = await exchange(getActivateUrl(), ghToken, deviceId);
-  if (issued.outcome !== "issued") return issued;
-  if (!options.interactive) {
-    if (!identity.matches(identity.identity(issued.token), prior)) return {outcome:"identity_mismatch"};
-    return credstore.commitRecovery(issued.token, expected) ? {outcome:"reactivated", token:issued.token} : {outcome:"superseded"};
-  }
-  // Explicit sign-in preserves the existing organization-narrowing behavior.
-  if (credstore.getSignedOut() || credstore.recoverySnapshot().generation !== expected.generation) return {outcome:"superseded"};
-  let orgs;
-  try { orgs = await fetchUserGitHubOrgs(ghToken); }
-  catch { return {outcome:"transient", message:"GitHub memberships unavailable"}; }
-  const scope = resolveOrgScope({cliOrgs:options.orgScope});
-  const {orgs:scopedOrgs} = narrowOrgsToScope(orgs, scope);
-  const current = credstore.recoverySnapshot();
-  if (current.generation !== expected.generation || current.token !== expected.token) return {outcome:"superseded"};
-  return credstore.commitSignin({jwt:issued.token, orgs:options.orgScope ? scopedOrgs : orgs, expectedGeneration:expected.generation, expected})
-    ? {outcome:"reactivated", token:issued.token} : {outcome:"signed_out"};
-}
-async function trySilentGhActivate(deviceId, options = {}) {
-  const expected = credstore.recoverySnapshot();
-  if (options.expectedGeneration !== undefined && expected.generation !== options.expectedGeneration) throw new Error("A newer authentication action superseded this sign-in.");
-  const result = await silentGhActivate(deviceId, options, expected);
-  if (result.outcome === "revoked") {
-    revokeIfCurrent(expected, "signin");
-    throw new Error("No active SkillMeter license for this activation.");
-  }
-  if (options.interactive && ["signed_out","superseded"].includes(result.outcome)) throw new Error("A newer authentication action superseded this sign-in.");
-  return result.outcome === "reactivated" ? result.token : null;
-}
-function revokeIfCurrent(expected, source) {
-  if (!credstore.invalidateRecovery(expected)) return false;
-  status.recordTerminal({source,reason:"revoked",status:402});
-  require("./queue-retention").purgeAll();
-  return true;
-}
-
-async function ensureFreshLicense(deviceId, {source = "daemon", force = false} = {}) {
-  if (!deviceId || credstore.getSignedOut()) return null;
-  fs.mkdirSync(STATE_DIR, {recursive:true, mode:0o700});
-  // Existing durable PID lock: never take over a live owner on a timer. This
-  // also coordinates separate Codex installations sharing the credential file.
-  const release = acquireLock(path.join(STATE_DIR, ".codex-license-refresh.lock"));
-  if (!release) return null;
-  try {
-    if (credstore.getSignedOut()) return null;
-    const expected = credstore.recoverySnapshot();
-    if (expected.signedOut || expected.deviceId !== deviceId) return null;
-    const previous = status.readLicenseStatus();
-    if (status.refreshBlockedReason(previous)) return null;
-    if (!force && expected.token && !credstore.isLicenseTokenExpired(expected.token)) return expected.token;
-    // Claude's 60-second refresh cooldown, separate from failure backoff.
-    // A new SessionStart may retry immediately, but still takes the PID lock.
-    if (source !== "session_start" && previous.last_attempt_at !== null && Date.now()-previous.last_attempt_at < 60000) return null;
-    let result;
-    if (expected.token) {
-      result = await refreshExpiredJwt(expected.token, deviceId);
-      if (result.outcome === "issued") {
-        if (!identity.matches(identity.identity(result.token), expected.marker || identity.identity(expected.token))) result = {outcome:"identity_mismatch"};
-        else result = credstore.commitRecovery(result.token, expected)
-          ? {outcome:"rotated", token:result.token} : {outcome:"superseded"};
-      }
-    }
-    if ((!result || result.outcome === "rejected") && !credstore.isRecoveryCurrent(expected)) return null;
-    if (!result || result.outcome === "rejected") result = await silentGhActivate(deviceId, {}, expected);
-    if (["rotated","reactivated"].includes(result.outcome)) {
-      status.recordRefreshSuccess({source, outcome:result.outcome}); return result.token;
-    }
-    // An old exchange must not revoke or change the status of a newer sign-in.
-    if (JSON.stringify(credstore.recoverySnapshot()) !== JSON.stringify(expected) || credstore.getSignedOut()) return null;
-    if (["revoked","identity_mismatch"].includes(result.outcome)) {
-      if (!credstore.invalidateRecovery(expected)) return null;
-      status.recordTerminal({source, reason:result.outcome, status:result.status});
-      require("./queue-retention").purgeAll();
-      return null;
-    }
-    if (["revoked","identity_mismatch","gh_unauthenticated","signin_required"].includes(result.outcome)) {
-      status.recordTerminal({source, reason:result.outcome, status:result.status});
-    } else if (!["signed_out","superseded"].includes(result.outcome)) {
-      status.recordRefreshFailure({source, kind:"refresh", status:result.status, message:result.message || "activation unavailable"});
-    }
+    res = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${jwt}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ device_id: deviceId }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (err) {
+    console.error(`[skillmeter] license refresh failed: network error (${err.message})`);
     return null;
-  } finally { release(); }
+  }
+
+  // 410: sliding window exceeded — client must re-activate via /activate.
+  // 404: endpoint not yet deployed on this environment — silent fallback.
+  // 401: token signature invalid — caller's silent-gh fallback will deal.
+  // 402: org license cancelled — refresh is permanently blocked for this org.
+  if (res.status === 410) {
+    console.error("[skillmeter] license refresh: token too old, re-activation required");
+    return null;
+  }
+  if (res.status === 404) {
+    // Quiet on 404 so logs don't spam during deploy-order rollout.
+    return null;
+  }
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    console.error(`[skillmeter] license refresh failed: HTTP ${res.status} (${body.slice(0, 200)})`);
+    return null;
+  }
+
+  let payload;
+  try {
+    payload = await res.json();
+  } catch {
+    console.error("[skillmeter] license refresh failed: invalid JSON in response");
+    return null;
+  }
+  const newJwt = payload?.token;
+  if (!newJwt) {
+    console.error("[skillmeter] license refresh failed: response missing `token` field");
+    return null;
+  }
+
+  if (!credstore.commitRefresh(newJwt, expected)) {
+    console.error("[skillmeter] license refresh discarded: credentials changed during refresh");
+    return null;
+  }
+  console.error("[skillmeter] license refresh: rotated successfully");
+  return newJwt;
 }
-module.exports = {getActivateUrl, getRefreshUrl, refreshExpiredJwt, trySilentGhActivate, ensureFreshLicense, revokeIfCurrent};
+
+/**
+ * Activate with the current GitHub CLI identity. Return the license or null.
+ * The caller controls retry timing. Explicit options.orgScope narrows stored
+ * memberships; environment and project scope apply to local evaluation only.
+ */
+async function trySilentGhActivate(deviceId, options = {}) {
+  if (credstore.getSignedOut()) {
+    console.error("[skillmeter] gh activation skipped: signed out (run the skillmeter signin flow to re-enable)");
+    return null;
+  }
+  const expected = options.expected || credstore.recoverySnapshot();
+  if (expected.deviceId !== deviceId || !credstore.isRecoveryCurrent(expected)) return null;
+
+  let ghToken;
+  try {
+    ghToken = execSync("gh auth token", {
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "ignore"],
+      timeout: 3000,
+    }).trim();
+  } catch {
+    console.error("[skillmeter] gh activation skipped: gh CLI not installed or not authenticated");
+    return null;
+  }
+  if (!ghToken) {
+    console.error("[skillmeter] gh activation skipped: `gh auth token` returned empty");
+    return null;
+  }
+
+  console.error("[skillmeter] gh activation: exchanging token with activation endpoint");
+
+  let res;
+  try {
+    res = await fetch(getActivateUrl(), {
+      method: "POST",
+      headers: {
+        "Authorization": `Bearer ${ghToken}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ device_id: deviceId }),
+      signal: AbortSignal.timeout(5000),
+    });
+  } catch (err) {
+    console.error(`[skillmeter] gh activation failed: network error (${err.message})`);
+    return null;
+  }
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    console.error(`[skillmeter] gh activation rejected: HTTP ${res.status} (${body.slice(0, 200)})`);
+    return null;
+  }
+
+  let payload;
+  try {
+    payload = await res.json();
+  } catch {
+    console.error("[skillmeter] gh activation failed: activation endpoint returned invalid JSON");
+    return null;
+  }
+  const jwt = payload?.token;
+  if (!jwt) {
+    console.error("[skillmeter] gh activation failed: response missing `token` field");
+    return null;
+  }
+
+  // Fetch the user's GitHub identities BEFORE persisting the license so license
+  // + orgs land atomically. If the gh CLI's token lacks the `read:org` scope the
+  // fetch fails — we treat that as silent-path failure and let the device-flow
+  // path run, which always requests the right scopes.
+  let orgs;
+  try {
+    orgs = await fetchUserGitHubOrgs(ghToken);
+  } catch (err) {
+    console.error(`[skillmeter] gh activation failed: cannot fetch GitHub orgs (${err.message})`);
+    return null;
+  }
+
+  // Narrow the captured memberships to the configured org scope (CLI > env >
+  // project setting). This is what stops the silent path from enrolling every
+  // org the user belongs to.
+  const scope = resolveOrgScope({ cliOrgs: options.orgScope });
+  const { orgs: scopedOrgs, excluded, applied } = narrowOrgsToScope(orgs, scope);
+  if (applied) {
+    console.error(
+      `[skillmeter] gh activation: org scope applied — keeping ${scopedOrgs.length} org(s), excluded ${excluded.length} org(s)`
+    );
+    if (scopedOrgs.length === 0) {
+      console.error(
+        `[skillmeter] gh activation: WARNING — scope matched none of your memberships; no repos will be in scope`
+      );
+    }
+  }
+
+  // Persist only explicit CLI org narrowing to the global credential store.
+  // Repo-local or env-based scope is used for local evaluation only, so silent
+  // refreshes don't shrink allowed_github_orgs for other repos.
+  const orgsToWrite = options.orgScope ? scopedOrgs : orgs;
+  if (!credstore.commitSignin({ jwt, orgs: orgsToWrite, expected })) {
+    console.error("[skillmeter] gh activation discarded: credentials changed during issuance");
+    return null;
+  }
+  console.error(`[skillmeter] gh activation succeeded (allowed orgs: ${orgsToWrite.length} persisted)`);
+  return jwt;
+}
+
+module.exports = {
+  getActivateUrl,
+  getRefreshUrl,
+  refreshExpiredJwt,
+  trySilentGhActivate,
+};

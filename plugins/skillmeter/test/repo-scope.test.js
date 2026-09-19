@@ -1,18 +1,8 @@
 "use strict";
 
 /**
- * Unit tests for the default privacy posture / repo-scope gating (SBEE-153).
- * Run with:  node --test plugins/skillmeter/test/repo-scope.test.js
- *
- * Like auth.test.js, these isolate state by pointing HOME at a throwaway dir
- * (so the shared ~/.skillbench/credentials.json is never touched) and seeding
- * a device id + hash salt up front so credstore never reaches for the macOS
- * Keychain. This MUST happen before credstore/logger are required, since
- * CRED_FILE is resolved from os.homedir() at module load.
- *
- * The contract under test mirrors the Claude plugin exactly: with no signed-in
- * orgs every event is dropped (`not_activated`); there is no permissive
- * allow-all default and no per-project allow-list.
+ * Repository eligibility tests with temporary HOME and seeded credentials.
+ * No stored identities means no capture; configured scope can only narrow access.
  */
 
 const os = require("os");
@@ -41,7 +31,7 @@ const logger = require("../scripts/logger");
 // through the same lifecycle the real signin flow uses.
 function signInWithOrgs(orgs) {
   credstore.markEngaged();
-  assert.equal(credstore.commitSignin({ jwt: "e30." + Buffer.from(JSON.stringify({org: {login: orgs[0]}, exp: 4102444800})).toString("base64url") + ".fixture", orgs }), true);
+  assert.equal(credstore.commitSignin({ jwt: "a.b.c", orgs }), true);
 }
 
 function signOut() {
@@ -152,7 +142,7 @@ function writeRepoScopeSetting(repoRoot, value) {
   );
 }
 
-test("licensed org excludes other legacy memberships regardless of env filter", () => {
+test("env filter narrows multi-org account to a single org => other member org dropped", () => {
   signInWithOrgs(["skillbench-ai", "acme"]);
   process.env.SKILLMETER_REPO_SCOPE_ORGS = "skillbench-ai";
   try {
@@ -205,7 +195,7 @@ test("filter can only narrow, never widen: a non-member org stays blocked", () =
   }
 });
 
-test("legacy per-project settings cannot widen the licensed org", () => {
+test("per-project repoScopeOrgs array narrows scope", () => {
   signInWithOrgs(["skillbench-ai", "acme"]);
   const repo = makeRepo("git@github.com:skillbench-ai/widgets.git");
   writeRepoScopeSetting(repo, ["skillbench-ai"]);
@@ -229,7 +219,7 @@ test("per-project repoScopeOrgs accepts a comma-separated string", () => {
   assert.equal(decision.classification, "github_org_match");
 });
 
-test("license scope takes precedence over both legacy filters", () => {
+test("env filter takes precedence over the per-project setting", () => {
   signInWithOrgs(["skillbench-ai", "acme"]);
   const repo = makeRepo("git@github.com:acme/widgets.git");
   // Per-project allows acme, but the env filter restricts to skillbench-ai.
@@ -244,7 +234,7 @@ test("license scope takes precedence over both legacy filters", () => {
   }
 });
 
-test("an empty/whitespace filter is ignored => licensed org allowed", () => {
+test("an empty/whitespace filter is ignored => all signed-in orgs allowed", () => {
   signInWithOrgs(["acme"]);
   process.env.SKILLMETER_REPO_SCOPE_ORGS = "   ";
   try {

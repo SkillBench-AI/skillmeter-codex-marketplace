@@ -1,7 +1,7 @@
 "use strict";
 
 // Unit coverage for the unified secret/PII sanitizer.
-// Run: node --test skillmeter/test/sanitize.test.js
+// Ported from the pinned Claude sanitizer tests.
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
@@ -230,7 +230,7 @@ test("sanitizeLine does not mutate its input", () => {
 // merge), so Tier-1 recall can't silently diverge from the Codex / session
 // collector sanitizers. See SANITIZATION_EPIC.md Task 5.2.
 const SECRET_CORPUS = JSON.parse(
-  fs.readFileSync(path.join(__dirname, "fixtures", "claude-3.1", "secret-corpus.json"), "utf8")
+  fs.readFileSync(path.join(__dirname, "fixtures", "secret-corpus.json"), "utf8")
 );
 const buildCorpusValue = (parts) =>
   parts

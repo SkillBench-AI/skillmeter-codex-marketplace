@@ -1,16 +1,8 @@
 "use strict";
 
 /**
- * Unit tests for two core logger.js functions that were previously uncovered
- * (SBEE-159): the path-hashing pass `sanitizeToolData` and the ingest-endpoint
- * resolver `getBackendUrl`.
- *
- * Run with:  node --test plugins/skillmeter/test/logger.test.js
- *
- * As with the other suites, state is isolated by pointing HOME at a throwaway
- * dir and seeding a device id + hash salt so credstore never reaches for the
- * macOS Keychain. This MUST happen before credstore/logger are required, since
- * CRED_FILE is resolved from os.homedir() at module load.
+ * Structured path hashing and ingest URL resolution.
+ * Set temporary HOME and seed identity before importing cached credential paths.
  */
 
 const os = require("os");
@@ -67,9 +59,12 @@ test("sanitizeToolData hashes every path-like key", () => {
 
   for (const key of Object.keys(input)) {
     assert.notEqual(out[key], input[key], `${key} should be hashed`);
-    // 12-char HMAC hex prefix (see hashHmac).
-    assert.match(out[key], /^[0-9a-f]{12}$/, `${key} should be a 12-char hex hash`);
-    assert.equal(out[key], logger.hashHmac(input[key], SALT), `${key} hash must be deterministic`);
+    // File fields use Claude's segment policy; other fields remain opaque.
+    assert.match(out[key], /[0-9a-f]{12}/, `${key} should contain a path hash`);
+    const expected = ["file_path", "filePath"].includes(key)
+      ? require("../scripts/lib/sanitize").hashPathSegments(input[key], SALT)
+      : logger.hashHmac(input[key], SALT);
+    assert.equal(out[key], expected, `${key} follows the shared path policy`);
   }
 });
 
@@ -113,7 +108,7 @@ test("sanitizeToolData only hashes string path values, not numbers/objects", () 
   // pass through untouched.
   assert.equal(out.command, 42);
   assert.equal(out.path.nested, "/a");
-  assert.match(out.file_path, /^[0-9a-f]{12}$/);
+  assert.match(out.file_path, /^\/(?:[0-9a-f]{12}\/){2}[0-9a-f]{12}$/);
 });
 
 test("sanitizeToolData returns non-object inputs unchanged", () => {
@@ -142,7 +137,7 @@ test("getBackendUrl returns a trusted SKILLMETER_BACKEND_URL override", () => {
   }
 });
 
-test("getBackendUrl rejects an untrusted env override and fails closed", () => {
+test("getBackendUrl rejects an untrusted env override and falls back to default", () => {
   process.env.SKILLMETER_BACKEND_URL = "https://evil.example.com/logs/codex";
   try {
     assert.equal(logger.getBackendUrl(process.cwd()), logger.DEFAULT_BACKEND_URL);
@@ -215,7 +210,7 @@ test("getBackendUrl trusts a prod skillbench.ai per-tenant endpoint", () => {
   }
 });
 
-test("getBackendUrl fails closed when the JWT endpoint is untrusted", () => {
+test("getBackendUrl falls back to default when the JWT endpoint is untrusted", () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sk-logger-cwd-"));
   credstore.setLicenseToken(
     makeJwt({ aud:"https://evil.example.com", exp: futureExp() })
@@ -227,8 +222,10 @@ test("getBackendUrl fails closed when the JWT endpoint is untrusted", () => {
   }
 });
 
-test("getBackendUrl has no delivery destination for an expired license JWT", () => {
-  // Delivery waits for a valid token, even when the old audience is known.
+test("getBackendUrl derives the per-tenant endpoint even from an expired license JWT", () => {
+  // The `aud` endpoint claim is routing info, not an auth decision: an
+  // expired token still resolves the tenant host so a drain reaches the right
+  // collector while a refresh is pending (matches the Claude plugin).
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sk-logger-cwd-"));
   credstore.setLicenseToken(
     makeJwt({ aud:"https://acme.meter.skillbench.com", exp: futureExp(-3600) })
@@ -236,14 +233,14 @@ test("getBackendUrl has no delivery destination for an expired license JWT", () 
   try {
     assert.equal(
       logger.getBackendUrl(cwd),
-      null
+      "https://acme.meter.skillbench.com/logs/codex"
     );
   } finally {
     credstore.setLicenseToken("");
   }
 });
 
-test("getBackendUrl fails closed when an expired JWT endpoint is untrusted", () => {
+test("getBackendUrl falls back to default when an expired JWT endpoint is untrusted", () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sk-logger-cwd-"));
   credstore.setLicenseToken(
     makeJwt({ aud:"https://evil.example.com", exp: futureExp(-3600) })
@@ -255,11 +252,11 @@ test("getBackendUrl fails closed when an expired JWT endpoint is untrusted", () 
   }
 });
 
-test("getBackendUrl has no destination when unauthenticated", () => {
+test("getBackendUrl returns the shipped default when unauthenticated", () => {
   const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "sk-logger-cwd-"));
   credstore.setLicenseToken("");
   assert.equal(logger.getBackendUrl(cwd), logger.DEFAULT_BACKEND_URL);
-  assert.equal(logger.DEFAULT_BACKEND_URL, null);
+  assert.match(logger.DEFAULT_BACKEND_URL, /^https:\/\/api\.meter\.skillbench\.ai\/logs\/codex$/);
 });
 
 test("getBackendUrl env override takes precedence over the JWT", () => {

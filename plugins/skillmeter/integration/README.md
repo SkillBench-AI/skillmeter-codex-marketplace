@@ -24,38 +24,18 @@ From the plugin checkout:
   --pipeline /path/to/pipelines --out /tmp/contract-evidence.json
 ```
 
-The real uploader sends gzip chunks through the Go APIHandler, EventProcessor
-and PromptStore, which use conditional writes through an HTTP S3 emulator. The
-helper drops the first response after storage commits; the client retries the
-same body, then appends. Only emulator objects are moved to synthetic older date
-keys to exercise midnight and three-day resumes. The runner compares exact
-stored bytes, repeats, full-reset recovery and stale-generation rejection, then
-normalizes retained snapshots once per session.
+The uploader sends gzip chunks through the collector handler and storage code
+into a local S3 emulator. Checks cover lost-response retries, append ordering,
+midnight and multi-day resumes, baseline resets, stale generations and stored
+bytes. Expected records and redaction checks are independent of the uploader.
 
-`--pipeline` selects the substantive Codex fixture and runs the existing analyzer
-with its default ten-block threshold, scripted LLM responses and the existing
-ingest schema validator. Omit it for the smaller parser/transport-only fixture.
-The Go helper must include the collector repair before testing multi-day recovery.
+`--pipeline` uses the larger Codex fixture, scripted analyzer responses and the
+report schema validator. Omit it for parser/transport checks. Multi-day recovery
+requires collector missing-baseline support.
 
-The synthetic fixture establishes consent on an empty source before appending
-records. A test-only transport interceptor validates the licensed destination
-and bearer header, then sends to loopback. This does not prove real hook timing.
-
-Pass `--startup-consent` to reproduce the CLI startup ordering: session metadata
-and synthetic history already exist at the first consent observation. The same
-independent oracle then requires the minimal sanitized header, unchanged canonical
-session identity and workspace, and all subsequent authorized messages, while
-excluding startup instructions, history and world_state. This variant still runs
-the lost-response, multi-day reset, stale-generation and scripted-analyzer checks.
-
-The adapter substitutes for API Gateway and omits JWT verification. No actual
-backend ingest/read, model service, installed CLI/desktop hook, or dashboard is
-exercised. All fixture state is temporary; only content-free evidence is written
-to `--out`. No real credentials or user transcripts are used.
-
-The stored transcript is also compared against fixture-authored expectations
-independent of staged bytes, including redaction canaries. With `--pipeline`,
-canonical messages and tool blocks must match the pre-implementation golden.
+The adapter omits API Gateway JWT verification. It does not exercise real
+credentials, installed hooks, live storage, model services or a dashboard.
+Fixture state is temporary; `--out` contains test results without transcript text.
 
 Measure capture cost without network or credentials:
 
@@ -68,13 +48,6 @@ warm-cache elapsed time for unchanged and appended captures. It is an observatio
 not a platform-independent performance threshold; prefix verification remains
 linear in source size.
 
-Policy 3.1 expectations are independently authored in Python, including metadata
-and opaque command/patch HMACs. The original canonical golden retains every
-message and tool link; only opaque inputs and the now unavailable patch-derived
-path differ. The scripted analyzer omits optional tech-stack refinement because
-this fixture no longer discloses file paths, and omits productivity. Its report
-still must pass the existing ten-block threshold and ingest schema.
-
 ## Queue and recovery
 
 Capture hints live in `logs/transcripts/captures-v1/`. Immutable gzip chunks,
@@ -86,12 +59,10 @@ use raw position/content to preserve distinct records that sanitize identically.
 Chunks budget gzip/base64 bytes below 5 MiB including a 128 KiB envelope reserve;
 decoded records must remain below 32 MiB. Malformed/oversized input retains the
 source and cursor with a content-free diagnostic. Failed chunks and superseded
-reset generations remain subject to the seven-day retention, sign-out and consent
-retirement policy. Retirement journals prevent resets from restoring deleted data;
-automatic historical replay is outside this change.
+reset generations are retained; historical transcripts are not replayed automatically.
 
-Queues created with an earlier owner-identity formula may not be eligible for
-delivery and remain subject to retention. Never edit their owner fields to force migration;
+Queues created with an earlier owner-identity formula remain preserved but may
+not be eligible for delivery. Never edit their owner fields to force migration;
 select still-authorized source files for explicit recovery instead.
 
 Read-only inventory (from the plugin directory):
@@ -100,16 +71,14 @@ Read-only inventory (from the plugin directory):
 PLUGIN_DATA=/path/to/plugin-data node scripts/transcript_inventory.js
 ```
 
-The existing collector accepts chunk headers and ignores the optional
-`X-Transcript-Protocol: chunks-v1`. This wire protocol name is separate from the
-on-disk `logs/transcripts/chunks-v1/` format, which is unchanged in 0.5.1.
-Collector #44 adds a 409 response when
-an append has no baseline, allowing a scoped full reset. Without that extension,
-resuming beyond the collector's today/yesterday window can yield a partial
-snapshot; the plugin fix alone does not establish multi-day continuity.
+Uploads send `X-Transcript-Protocol: chunks-v1`. The on-disk `chunks-v1/`
+queue format is separate from this header. Missing-baseline recovery requires
+the collector to return 409 for an append without a baseline; the client then
+sends a full reset. Without that support, multi-day resumes may produce partial
+snapshots.
 
 Rollback: pause telemetry and retain the plugin data directory. The old client
 cannot read `chunks-v1`; do not relabel chunks as legacy snapshots or run old
 cleanup against them. Resume with a compatible client or select still-authorized
-sources for explicit recovery. Offline tests do not establish installed-client behavior, live transcript
-storage or report correctness.
+sources for explicit recovery. Verify installed-client behavior, storage and
+report correctness separately from these local tests.

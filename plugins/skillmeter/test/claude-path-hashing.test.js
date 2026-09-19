@@ -4,7 +4,7 @@
 // structure, extension and shared vocabulary survive; every other segment is
 // its own HMAC; cwd-type and generic `path` keys stay whole-value hashes;
 // counts.path tallies every path HMAC.
-// Run: node --test skillmeter/test/path-hashing.test.js
+// Ported from the pinned Claude path-policy tests.
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");

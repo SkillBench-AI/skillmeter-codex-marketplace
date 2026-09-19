@@ -1,17 +1,8 @@
 "use strict";
 
 /**
- * Edge-case unit tests for the deterministic sanitizer (SBEE-159). These
- * complement sanitization.test.js (which covers the happy-path detectors and
- * the end-to-end hook routing) by pinning down the boundary behaviours the
- * fail-closed policy depends on:
- *   - non-string / empty inputs must pass through without throwing
- *   - idempotency: re-running the sanitizer must not double-redact
- *   - aggregate metadata counts/types across multiple secrets
- *   - recursive structure preservation (arrays, nested objects, scalars)
- *   - Tier-2-only content must not be reported as a Tier 1 secret
- *
- * Run with:  node --test plugins/skillmeter/test/sanitizer-edge-cases.test.js
+ * Sanitizer boundaries: idempotence, redaction counts, nested structures and
+ * secret/PII classification. See sanitization.test.js for hook integration.
  */
 
 const { test } = require("node:test");

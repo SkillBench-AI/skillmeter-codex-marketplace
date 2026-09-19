@@ -1,22 +1,8 @@
 "use strict";
 
 /**
- * Unit + end-to-end tests for pre-upload content sanitization (SBEE-155).
- * Run with:  node --test plugins/skillmeter/test/sanitization.test.js
- *
- * Two layers are covered:
- *   1. The deterministic detector library in scripts/sanitizer.js — Tier 1
- *      secret redaction, Tier 2 email redaction, recursive walking, the
- *      placeholder allow-list, transcript scrubbing, and the no-original-value
- *      metadata contract.
- *   2. An end-to-end check that the live lifecycle hooks (user_prompt_submit,
- *      post_tool_use, permission_request) actually route raw `prompt`,
- *      `tool_response`, and approval `description` content through that boundary
- *      before writing the durable event log — i.e. a seeded secret never lands
- *      on disk in the queue that gets uploaded.
- *
- * As with the other suites, state is isolated by pointing HOME at a throwaway
- * dir so the shared ~/.skillbench/credentials.json is never touched.
+ * Detector and hook-to-queue sanitization tests using synthetic secrets.
+ * Keep HOME isolated from real credentials.
  */
 
 const os = require("os");
@@ -32,7 +18,7 @@ const sanitizer = require("../scripts/sanitizer");
 // Fake, non-functional secrets used purely as detector fixtures. None are real.
 const FAKE = {
   githubClassic: "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
-  githubPat: "github_pat_" + require("./fixtures/claude-3.1/secret-corpus.json").hi.slice(0, 82),
+  githubPat: "github_pat_" + require("./fixtures/secret-corpus.json").hi.slice(0, 82),
   openai: "sk-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcd",
   anthropic: "sk-ant-api03-ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789",
   google: "AIza" + "Sy0123456789abcdefghijklmnopqrstuvw", // AIza + 35 chars
@@ -235,10 +221,6 @@ function runHookEndToEnd(script, input) {
     }) + "\n"
   );
 
-  fs.writeFileSync(path.join(home, ".skillbench/telemetry-policy.json"), JSON.stringify({
-    schema_version: 1, revision: 1, global: {enabled:true}, organizations: {acme:{enabled:true}},
-    repositories: {"github.com/acme/widgets":{enabled:true}},
-  }));
   const repo = fs.mkdtempSync(path.join(os.tmpdir(), "sk-sani-repo-"));
   fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
   fs.writeFileSync(
@@ -267,8 +249,8 @@ function runHookEndToEnd(script, input) {
   const logDir = path.join(pluginData, "logs");
   const records = [];
   if (fs.existsSync(logDir)) {
-    for (const f of fs.readdirSync(logDir, { recursive: true })) {
-      if (!/^events\.jsonl(\.\d+)?$/.test(path.basename(f))) continue;
+    for (const f of fs.readdirSync(logDir)) {
+      if (!/^events\.jsonl(\.\d+)?$/.test(f)) continue;
       const raw = fs.readFileSync(path.join(logDir, f), "utf8");
       for (const line of raw.split("\n")) {
         if (line.trim()) {
@@ -318,11 +300,7 @@ test("PermissionRequest hook redacts secrets in the approval description", () =>
   assert.ok(rec.data.description.includes(R));
 });
 
-// --- Shared cross-surface secret-fixture parity corpus ---------------------
-// Loads the vendored copy of skillbench-docs/eval/secret-corpus/corpus.json and
-// asserts every fixture is redacted. Tier-1 misses fail the build (blocks
-// merge), so Tier-1 recall can't silently diverge from the Claude / session
-// collector sanitizers. See SANITIZATION_EPIC.md Task 5.2.
+// Shared secret corpus: preserve detector coverage across client implementations.
 const SECRET_CORPUS = JSON.parse(
   fs.readFileSync(path.join(__dirname, "fixtures", "secret-corpus.json"), "utf8")
 );
@@ -380,3 +358,30 @@ test("non-secret keys are not force-redacted", () => {
   const { value } = sanitizer.sanitizeEventData({ description: "deploy the api gateway" });
   assert.equal(value.description, "deploy the api gateway");
 });
+
+for (const script of ["pre_tool_use.js", "post_tool_use.js", "permission_request.js"]) {
+  test(`${script} sanitizes paths once at the event queue boundary`, () => {
+    const toolInput = {
+      file_path: "/private/undisclosed/src/customer.ts",
+      cwd: "/private/project",
+      command: "cat /private/customer.txt",
+      note: "用户@example.com",
+      "Keep telemetry authorized?": "yes",
+    };
+    const { res, records } = runHookEndToEnd(script, { tool_name: "read_file", tool_input: toolInput });
+    assert.equal(res.status, 0, res.stderr);
+    const rec = records.find(r => r.data.tool_name === "read_file");
+    assert.ok(rec, "hook record missing");
+    const shared = require("../scripts/lib/sanitize");
+    assert.equal(rec.data.tool_input.file_path, shared.hashPathSegments(toolInput.file_path, "deadbeefsalt"));
+    assert.equal(rec.data.tool_input.cwd, sanitizer.hashHmac(toolInput.cwd, "deadbeefsalt"));
+    assert.equal(rec.data.tool_input.command, sanitizer.hashHmac(toolInput.command, "deadbeefsalt"));
+    assert.equal(rec.data.tool_input.note, "[EMAIL]");
+    assert.equal(rec.data.tool_input["Keep telemetry authorized?"], "yes");
+    assert.equal(rec.data._sanitization.policyVersion, "3.1.0");
+    assert.equal(rec.data._sanitization.counts.email, 1);
+    // One event cwd, three private file segments, tool cwd, and opaque command.
+    assert.equal(rec.data._sanitization.counts.path, 6);
+    assert.equal(Object.hasOwn(rec.data.tool_input, "_sanitization"), false);
+  });
+}

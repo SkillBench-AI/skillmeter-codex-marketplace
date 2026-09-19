@@ -1,17 +1,9 @@
 "use strict";
 
 /**
- * Unit tests for upload durability: poison-batch handling, partial-rejection
- * salvage, max-retry / max-age give-up, atomic writes, and cleanup (SBEE-154).
- * Run with:  node --test plugins/skillmeter/test/durability.test.js
- *
- * Like the other suites, state is isolated by pointing HOME at a throwaway dir
- * (so ~/.skillbench/credentials.json is never touched) and seeding a device id
- * + hash salt up front so credstore never reaches the macOS Keychain. We also
- * point PLUGIN_DATA at a temp dir so the durable queue lives under tmp, and cap
- * the retry budget low so the max-retry path is cheap to exercise. All of this
- * MUST happen before logger is required, since those paths/limits are resolved
- * at module load.
+ * Event salvage, retry limits and queue cleanup tests.
+ * Set temporary HOME/PLUGIN_DATA and retry limits before importing modules;
+ * seed identity to avoid Keychain access.
  */
 
 const os = require("os");
@@ -29,9 +21,27 @@ process.env.SKILLMETER_MAX_BATCH_RETRIES = "3";
 
 fs.mkdirSync(path.join(tmpHome, ".skillbench"), { recursive: true });
 
+// Uploads require a valid (non-expired) license JWT — the ingest routes sit
+// behind the meter JWT authorizer — so the queue tests below seed one. Without
+// it every transfer would short-circuit to "auth" and never reach the stubbed
+// fetch. The signature is a dummy; only the `exp` claim is read locally.
+const b64url = (obj) =>
+  Buffer.from(JSON.stringify(obj))
+    .toString("base64")
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+const TEST_JWT = `${b64url({ alg: "none", typ: "JWT" })}.${b64url({
+  exp: Math.floor(Date.now() / 1000) + 3600,
+})}.sig`;
+
 fs.writeFileSync(
   path.join(tmpHome, ".skillbench", "credentials.json"),
-  JSON.stringify({ device_id: "TEST-DEVICE", hash_salt: "deadbeef", license_jwt: "e30." + Buffer.from(JSON.stringify({ exp: 4102444800, github_id: 123, org: {login:"acme"}, aud: "https://acme.meter.skillbench.com" })).toString("base64url") + ".sig" }) + "\n"
+  JSON.stringify({
+    device_id: "TEST-DEVICE",
+    hash_salt: "deadbeef",
+    license_jwt: TEST_JWT,
+  }) + "\n"
 );
 
 const { test, beforeEach, afterEach } = require("node:test");
@@ -68,7 +78,7 @@ function freshDir(dir) {
 // a counter keeps names unique within a run.
 let seq = 0;
 function sealedBatch(contents) {
-  const p = path.join(require("../testing/authorized-queue").authorizedQueue(logger).root, `events.jsonl.${Date.now() + seq++}`);
+  const p = path.join(logger.LOG_DIR, `events.jsonl.${Date.now() + seq++}`);
   fs.writeFileSync(p, contents);
   return p;
 }
@@ -166,7 +176,7 @@ test("processSealedBatch salvages a partially-poisoned batch then succeeds", asy
   assert.equal(outcome, "sent");
   assert.equal(calls.count, 2, "salvage triggers exactly one retry");
   assert.equal(fs.existsSync(`${p}.sent`), true);
-  assert.equal(fs.existsSync(path.join(path.dirname(p), "poison", path.basename(p))), false);
+  assert.equal(fs.existsSync(path.join(logger.POISON_DIR, path.basename(p))), false);
 });
 
 test("processSealedBatch quarantines an all-valid batch the server permanently rejects", async () => {
@@ -177,7 +187,7 @@ test("processSealedBatch quarantines an all-valid batch the server permanently r
   assert.equal(outcome, "poison");
   assert.equal(fs.existsSync(p), false, "original removed from the live queue");
   assert.equal(
-    fs.existsSync(path.join(path.dirname(p), "poison", path.basename(p))),
+    fs.existsSync(path.join(logger.POISON_DIR, path.basename(p))),
     true,
     "moved into the poison dir, not deleted"
   );
@@ -200,22 +210,21 @@ test("processSealedBatch retries transient failures and quarantines at the retry
   outcome = await logger.processSealedBatch(p, BACKEND, 1000);
   assert.equal(outcome, "poison");
   assert.equal(fs.existsSync(p), false);
-  assert.equal(fs.existsSync(path.join(path.dirname(p), "poison", path.basename(p))), true);
+  assert.equal(fs.existsSync(path.join(logger.POISON_DIR, path.basename(p))), true);
   assert.equal(fs.existsSync(logger.batchMetaPath(p)), false, "meta sidecar removed on quarantine");
 });
 
-test("processSealedBatch deletes an expired batch without uploading or quarantining", async () => {
+test("processSealedBatch quarantines a batch older than the max age without uploading", async () => {
   // Seal timestamp far in the past (well beyond BATCH_MAX_AGE_MS).
   const oldTs = Date.now() - (logger.BATCH_MAX_AGE_MS + 60_000);
-  const p = path.join(require("../testing/authorized-queue").authorizedQueue(logger).root, `events.jsonl.${oldTs}`);
+  const p = path.join(logger.LOG_DIR, `events.jsonl.${oldTs}`);
   fs.writeFileSync(p, VALID);
   const calls = stubFetch([{ status: 200 }]);
 
   const outcome = await logger.processSealedBatch(p, BACKEND, 1000);
-  assert.equal(outcome, "skip");
+  assert.equal(outcome, "poison");
   assert.equal(calls.count, 0, "an aged-out batch is never uploaded");
-  assert.equal(fs.existsSync(p), false);
-  assert.equal(fs.existsSync(path.join(path.dirname(p), "poison", path.basename(p))), false);
+  assert.equal(fs.existsSync(path.join(logger.POISON_DIR, path.basename(p))), true);
 });
 
 // --- cleanup ----------------------------------------------------------------

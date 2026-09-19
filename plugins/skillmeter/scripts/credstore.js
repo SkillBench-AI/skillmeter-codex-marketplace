@@ -4,41 +4,10 @@ const fs = require("fs");
 const path = require("path");
 const os = require("os");
 
-// Credentials are intentionally shared with the SkillMeter Claude Code plugin so
-// that the same device.id and hash salt apply across both agents. The SkillBench
-// analyzer keys off ResourceAttributes['service.device.id'] and downstream
-// dashboards expect a single stable identity per machine. The license JWT and
-// allowed-org list are shared too: a user who signs in via either plugin is
-// authenticated for both.
-const { CRED_FILE } = require("./lib/config");
-const telemetryStore = require("./lib/telemetry-store");
-const { getLicenseOrgs } = require("./lib/jwt");
-const licenseIdentity = require("./lib/license-identity");
-
-function commitRecovery(jwt, expected) {
-  const next = licenseIdentity.identity(jwt);
-  const prior = expected.marker || licenseIdentity.identity(expected.token);
-  if (!licenseIdentity.matches(next, prior)) return false;
-  return mutateStore(s => {
-    if (!snapshotMatches(s, expected)) return false;
-    s.license_jwt = jwt; s.prior_signin = next;
-  });
-}
-function invalidateRecovery(expected) {
-  return mutateStore(s => {
-    if (!snapshotMatches(s, expected)) return false;
-    delete s.license_jwt; delete s.prior_signin;
-    s.auth_generation = crypto.randomUUID();
-  });
-}
-function ensureSigninMarker() {
-  const s = readStore();
-  if (s.signed_out || s.prior_signin || !licenseIdentity.identity(s.license_jwt)) return;
-  mutateStore(current => {
-    if (current.signed_out || current.prior_signin || current.license_jwt !== s.license_jwt) return false;
-    current.prior_signin = licenseIdentity.identity(current.license_jwt);
-  });
-}
+// Claude and Codex share this file, including device ID, hash salt and license.
+// Credential format compatibility and writer coordination are separate concerns;
+// sharing the file does not establish compatibility with every client version.
+const CRED_FILE = path.join(os.homedir(), ".skillbench", "credentials.json");
 
 const KEYCHAIN_SERVICES = {
   device_id: "com.skillbench.device-id",
@@ -58,11 +27,8 @@ function writeStore(data) {
   const dir = path.dirname(CRED_FILE);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
 
-  // Atomic write: write payload to a sibling tempfile, fsync, then rename into
-  // place. POSIX rename within the same filesystem is atomic — readers see
-  // either the old file or the new file, never a partial write. This matters
-  // for the license JWT: commitSignin re-reads and writes under a signed-out
-  // race, and a half-written token would brick auth for both plugins.
+  // Write and fsync a sibling file before renaming it over the store.
+  // Readers see a complete old or new file. Rename does not validate lock ownership.
   const tempPath = `${CRED_FILE}.tmp.${process.pid}.${Date.now()}`;
   let fd;
   try {
@@ -90,8 +56,8 @@ function readRaw() {
 
 const PREEMPTED = Symbol("credential-store-preempted");
 
-// One locked read/modify/write attempt. Returns PREEMPTED when the state we
-// based the mutation on is no longer the state on disk.
+// One locked read/modify/write attempt. PREEMPTED means a changed snapshot or
+// lost lock was detected; the checks are not atomic with the write.
 function mutateStoreOnce(fn) {
   fs.mkdirSync(path.dirname(CRED_FILE), { recursive: true, mode: 0o700 });
   const { acquireLock } = require("./lib/credential-lock");
@@ -106,12 +72,8 @@ function mutateStoreOnce(fn) {
     const store = readStore();
     const result = fn(store);
     if (result === false) return false;
-    // Fence before persisting. Holding the lock is not by itself proof that we
-    // still hold it: the age backstop reaps a holder that was paused long
-    // enough (SIGSTOP, swap, a suspended VM), and a replacement writer may have
-    // committed in the meantime. Writing our pre-pause snapshot would roll that
-    // back silently — the shared file has no other guard, since commitSignin's
-    // `expected` check is optional and signin.js omits it.
+    // Retry if takeover or a changed snapshot is already visible. Takeover
+    // after this check can still race with writeStore's rename.
     if (!release.stillHeld() || readRaw() !== baseline) return PREEMPTED;
     writeStore(store);
     _cache = store;
@@ -119,13 +81,9 @@ function mutateStoreOnce(fn) {
   } finally { release(); }
 }
 
-// All Codex writers participate in the same read/modify/write lock. Other
-// clients must adopt this protocol too for cross-client serialization.
-//
-// A preempted attempt is retried rather than failed: `fn` is a transform over
-// whatever the store currently holds, so re-running it against the newer state
-// is exactly the intended outcome — our change lands on top of theirs instead
-// of replacing it.
+// Codex writers use this lock and retry detected preemption against fresh state.
+// Other clients must coordinate writes too; the current protocol still has
+// check-to-write and check-to-unlink races during stale takeover.
 function mutateStore(fn) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const outcome = mutateStoreOnce(fn);
@@ -143,7 +101,6 @@ function recoverySnapshot() {
     generation: store.auth_generation || null,
     deviceId: store.device_id || null,
     signedOut: store.signed_out === true,
-    marker: store.prior_signin || null,
   };
 }
 
@@ -151,8 +108,7 @@ function snapshotMatches(store, expected) {
   return !expected.signedOut && store.signed_out !== true &&
     (store.license_jwt || null) === expected.token &&
     (store.auth_generation || null) === expected.generation &&
-    (store.device_id || null) === expected.deviceId &&
-    JSON.stringify(store.prior_signin || null) === JSON.stringify(expected.marker);
+    (store.device_id || null) === expected.deviceId;
 }
 
 function isRecoveryCurrent(expected) {
@@ -263,11 +219,8 @@ function loadStore(logDir) {
   return _cache;
 }
 
-// Create-if-absent under the writer lock. A busy lock here almost always means
-// a sibling hook is creating the very same field — several fire at once on a
-// machine's first session — so we re-read instead of propagating the timeout.
-// getDeviceId/getOrCreateHashSalt are called on the hot hook path, where a
-// throw would fail the hook outright; every other writer keeps fail-fast.
+// Create missing identity fields under the writer lock. On lock timeout, re-read:
+// a concurrent hook may have created the field. Other writers fail on timeout.
 function ensureIdentityField(logDir, key, create) {
   const store = loadStore(logDir);
   if (store[key]) return store[key];
@@ -304,21 +257,12 @@ function getLicenseToken(logDir) {
 }
 
 /**
- * Read the license JWT straight from disk, bypassing the in-process cache.
+ * Read the license from disk so long-lived drains observe rotation and sign-out.
+ * Never fall back to a cached token when it is absent. Legacy migration is allowed
+ * only without a sign-out marker, and its result is re-read from disk.
  *
- * The retry daemon lives for hours and can outlast several sign-ins, sign-outs
- * and token rotations performed by other processes. A cached read would pin it
- * to the token that existed when it started, so the upload path uses this.
- *
- * A fresh read that finds nothing means nothing: we never fall back to a token
- * this process cached earlier, because that token may have been signed out or
- * removed by another client in the meantime. The one thing still worth doing is
- * the one-time Keychain / legacy-file migration for a pre-migration install —
- * and only when the fresh store shows no sign-out. That migration writes
- * through to disk, so we re-read from disk rather than trusting its return.
- *
- * @param {string} [logDir] - legacy fallback location, for migration only.
- * @returns {string|null} the stored license JWT, or null.
+ * @param {string} [logDir] - legacy migration location.
+ * @returns {string|null}
  */
 function getLicenseTokenUncached(logDir) {
   const store = readStore();
@@ -336,9 +280,7 @@ function setLicenseToken(jwt) {
   });
 }
 
-// ---------------------------------------------------------------------------
 // License-JWT expiry hint
-// ---------------------------------------------------------------------------
 
 /**
  * Decode the payload section of a JWT without verifying the signature.
@@ -374,57 +316,43 @@ function isLicenseTokenExpired(token, skewSeconds = LICENSE_EXPIRY_SKEW_SECONDS)
   return payload.exp <= Math.floor(Date.now() / 1000) + skewSeconds;
 }
 
-// ---------------------------------------------------------------------------
 // Sign-in / sign-out lifecycle
-// ---------------------------------------------------------------------------
 
-// `signed_out` is set by the signout flow. It blocks the silent gh fallback so
-// a still-authenticated gh CLI doesn't auto-resignin on the next SessionStart.
-// `telemetry_disabled` is the machine-global kill switch shared by CLI toggles
-// and signout; hooks and drains must not upload while it is true.
-// `markEngaged()` (called from signin) clears both sentinels.
-//
-// Reads bypass the cache so a setter run by another process is reflected
-// immediately — relevant when signin runs as a long-lived background poll while
-// the user might invoke signout from a fresh hook process.
+// Sign-out blocks silent GitHub reactivation and sets the global upload pause.
+// markEngaged() clears both flags. Read them from disk to observe other processes.
 function getSignedOut() {
   return readStore().signed_out === true;
 }
 
 function getTelemetryDisabled() {
-  return readStore().telemetry_disabled === true || telemetryStore.getGlobalDisabled();
+  return readStore().telemetry_disabled === true;
 }
 
 function setTelemetryDisabled(disabled) {
-  telemetryStore.setGlobalEnabled(!disabled);
-  // Remove the legacy flag under the same lock as every credential writer.
-  mutateStore(store => { delete store.telemetry_disabled; });
+  mutateStore(store => {
+    if (disabled) store.telemetry_disabled = true;
+    else delete store.telemetry_disabled;
+  });
 }
 
 // Keep identity while invalidating every in-flight authentication exchange.
 function signOut() {
   mutateStore(store => {
-  delete store.license_jwt;
-  delete store.allowed_github_orgs;
-  delete store.orgs_explicitly_set;
-  store.signed_out = true;
-  store.telemetry_disabled = true;
-  delete store.prior_signin;
-  store.auth_generation = crypto.randomUUID();
+    delete store.license_jwt;
+    delete store.allowed_github_orgs;
+    delete store.orgs_explicitly_set;
+    store.signed_out = true;
+    store.telemetry_disabled = true;
+    store.auth_generation = crypto.randomUUID();
   });
-  require("./lib/queue-retention").purgeAll();
 }
 
 function markEngaged() {
-  if (getSignedOut()) require("./lib/queue-retention").purgeAll();
   mutateStore(store => {
-  // Preserve an explicit legacy machine OFF when sign-in clears old flags.
-  if (store.telemetry_disabled === true && store.signed_out !== true) telemetryStore.setGlobalEnabled(false);
-  delete store.signed_out;
-  delete store.telemetry_disabled;
-  store.auth_generation = crypto.randomUUID();
+    delete store.signed_out;
+    delete store.telemetry_disabled;
+    store.auth_generation = crypto.randomUUID();
   });
-  require("./lib/license-status").clearLicenseStatus();
 }
 
 function normalizeOrgs(orgs) {
@@ -446,33 +374,27 @@ function normalizeOrgs(orgs) {
 //
 // When `orgs` is an empty array, we store it explicitly as [] to distinguish
 // "intentionally narrowed to zero orgs" from "not signed in" (missing field).
-function commitSignin({ jwt, orgs, expectedGeneration, expected }) {
-  const committed = mutateStore(store => {
-  if (store.signed_out === true) return false;
-  if (expected && !snapshotMatches(store, expected)) return false;
-  if (expectedGeneration !== undefined && (store.auth_generation || null) !== expectedGeneration) return false;
-  store.license_jwt = jwt;
-  store.allowed_github_orgs = normalizeOrgs(orgs);
-  // Mark that org scope was explicitly set (even if empty) so we can
-  // distinguish from missing data
-  store.orgs_explicitly_set = true;
-  const marker = licenseIdentity.identity(jwt);
-  if (marker) store.prior_signin = marker;
-  else delete store.prior_signin;
-  store.auth_generation = crypto.randomUUID();
+function commitSignin({ jwt, orgs, expected }) {
+  return mutateStore(store => {
+    if (store.signed_out === true) return false;
+    if (expected && !snapshotMatches(store, expected)) return false;
+    store.license_jwt = jwt;
+    store.allowed_github_orgs = normalizeOrgs(orgs);
+    store.orgs_explicitly_set = true;
+    store.auth_generation = crypto.randomUUID();
   });
-  if (committed) require("./lib/license-status").clearLicenseStatus();
-  return committed;
 }
 
 /**
- * GitHub identities (user login + org logins) the activated user belongs to.
- * Empty array means "not activated" OR "intentionally narrowed to zero orgs".
- * Use hasExplicitOrgScope() to distinguish these cases. Stored at sign-in for
- * future repo-scope gating parity with the Claude plugin.
+ * Stored GitHub user and organization logins used for repository scope.
+ * An empty array may mean no sign-in or explicit empty scope;
+ * hasExplicitOrgScope() distinguishes them.
  */
 function getAllowedGitHubOrgs() {
-  return getLicenseOrgs(readStore().license_jwt);
+  const store = loadStore();
+  const orgs = store.allowed_github_orgs;
+  if (!Array.isArray(orgs)) return [];
+  return orgs;
 }
 
 /**
@@ -490,16 +412,13 @@ function hasExplicitOrgScope() {
 function refreshFromDisk() { _cache = readStore(); }
 
 module.exports = {
-  recoverySnapshot,
-  commitRecovery,
-  invalidateRecovery,
-  ensureSigninMarker,
   refreshFromDisk,
   getDeviceId,
   getOrCreateHashSalt,
   getLicenseToken,
   getLicenseTokenUncached,
   setLicenseToken,
+  recoverySnapshot,
   isRecoveryCurrent,
   commitRefresh,
   // The locked read/modify/write primitive every writer above goes through.

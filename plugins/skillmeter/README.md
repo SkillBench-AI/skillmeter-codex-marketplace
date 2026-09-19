@@ -29,29 +29,33 @@ Run project controls from the repository you want to configure:
 
 Sign-in uses your authenticated GitHub CLI when available, otherwise a GitHub
 device-login flow. `--org` limits which of your GitHub identities are stored;
-it is repeatable. Collection additionally requires consent for a repository
-within the licensed organization.
+it is repeatable. Without narrowing, your login and organization memberships
+are eligible for collection.
 
 The credential file is shared with SkillMeter for Claude Code. Signing out
 removes the shared license, so it affects both clients. Device identity is kept.
-Sign-out also retires unsent Codex data. Global pause retains queued data for
-later delivery, subject to retention; it does not delete it immediately.
+Global pause retains queued data for later delivery; it does not delete it.
 
 ## Collection scope
 
-This draft requires a prior sign-in, an eligible GitHub repository in the licensed
-organization, and explicit organization and repository consent. Released 0.5.x
-versions still auto-enable eligible repositories unless you opt out.
+A valid sign-in, a recognized GitHub repository, and an allowed remote owner
+are required. In 0.5.x:
 
-Enable collection from the repository using the command above. Consent is shared
-with Claude in `~/.skillbench/telemetry-policy.json`, across clones and worktrees.
-A legacy project-local `skillmeter.telemetry: false` remains a veto until changed
-explicitly. An unset consent decision does not enable capture.
+- Eligible repositories auto-enable when no project choice has been made.
+- An explicit project opt-out stops collection even for an allowed owner.
+- Enabling a project cannot bring an out-of-scope repository into scope.
+- The global pause overrides project choices. There is no OS consent pop-up.
 
-Repository OFF retires that repository's queued events and transcripts. Global
-OFF pauses capture and delivery while retaining already authorized payloads.
-Pre-consent and observed disabled transcript intervals remain excluded on resume
-and during baseline recovery. Historical snapshots are not migrated automatically.
+Project choices live in `<project>/.codex/settings.local.json`. To opt out:
+
+```json
+{ "skillmeter": { "telemetry": false } }
+```
+
+For additional narrowing, set `SKILLMETER_REPO_SCOPE_ORGS` to comma-separated
+owners, or use `skillmeter.repoScopeOrgs` in the same settings file. These filters
+can only restrict the allowed identities. The status command shows the stored
+project choice; an unset choice can still auto-enable for an allowed owner.
 
 ## Data and privacy
 
@@ -62,18 +66,18 @@ Collected data can include:
 - Configuration names and counts, plus bounded descriptions and bodies of
   custom project/user skills. This is **not metadata-only collection**.
 
-Known secrets and rule-detectable personal information are redacted before upload
-using Claude's policy 3.1.0. Structured file paths retain technical vocabulary,
-extensions and hierarchy; other segments are hashed with a per-device salt.
-Working directories, generic paths, commands and patches remain whole hashes.
-Consented events include the repository name in clear. Names and ordinary
-conversation content may remain readable; sanitization does not guarantee that
-all personal or confidential information is removed. See the [source and adapter
-reference](../../docs/claude-parity.md).
+Policy 3.1.0 redacts recognized secrets, email addresses, VCS author names,
+phone numbers, IP addresses, national identifiers and payment-card numbers with
+typed placeholders. File-path fields retain hierarchy, extensions and approved
+technical vocabulary; other segments are hashed. Directory fields, commands and
+patches are hashed whole with a per-device salt. Free text hashes the home prefix.
+
+Names, addresses and confidential free text may remain readable. Stage-2
+sanitization is separate; this plugin does not guarantee complete PII removal.
+See the [shared policy and Codex adapter](../../docs/sanitizer-parity.md).
 
 Credentials, device ID and hash salt live in `~/.skillbench/credentials.json`.
-Queued telemetry lives under the plugin data directory's `logs/` folder, falling
-back to `~/.skillbench/codex` when no host data directory is provided.
+Queued telemetry lives under the plugin data directory's `logs/` folder.
 SkillMeter sends authenticated data to the tenant endpoint in the license's
 `aud` claim. Events go to the event pipeline; transcripts go to object storage
 for downstream analysis.
@@ -82,27 +86,23 @@ for downstream analysis.
 
 Uploads use durable local queues. Transcript chunks retain their order and
 retry identity across interruption and restart. A send failure does not require
-reinstalling the plugin or deleting its data. Consented capture can continue
-during token expiry; delivery requires fresh credentials. Unsent data expires
-after seven days and is retired on sign-out, authoritative license revocation
-or consent withdrawal.
+reinstalling the plugin or deleting its data.
 
 | Symptom | Check |
 | --- | --- |
 | Reinstall still shows an old version | For a local marketplace, update the source checkout first; for a Git marketplace, run `marketplace upgrade`. |
-| Collection is paused or the repository is excluded | Check organization/repository consent, global settings and the licensed organization. |
+| Collection is paused or the repository is excluded | Check project/global settings and the signed-in GitHub identities. |
 | Uploads fail with 401/403 | Credentials and queued uploads are retained; background recovery requests a refreshed license. Check sign-in status if failures persist. |
 | Transcript delivery needs investigation | Use the [read-only inventory and recovery guide](integration/README.md#queue-and-recovery). |
 
 Token refresh is automatic during active retry-monitor sweeps and at session
 start. Delivery waits for a valid token. Silent GitHub reactivation requires a
-matching prior sign-in identity and a working GitHub CLI login with access to
-organization memberships; if recovery fails, invoke sign-in explicitly.
+working GitHub CLI login with access to organization memberships; if recovery
+fails, invoke sign-in explicitly.
 
 Current limitations:
 
-- Full compatibility with Claude's latest broker authentication and shared
-  credential writes is not complete; see [compatibility](../../docs/claude-parity.md#compatibility).
+- Full compatibility with Claude's latest broker authentication is not complete.
 - Historical transcripts are not automatically replayed.
 - Multi-day transcript continuity depends on the collector's missing-baseline
   recovery support. See the [transport guide](integration/README.md).
@@ -132,7 +132,7 @@ Production routing normally needs no manual configuration. Development overrides
 
 `activate_url` and `github_client_id` also accept values under `skillmeter` in
 `.codex/settings.local.json`; environment variables take precedence. There is no
-`backendUrl` project setting. `SKILLMETER_STATE_DIR` isolates state for development.
+`backendUrl` project setting.
 
 For implementation details, see the [hook definitions](hooks/hooks.json),
 [upload code](scripts/logger.js), [sanitizer](scripts/sanitizer.js), and

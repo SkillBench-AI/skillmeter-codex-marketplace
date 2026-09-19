@@ -1,22 +1,9 @@
 "use strict";
 
 /**
- * Unit tests for the retry monitor's proactive license refresh (TEL-5) and its
- * self-termination lifecycle. Run with:
- *   node --test plugins/skillmeter/test/retry-daemon.test.js
- *
- * State is isolated by pointing HOME + PLUGIN_DATA at throwaway dirs (so the
- * shared ~/.skillbench/credentials.json and the real durable queue are never
- * touched) and seeding a device id + hash salt up front so credstore never
- * reaches the macOS Keychain. All of this MUST happen before logger is required,
- * since those paths are resolved at module load.
- *
- * The refresh endpoint is domain-gated (getRefreshUrl only accepts trusted
- * skillbench hosts), so the network path can't be pointed at a localhost server.
- * Instead we exercise the real logger.tryRefreshLicense with a stubbed
- * global.fetch (the domain gate never runs because nothing hits the network),
- * and monkeypatch logger.* for the failure-isolation cases — the daemon reads
- * logger.tryRefreshLicense / logger.drainQueuesOnce as properties at call time.
+ * Retry-monitor refresh and lifecycle tests. Isolate HOME and PLUGIN_DATA
+ * before importing modules. Stub fetch because refresh accepts trusted hosts only;
+ * stub logger methods for failure-isolation cases.
  */
 
 const os = require("os");
@@ -38,7 +25,7 @@ fs.writeFileSync(
   JSON.stringify({ device_id: "TEST-DEVICE", hash_salt: "deadbeef" }) + "\n"
 );
 
-const { test, beforeEach, afterEach } = require("node:test");
+const { test, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
 
 const logger = require("../scripts/logger");
@@ -58,7 +45,7 @@ function b64url(obj) {
 }
 
 function makeJwt(claims) {
-  return `${b64url({ alg: "none", typ: "JWT" })}.${b64url({github_id:123, sub:"synthetic-org", org:{login:"synthetic"}, aud:"https://synthetic.meter.skillbench.ai", ...claims})}.sig`;
+  return `${b64url({ alg: "none", typ: "JWT" })}.${b64url(claims)}.sig`;
 }
 
 function nowSec() {
@@ -68,11 +55,8 @@ function nowSec() {
 const realFetch = global.fetch;
 const realTryRefresh = logger.tryRefreshLicense;
 const realDrain = logger.drainQueuesOnce;
-const realNow = Date.now;
-beforeEach(() => require("../scripts/lib/license-status").clearLicenseStatus());
 
 afterEach(() => {
-  Date.now = realNow;
   global.fetch = realFetch;
   logger.tryRefreshLicense = realTryRefresh;
   logger.drainQueuesOnce = realDrain;
@@ -128,11 +112,8 @@ test("a continuous session outliving its token keeps rotating without re-signin"
   };
 
   const SWEEPS = 5;
-  let clock = realNow();
-  Date.now = () => clock;
   for (let i = 0; i < SWEEPS; i++) {
     await daemon.maybeRefreshLicense();
-    clock += 120000;
   }
 
   assert.equal(calls, SWEEPS, "every sweep re-rotates the still-expiring token");

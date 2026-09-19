@@ -1,21 +1,9 @@
 "use strict";
 
 /**
- * Unit tests for Level 1 harness detection — Codex surface, updated for the
- * v2.0 raw-identifier schema (SBEE-170).
- * Run with:  node --test plugins/skillmeter/test/harness.test.js
- *
- * detectHarness is pure filesystem inspection, so each test builds a throwaway
- * project tree (and a fake $HOME) and asserts on the emitted metadata shape.
- * The contract under test (spec/harness-metadata-contract.v1.json, v2.0):
- *   - the SAME flat field set as the Claude collector, probing Codex's own
- *     locations (.codex/ trees, ~/.codex/config.toml tables + sandbox keys);
- *   - RAW identifiers (skill/subagent/command/MCP/plugin names); never raw file
- *     contents or MCP env;
- *   - Level 2 (external_orchestration / multi_agent) is always "unknown";
- *   - detection never throws and degrades to safe defaults;
- *   - a name embedding a Tier 1 secret is dropped fail-closed + tallied;
- *   - the emitted block survives the sanitizeEventData boundary.
+ * Filesystem harness detection using synthetic projects and homes.
+ * Check readable identifiers, bounded custom skill content, excluded config
+ * secrets, unknown topology, safe defaults and event sanitization.
  */
 
 const os = require("os");
@@ -64,7 +52,6 @@ function addSkill(root, namespaceOrName, maybeName) {
   write(path.join(root, rel), "# skill\n");
 }
 
-// ---------------------------------------------------------------------------
 
 test("bare project: flat defaults, Level 2 unknown, no raw content", () => {
   const root = makeProject();

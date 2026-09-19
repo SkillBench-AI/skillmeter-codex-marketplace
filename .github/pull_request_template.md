@@ -2,7 +2,7 @@
 
 ## Summary
 
-<!-- What changed and why. Link the issue, e.g. SBEE-160. -->
+<!-- What changed and why. Link the relevant issue. -->
 
 ## Telemetry / privacy impact
 
@@ -18,7 +18,4 @@
 
 <!-- One line for the changelog/release, or "n/a" for internal-only changes. -->
 
-<!-- Public documentation: keep usage, contracts, test instructions and ADRs concise.
-Follow the canonical Claude ADRs for shared policies; amend them when needed.
-Keep internal coordination and historical checkpoints in Linear, not this repo.
-Do not commit generated test receipts; retain fixtures and reproducible checks. -->
+<!-- Follow AGENTS.md for public documentation and comment conventions. -->

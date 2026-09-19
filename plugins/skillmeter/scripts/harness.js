@@ -1,40 +1,13 @@
 "use strict";
 
 /**
- * Harness detection — SBEE-166 (Phase 1) implementation of the locked SBEE-164
- * harness-metadata contract (`spec/harness-metadata-contract.v1.json`), Codex
- * surface, with the SBEE-165 sanitization integration baked in.
+ * Collect filesystem-detectable Codex configuration in the shared harness schema.
+ * Names and bounded custom skill bodies are collected; instruction-file bodies,
+ * hook commands and MCP command/args/env are excluded. Secret-bearing names are
+ * dropped, and callers sanitize the resulting event.
  *
- * "Harness" = the scaffolding a developer wraps around their coding agent:
- * instruction files (AGENTS.md / CLAUDE.md), skills, subagents, slash commands,
- * lifecycle hooks, MCP servers, plugins/marketplaces, and higher-level
- * orchestration. Analysis needs to know whether a session was run bare or with a
- * sophisticated harness so it can judge the work fairly.
- *
- * This module emits the SAME flat `data.harness` field set as the Claude
- * collector (so the backend sees one harness schema across both surfaces),
- * probing Codex's own locations: `.codex/` trees, `~/.codex/AGENTS.md`, and the
- * `~/.codex/config.toml` `[mcp_servers.*]` / `[plugins.*]` / `[marketplaces.*]`
- * tables plus top-level sandbox keys. As of schema v2.0 it carries harness
- * identifiers (skill / subagent / command / MCP / plugin names) as RAW values
- * for semantic analysis. As of schema v2.1 (SBEE-169) it also emits the SKILL.md
- * body of CUSTOM (project/user) skills, size-capped and secret-scrubbed. It
- * never emits CLAUDE.md/AGENTS.md bodies, hook command strings, or MCP
- * command/args/env (those hold literal secrets). It is deterministic,
- * filesystem-only, and must never throw: detection runs inside the SessionStart
- * hook and a failure here must not break the session.
- *
- * Detection levels (contract `detectionLevels`):
- *   - Level 1 (filesystem-detectable): everything collected here.
- *   - Level 2 (architecture-level, NOT detectable): external orchestration /
- *     multi-agent topology. Emitted as "unknown" (SBEE-168).
- *
- * Privacy (SANITIZATION_EPIC.md 3-tier policy): tier3_safe values raw;
- * harness identifiers raw (v2.0); a name that embeds a Tier 1 secret is STILL
- * dropped fail-closed; tier1_secret config (hook commands, MCP env) is never
- * collected. Every fail-closed drop is tallied in `redactions` (counts/types
- * only). The whole block is also routed through the central `sanitizeEventData`
- * boundary by the caller.
+ * External orchestration and multi-agent topology remain unknown. Detection runs
+ * at SessionStart and returns defaults on failure.
  */
 
 const fs = require("fs");
@@ -109,7 +82,7 @@ const SKIP_DIRS = new Set([
   "coverage",
 ]);
 const NAMES_LIMIT = 64;
-// Custom-skill CONTENT collection (SBEE-169): body of developer-authored
+// Custom skill content: body of developer-authored
 // (project/user) skills with no public catalog to join against. Public/plugin
 // skills stay name-only. Size-capped defence-in-depth; the body still passes the
 // central Tier-1/Tier-2 sanitizer before egress.
@@ -188,9 +161,7 @@ function findRepoRoot(startPath) {
 }
 
 /**
- * Collect harness identifier names for emission. As of schema v2.0 names are
- * emitted RAW. Fail-closed remains: a name embedding a Tier 1 secret is dropped
- * outright and tallied in `redactions`.
+ * Keep harness names readable; drop secret-bearing names and count the drops.
  */
 function collectNames(names, type, redactions) {
   const out = [];
@@ -219,7 +190,7 @@ function collectSkillNames(root, depth, acc, paths) {
   }
 }
 
-// Read a custom skill's SKILL.md into the emittable content shape (SBEE-169):
+// Read a custom skill's SKILL.md into the upload shape:
 // `description` (from YAML frontmatter when present) + `body` (the rest,
 // size-capped). Never throws; strings are secret-scrubbed by the central
 // sanitizer before egress.
@@ -337,11 +308,9 @@ function splitTomlKey(key) {
 }
 
 /**
- * Parse the `[mcp_servers.*]`, `[plugins.*]`, and `[marketplaces.*]` table
- * headers out of ~/.codex/config.toml, plus the top-level sandbox keys that
- * describe the trust boundary (`sandbox_mode`, `approval_policy`). MCP env and
- * other table VALUES are never read — they can carry tier1 secrets. Returns
- * distinct top-level names for each table plus the sandbox scalars.
+ * Extract MCP, plugin and marketplace names plus top-level sandbox settings
+ * from config.toml. Ignore table values such as MCP commands and environment.
+ * Return distinct names and the sandbox scalars.
  */
 function parseCodexConfig(tomlPath) {
   const result = {
@@ -386,7 +355,7 @@ function parseCodexConfig(tomlPath) {
 
 /**
  * Detect Level 1 harness metadata for a Codex session running in `cwd`, emitting
- * the flat SBEE-164 contract field set.
+ * the shared flat harness schema.
  *
  * @param {string} cwd - session working directory (only used to probe the
  *   filesystem — never emitted).
@@ -428,7 +397,7 @@ function detectHarness(cwd, options = {}) {
     skills_count: 0,
     skill_source_counts: { project: 0, user: 0, plugin: 0 },
     skill_names: [],
-    // Custom (project/user) skill bodies for semantic analysis (SBEE-169).
+    // Custom (project/user) skill bodies for analysis.
     skill_contents: [],
 
     // ---- Subagents ----
@@ -537,7 +506,7 @@ function detectHarness(cwd, options = {}) {
       "skill_name",
       harness.redactions
     );
-    // Custom-skill CONTENT (SBEE-169): body of each project/user skill that
+    // Custom skill content: body of each project/user skill that
     // survived the Tier-1 name check. Secret-scrubbed by the central sanitizer.
     const emittedSkillNames = new Set(harness.skill_names);
     for (const name of [...customSkillPaths.keys()].sort()) {

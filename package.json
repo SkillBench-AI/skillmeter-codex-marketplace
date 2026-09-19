@@ -11,8 +11,7 @@
     "test": "node --test",
     "check:version": "node .github/scripts/check-version.mjs",
     "check:manifests": "node .github/scripts/validate-manifests.mjs",
-    "check:lifecycle": "node plugins/skillmeter/integration/lifecycle/run.cjs",
-    "check": "npm run check:version && npm run check:manifests && npm test && npm run check:lifecycle"
+    "check": "npm run check:version && npm run check:manifests && npm test"
   },
   "engines": {
     "node": ">=20"

@@ -1,30 +1,34 @@
 #!/usr/bin/env node
 /**
- * One-shot durable-queue drain, spawned detached by final-session hooks
- * (Stop / SubagentStop) and at SessionStart.
- *
- * This process exists to reduce upload latency without making Codex wait on
- * network I/O. The on-disk queues remain the source of truth: failed uploads
- * leave sealed event logs (`events.jsonl.<ts>`) and staged transcripts on disk
- * for the next SessionStart pass and the retry monitor to pick up.
+ * Drain durable queues in a detached process so hooks do not wait on uploads.
+ * Failed uploads remain on disk for a later drain or retry-monitor sweep.
  */
 
-const { drainQueuesOnce, clearDrainOnceLock, tryRefreshLicense, getDeviceId, getTelemetryGloballyDisabled } = require("./logger.js");
+const {
+  drainQueuesOnce,
+  clearDrainOnceLock,
+  getDeviceId,
+  tryRefreshLicense,
+} = require("./logger.js");
 
 async function main() {
   try {
-    if (!getTelemetryGloballyDisabled()) await tryRefreshLicense(getDeviceId(), {source:"drain"});
+    // Refresh before draining: the session may have outlived its token.
+    // Refresh failure leaves uploads queued.
+    try {
+      const deviceId = getDeviceId();
+      if (deviceId) await tryRefreshLicense(deviceId);
+    } catch {}
     await drainQueuesOnce();
   } finally {
     clearDrainOnceLock();
   }
 }
 
-if (require.main === module) main().catch((err) => {
+main().catch((err) => {
   process.stderr.write(
     `[skillmeter-drain-once] ${err && err.message ? err.message : err}\n`
   );
   clearDrainOnceLock();
   process.exit(1);
 });
-module.exports = {main};

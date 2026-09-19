@@ -7,23 +7,23 @@ This is deterministic boundary evidence, not a live dashboard canary.
 
 import argparse
 import base64
+import urllib.request
 import hashlib
 import hmac
 import importlib.util
 import json
 import os
+from pathlib import Path
 import subprocess
 import tempfile
-import urllib.request
-from datetime import UTC, datetime, timedelta
-from pathlib import Path
+from datetime import datetime, UTC, timedelta
 
 import boto3
 from moto.server import ThreadedMotoServer
 from skillbench_preprocessor import JobWindow, S3Source, preprocess, structured_session
 
 
-def assert_independent_transcript(stored, fixture, root, startup_consent=False):
+def assert_independent_transcript(stored, fixture, root):
     """Fixture-authored expectations, independent of staged bytes and sanitizer."""
     expected = [json.loads(line) for line in fixture.read_text().splitlines()]
     workspace = hmac.new(
@@ -32,8 +32,7 @@ def assert_independent_transcript(stored, fixture, root, startup_consent=False):
     for record in expected:
         if "cwd" in record.get("payload", {}):
             record["payload"]["cwd"] = workspace
-    if not startup_consent:
-        expected[0]["payload"].update(contact="[EMAIL]", api_key="[REDACTED_SECRET]")
+    expected[0]["payload"].update(contact="[EMAIL]", api_key="[REDACTED_SECRET]")
     for role, text in [
         ("user", "A real repeated synthetic request"),
         ("user", "A real repeated synthetic request"),
@@ -57,41 +56,6 @@ def assert_independent_transcript(stored, fixture, root, startup_consent=False):
                 },
             }
         )
-
-    # Fixture-authored policy-3.1 expectations, independent of the JS sanitizer.
-    def opaque(value):
-        return hmac.new(b"fixture-salt", value.encode(), hashlib.sha256).hexdigest()[
-            :12
-        ]
-
-    for index, record in enumerate(expected):
-        counts = dict.fromkeys(
-            ["secret", "email", "person", "phone", "ip", "id_number", "card", "path"], 0
-        )
-        ids = []
-        payload = record.get("payload", {})
-        if "cwd" in payload:
-            counts["path"] += 1
-        if index == 0 and not startup_consent:
-            counts["secret"] = counts["email"] = 1
-            ids = ["email", "labelled-secret"]
-        if payload.get("type") == "function_call":
-            arguments = json.loads(payload["arguments"])
-            for key in ("cmd", "command", "patch"):
-                if key in arguments:
-                    arguments[key] = opaque(arguments[key])
-                    counts["path"] += 1
-            payload["arguments"] = json.dumps(arguments, separators=(",", ":"))
-        if payload.get("type") == "custom_tool_call":
-            payload["input"] = opaque(payload["input"])
-            counts["path"] += 1
-        record["_sanitization"] = {
-            "policyVersion": "3.1.0",
-            "secrets": counts["secret"],
-            "pii": counts["email"],
-            "counts": counts,
-            "ids": ids,
-        }
     actual = [json.loads(line) for line in stored.splitlines()]
     identities = [record.pop("uuid") for record in actual]
     assert len(set(identities)) == len(expected)
@@ -109,11 +73,6 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--bridge", type=Path, required=True)
     parser.add_argument("--out", type=Path, required=True)
-    parser.add_argument(
-        "--startup-consent",
-        action="store_true",
-        help="Observe consent after a synthetic startup prefix already exists",
-    )
     parser.add_argument(
         "--pipeline",
         type=Path,
@@ -172,17 +131,7 @@ def main():
                         )
                     )
                 result = subprocess.run(
-                    command,
-                    capture_output=True,
-                    text=True,
-                    timeout=30,
-                    check=False,
-                    env={
-                        **os.environ,
-                        "SKILLMETER_TEST_STARTUP_CONSENT": "1"
-                        if args.startup_consent
-                        else "0",
-                    },
+                    command, capture_output=True, text=True, timeout=30
                 )
                 if result.returncode:
                     raise RuntimeError(result.stderr)
@@ -228,7 +177,6 @@ def main():
                         capture_output=True,
                         text=True,
                         timeout=30,
-                        check=False,
                     )
                     assert resumed.returncode == 0, resumed.stderr
                     resume_attempts.append(json.loads(resumed.stdout)["attempts"])
@@ -267,9 +215,7 @@ def main():
                     if args.pipeline
                     else Path(__file__).parent.parent / "test/fixtures/codex-m0.jsonl"
                 )
-                workspace = assert_independent_transcript(
-                    stored, fixture, root, args.startup_consent
-                )
+                workspace = assert_independent_transcript(stored, fixture, root)
                 # Inject only the S3 client seam; Source listing/fetch, detection,
                 # Codex normalization and structured projection are actual code.
                 source = S3Source("synthetic-transcripts", client=client)
@@ -302,24 +248,10 @@ def main():
                 if args.pipeline:
                     # This golden was authored before the parser implementation.
                     # Pin every source message/tool block and timestamp, not just counts.
+                    from skillbench_preprocessor.parse import parse_transcript
                     from dataclasses import asdict
 
-                    from skillbench_preprocessor.parse import parse_transcript
-
                     golden = json.loads(fixture.with_name("expected.json").read_text())
-                    # Preserve the semantic golden except newly opaque inputs.
-                    for message in golden["messages"]:
-                        for block in message["content"]:
-                            if block.get("type") == "tool_use":
-                                for name, value in block["input"].items():
-                                    if name in ("cmd", "command", "patch", "input"):
-                                        block["input"][name] = hmac.new(
-                                            b"fixture-salt",
-                                            value.encode(),
-                                            hashlib.sha256,
-                                        ).hexdigest()[:12]
-                                if block.get("name") == "apply_patch":
-                                    block["input"].pop("path", None)
                     canonical = parse_transcript(stored, key)
                     assert canonical.workspace == workspace
                     assert canonical.session_id == golden["session_id"]
@@ -329,16 +261,16 @@ def main():
                     ] == golden["messages"]
                 report_evidence = None
                 if args.pipeline:
+                    from ai_usage_analyser.job import JobOutputs, run_job
                     from ai_usage_analyser.ingest import (
                         build_ingest_request,
                         version_key,
                     )
-                    from ai_usage_analyser.job import JobOutputs, run_job
-                    from ai_usage_analyser.pipeline.analysis.classify.llm_tech_stack import (
-                        reset_cache,
-                    )
                     from ai_usage_analyser.pipeline.analysis.config import (
                         PipelineConfig,
+                    )
+                    from ai_usage_analyser.pipeline.analysis.classify.llm_tech_stack import (
+                        reset_cache,
                     )
 
                     spec = importlib.util.spec_from_file_location(
@@ -348,9 +280,7 @@ def main():
                     helpers = importlib.util.module_from_spec(spec)
                     spec.loader.exec_module(helpers)
                     reset_cache()
-                    # Opaque command/patch inputs leave no path-derived tech-stack hints.
-                    # This fixture skips tech-stack refinement and productivity.
-                    responses = helpers.report_llm_script(50)[1:-1]
+                    responses = helpers.report_llm_script(50)
                     with helpers.patched_llm(responses) as llm:
                         result = run_job(
                             user_alt_id="synthetic-codex-user",
@@ -364,16 +294,15 @@ def main():
                     assert isinstance(result, JobOutputs), (
                         "default analyzer threshold must pass"
                     )
-                    assert llm.call_count == len(responses), (
-                        "every scripted response must be consumed exactly once"
+                    assert llm.call_count == len(responses) - 1, (
+                        "only optional productivity call is absent"
                     )
                     assert (
-                        llm.call_args_list[0].kwargs["schema"]["name"]
-                        == "classification"
+                        llm.call_args_list[0].kwargs["schema"]["name"] == "tech_stack"
                     )
                     assert (
                         llm.call_args_list[1].kwargs["schema"]["name"]
-                        == "skill_assessment"
+                        == "classification"
                     )
                     assert version_key(result.report) == result.version_key
                     request = build_ingest_request(
@@ -393,7 +322,6 @@ def main():
                     }
                 evidence = {
                     "syntheticOnly": True,
-                    "startupConsent": args.startup_consent,
                     "boundaries": [
                         "actual Node uploader",
                         "Go APIHandler/EventProcessor",

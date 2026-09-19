@@ -1,17 +1,7 @@
 #!/usr/bin/env node
 /**
- * Toggle SkillMeter telemetry for the current Codex project.
- *
- * Usage:
- *   node telemetry.js enable
- *   node telemetry.js disable
- *   node telemetry.js enable --global
- *   node telemetry.js disable --global
- *   node telemetry.js status
- *
- * Organization and canonical repository consent is shared with Claude in
- * ~/.skillbench/telemetry-policy.json. A legacy local OFF remains a veto until
- * explicitly changed here. Identity remains in credentials.json.
+ * Set project consent in .codex/settings.local.json or the shared global pause.
+ * Usage: node scripts/telemetry.js <enable|disable|status> [--global].
  */
 
 const {
@@ -19,7 +9,7 @@ const {
   getTelemetryGloballyDisabled,
   saveTelemetryOptIn,
   setTelemetryGloballyDisabled,
-  captureGate,
+  SETTINGS_RELATIVE,
 } = require("./logger.js");
 const {
   getAllowedGitHubOrgs,
@@ -28,21 +18,23 @@ const {
   getSignedOut,
 } = require("./credstore.js");
 
-const { TELEMETRY_POLICY_FILE } = require("./lib/config");
 const cwd = process.cwd();
 const action = process.argv[2];
 const isGlobal = process.argv.slice(3).includes("--global");
 
-// Repository eligibility comes exclusively from the licensed organization.
+// Repo-scope is gated entirely by the signed-in user's GitHub identities (their
+// login + org memberships captured at signin), not per-project config. Surface
+// that state so `status` explains why events may be dropped even when the
+// project is opted in.
 function repoScopeLine() {
   if (getSignedOut()) return "signed out — run the signin skill (all events dropped)";
   const token = getLicenseToken();
   if (!token) return "not signed in — run the signin skill (all events dropped)";
   if (isLicenseTokenExpired(token)) {
-    return "license needs refresh; consented capture continues locally, delivery waits for a fresh token";
+    return "license expired — run the signin skill (all events dropped)";
   }
   const orgs = getAllowedGitHubOrgs();
-  if (orgs.length === 0) return "signed in (no licensed organization) — all events dropped";
+  if (orgs.length === 0) return "signed in (no orgs cached) — all events dropped";
   return `events upload only from repos in: ${orgs.join(", ")}`;
 }
 
@@ -54,7 +46,7 @@ switch (action) {
     } else {
       saveTelemetryOptIn(cwd, true);
       process.stderr.write(`SkillMeter: Telemetry enabled for ${cwd}\n`);
-      process.stderr.write(`           (saved to ${TELEMETRY_POLICY_FILE})\n`);
+      process.stderr.write(`           (saved to ${SETTINGS_RELATIVE})\n`);
       if (getTelemetryGloballyDisabled()) {
         process.stderr.write(
           "SkillMeter: Global telemetry is still disabled; run with --global to resume uploads\n"
@@ -86,9 +78,7 @@ switch (action) {
     } else {
       process.stderr.write(`SkillMeter: Telemetry is not configured for ${cwd}\n`);
     }
-    process.stderr.write(`SkillMeter: Capture status: ${captureGate(cwd).mode}\n`);
     process.stderr.write(`SkillMeter: Repo scope — ${repoScopeLine()}\n`);
-    process.stderr.write(`SkillMeter: ${require("./lib/lifecycle-notice").notice()}\n`);
     break;
   }
   default:

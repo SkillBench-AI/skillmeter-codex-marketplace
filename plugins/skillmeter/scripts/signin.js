@@ -1,20 +1,8 @@
 #!/usr/bin/env node
 /**
- * Interactive sign-in flow for the SkillMeter Codex plugin.
- *
- *   1. Try silent sign-in using `gh auth token` when the GitHub CLI is already
- *      logged in.
- *   2. Otherwise start the GitHub OAuth device flow: print the user code and
- *      verification URL to stdout, then either poll inline (real TTY) or hand
- *      off polling to a detached child process (non-TTY runners that buffer
- *      output until exit).
- *   3. The poll exchanges the GitHub access token + device_id at the SkillMeter
- *      activation endpoint, fetches the user's GitHub identities, and stores the
- *      license JWT + orgs in credstore. Once a license is present, every hook
- *      upload routes to the JWT's per-tenant `aud` (audience) endpoint and is
- *      authenticated with the JWT.
- *
- * Run directly:  node scripts/signin.js
+ * Sign in with the GitHub CLI or device flow, then persist the license and scope.
+ * Without a TTY, device polling runs in a detached child so the code can be shown
+ * before the runner exits. Usage: node scripts/signin.js [--org org].
  */
 
 const credstore = require("./credstore.js");
@@ -106,7 +94,7 @@ function parseOrgArgs(argv) {
 // Narrow the fetched memberships to the configured scope (CLI > env > setting)
 // and persist atomically. Logs what was kept/excluded so the user can see the
 // scope took effect. Returns the kept org list (for the welcome banner).
-function scopeAndCommit(licenseJwt, orgs, cliOrgs, { sayFn = log, expectedGeneration } = {}) {
+function scopeAndCommit(licenseJwt, orgs, cliOrgs, { sayFn = log } = {}) {
   const scope = resolveOrgScope({ cliOrgs });
   const { orgs: scopedOrgs, excluded, applied } = narrowOrgsToScope(orgs, scope);
   if (applied) {
@@ -120,7 +108,7 @@ function scopeAndCommit(licenseJwt, orgs, cliOrgs, { sayFn = log, expectedGenera
       );
     }
   }
-  const committed = credstore.commitSignin({ jwt: licenseJwt, orgs: scopedOrgs, expectedGeneration });
+  const committed = credstore.commitSignin({ jwt: licenseJwt, orgs: scopedOrgs });
   return { committed, scopedOrgs };
 }
 
@@ -199,9 +187,7 @@ async function pollForToken(deviceCode, initialInterval) {
   }
 }
 
-async function exchangeForLicense(githubToken, deviceId, expectedGeneration) {
-  const expected = credstore.recoverySnapshot();
-  if (!expectedGeneration || expected.generation !== expectedGeneration || credstore.getSignedOut()) throw new Error("A newer authentication action superseded this sign-in.");
+async function exchangeForLicense(githubToken, deviceId) {
   const res = await fetch(licenseActivation.getActivateUrl(), {
     method: "POST",
     headers: {
@@ -213,15 +199,15 @@ async function exchangeForLicense(githubToken, deviceId, expectedGeneration) {
   });
 
   if (res.status === 402) {
-    licenseActivation.revokeIfCurrent(expected, "signin");
     throw new Error("No active SkillMeter license found for your GitHub organizations.");
   }
   if (!res.ok) {
-    throw new Error(`Activation failed (HTTP ${res.status}).`);
+    const text = await res.text().catch(() => "");
+    throw new Error(`Activation failed (HTTP ${res.status}): ${text}`);
   }
 
   const payload = await res.json();
-  if (!require("./lib/license-identity").identity(payload?.token) || credstore.isLicenseTokenExpired(payload.token, 0)) throw new Error("Activation response has an invalid token.");
+  if (!payload?.token) throw new Error("Activation response missing token.");
   return payload.token;
 }
 
@@ -230,23 +216,19 @@ async function exchangeForLicense(githubToken, deviceId, expectedGeneration) {
 // license, fetches the user's GitHub identities, and persists everything in
 // credstore. Output goes to BACKGROUND_LOG (already redirected by the parent's
 // spawn() stdio config) so it can be inspected if activation silently fails.
-async function runBackgroundPoll(deviceId, deviceCode, interval, cliOrgs, expectedGeneration) {
-  if (!expectedGeneration || credstore.recoverySnapshot().generation !== expectedGeneration) {
-    log("Sign-in discarded: a newer authentication action superseded this poll.");
-    return;
-  }
+async function runBackgroundPoll(deviceId, deviceCode, interval, cliOrgs) {
   log(`[${new Date().toISOString()}] background poll started (device_id=${deviceId})`);
   try {
     const githubToken = await pollForToken(deviceCode, interval);
     log(`[${new Date().toISOString()}] github approval received`);
 
-    const licenseJwt = await exchangeForLicense(githubToken, deviceId, expectedGeneration);
+    const licenseJwt = await exchangeForLicense(githubToken, deviceId);
     log(`[${new Date().toISOString()}] license issued`);
 
     const orgs = await fetchUserGitHubOrgs(githubToken);
     log(`[${new Date().toISOString()}] orgs fetched: ${orgs.length} org(s)`);
 
-    const { committed, scopedOrgs } = scopeAndCommit(licenseJwt, orgs, cliOrgs, {expectedGeneration});
+    const { committed, scopedOrgs } = scopeAndCommit(licenseJwt, orgs, cliOrgs);
     if (!committed) {
       log(`[${new Date().toISOString()}] sign-in discarded: signed out during poll`);
       process.exit(0);
@@ -259,7 +241,7 @@ async function runBackgroundPoll(deviceId, deviceCode, interval, cliOrgs, expect
   }
 }
 
-function spawnBackgroundPoll(deviceId, deviceCode, interval, cliOrgs, expectedGeneration) {
+function spawnBackgroundPoll(deviceId, deviceCode, interval, cliOrgs) {
   fs.mkdirSync(path.dirname(BACKGROUND_LOG), { recursive: true, mode: 0o700 });
   const logFd = fs.openSync(BACKGROUND_LOG, "a", 0o600);
   // Forward the explicit --org selection to the detached child (env/setting
@@ -267,7 +249,7 @@ function spawnBackgroundPoll(deviceId, deviceCode, interval, cliOrgs, expectedGe
   const orgArg = cliOrgs && cliOrgs.length ? cliOrgs.join(",") : "-";
   const child = spawn(
     process.execPath,
-    [__filename, "--background-poll", deviceId, deviceCode, String(interval), orgArg, expectedGeneration],
+    [__filename, "--background-poll", deviceId, deviceCode, String(interval), orgArg],
     {
       detached: true,
       stdio: ["ignore", logFd, logFd],
@@ -284,7 +266,6 @@ async function main() {
   // signed-out sentinel so a user who just fixed their `gh auth` scopes or who
   // signed out earlier isn't bounced.
   credstore.markEngaged();
-  const expectedGeneration = credstore.recoverySnapshot().generation;
 
   const existingToken = credstore.getLicenseToken();
   const existingOrgs = credstore.getAllowedGitHubOrgs();
@@ -302,15 +283,12 @@ async function main() {
       const scope = resolveOrgScope({ cliOrgs });
       const { orgs: scopedOrgs, excluded, applied } = narrowOrgsToScope(existingOrgs, scope);
       if (applied && excluded.length) {
-        if (credstore.commitSignin({ jwt: existingToken, orgs: scopedOrgs, expectedGeneration })) {
+        if (credstore.commitSignin({ jwt: existingToken, orgs: scopedOrgs })) {
           log(`Re-scoped existing sign-in: keeping [${scopedOrgs.join(", ") || "none"}], excluded [${excluded.join(", ")}]`);
           say(welcomeBanner(scopedOrgs));
           return;
         }
       }
-    }
-    if (!credstore.commitSignin({jwt:existingToken,orgs:existingOrgs,expectedGeneration})) {
-      throw new Error("A newer authentication action superseded this sign-in.");
     }
     say(welcomeBanner(existingOrgs));
     return;
@@ -326,7 +304,7 @@ async function main() {
   }
 
   log("Trying gh CLI first...");
-  const silentJwt = await licenseActivation.trySilentGhActivate(deviceId, { orgScope: cliOrgs, interactive:true, expectedGeneration });
+  const silentJwt = await licenseActivation.trySilentGhActivate(deviceId, { orgScope: cliOrgs });
   if (silentJwt) {
     say(welcomeBanner(credstore.getAllowedGitHubOrgs()));
     return;
@@ -363,7 +341,7 @@ async function main() {
   if (process.stdout.isTTY) {
     await runForegroundPoll(deviceId, device, cliOrgs);
   } else {
-    spawnBackgroundPoll(deviceId, device.device_code, device.interval || 5, cliOrgs, expectedGeneration);
+    spawnBackgroundPoll(deviceId, device.device_code, device.interval || 5, cliOrgs);
     say("Polling for approval in the background.");
     say("After approving on GitHub, run the sign-in flow again to confirm.");
     say(`(background log: ${BACKGROUND_LOG})`);
@@ -374,10 +352,10 @@ async function runForegroundPoll(deviceId, device, cliOrgs) {
   const stop = startSpinner("Waiting for GitHub approval");
   try {
     const githubToken = await pollForToken(device.device_code, device.interval || 5);
-    const licenseJwt = await exchangeForLicense(githubToken, deviceId, expectedGeneration);
+    const licenseJwt = await exchangeForLicense(githubToken, deviceId);
     const orgs = await fetchUserGitHubOrgs(githubToken);
     stop();
-    const { committed, scopedOrgs } = scopeAndCommit(licenseJwt, orgs, cliOrgs, { sayFn: say, expectedGeneration });
+    const { committed, scopedOrgs } = scopeAndCommit(licenseJwt, orgs, cliOrgs, { sayFn: say });
     if (!committed) {
       say("Sign-in discarded: signed out during issuance.");
       process.exit(0);
@@ -390,20 +368,16 @@ async function runForegroundPoll(deviceId, device, cliOrgs) {
   }
 }
 
-if (require.main === module) {
 if (process.argv[2] === "--background-poll") {
   const deviceId = process.argv[3];
   const deviceCode = process.argv[4];
   const interval = Number(process.argv[5]) || 5;
   const orgArg = process.argv[6];
   const cliOrgs = orgArg && orgArg !== "-" ? orgArg.split(/[,\s]+/) : [];
-  runBackgroundPoll(deviceId, deviceCode, interval, cliOrgs, process.argv[7]);
+  runBackgroundPoll(deviceId, deviceCode, interval, cliOrgs);
 } else {
   main().catch((err) => {
     say(`Activation failed: ${err.message}`);
     process.exit(1);
   });
 }
-
-}
-module.exports = {exchangeForLicense,scopeAndCommit,runBackgroundPoll,spawnBackgroundPoll};

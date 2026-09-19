@@ -8,7 +8,7 @@ const crypto = require("node:crypto");
 const zlib = require("node:zlib");
 const { spawnSync } = require("node:child_process");
 const queue = require("../scripts/lib/transcript-delta");
-const scope = { deviceId: "SYNTHETIC", owner: "fixture-owner", consentStamp: "synthetic-consent", cwd: "/synthetic", org: "synthetic" };
+const scope = { deviceId: "SYNTHETIC", owner: "fixture-owner", cwd: "/synthetic", org: "synthetic" };
 const salt = "synthetic-salt";
 function fixture(t) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "codex-chunks-"));
@@ -19,48 +19,6 @@ function fixture(t) {
   return { dir, source, root, stage, records };
 }
 const line = value => JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: value } }) + "\n";
-
-test("consent byte ranges exclude pre-opt-in and paused content even in full-baseline recovery", async t => {
-  const f = fixture(t);
-  fs.writeFileSync(f.source, line("before opt-in"));
-  const observe = enabled => queue.observeConsent(f.root, f.source, scope, salt, enabled, "synthetic-consent");
-  observe(true);
-  fs.appendFileSync(f.source, line("authorized first"));
-  const first = f.stage({ consent: observe(true) });
-  assert.deepEqual(f.records(first.files).map(r => r.payload.content), ["authorized first"]);
-  const dir = queue.queueDirectories(f.root)[0];
-  await queue.drainDirectory(dir, async () => "sent");
-  observe(false);
-  fs.appendFileSync(f.source, line("while paused"));
-  observe(false);
-  observe(true);
-  fs.appendFileSync(f.source, line("authorized second"));
-  f.stage({ consent: observe(true) });
-  await queue.drainDirectory(dir, async () => "reset-required");
-  const reset = f.stage({ consent: observe(true) });
-  assert.deepEqual(f.records(reset.files).map(r => r.payload.content), ["authorized first", "authorized second"]);
-});
-
-test("a partial line crossing the initial consent boundary is excluded whole", t => {
-  const f = fixture(t), record = line("partly before opt-in");
-  fs.writeFileSync(f.source, record.slice(0, 30));
-  queue.observeConsent(f.root, f.source, scope, salt, true, "consent");
-  fs.appendFileSync(f.source, record.slice(30) + line("authorized"));
-  const consent = queue.observeConsent(f.root, f.source, scope, salt, true, "consent");
-  assert.deepEqual(f.records(f.stage({ consent }).files).map(r => r.payload.content), ["authorized"]);
-});
-
-test("source rewrite cannot reuse consent byte offsets during a server reset", async t => {
-  const f = fixture(t);
-  fs.writeFileSync(f.source, "");
-  queue.observeConsent(f.root, f.source, scope, salt, true, "consent");
-  fs.appendFileSync(f.source, line("authorized"));
-  const consent = queue.observeConsent(f.root, f.source, scope, salt, true, "consent");
-  f.stage({ consent });
-  await queue.drainDirectory(queue.queueDirectories(f.root)[0], async () => "reset-required");
-  fs.writeFileSync(f.source, line("replacement history has no authorization"));
-  assert.throws(() => f.stage({ consent }), /consent-source-rewritten/);
-});
 
 test("append cursor retains identical raw records, partial tails and redaction collisions", t => {
   const f = fixture(t);
@@ -170,23 +128,31 @@ test("bounded capture resumes from the last complete raw position", t => {
   assert.equal(all.length, 10000); assert.equal(new Set(all.map(r => r.uuid)).size, 10000);
 });
 
-test("corrupt consent offsets cannot stage or silently re-authorize history", t => {
+test("queued tool pairs preserve linkage and sanitize JSON arguments before gzip", t => {
   const f = fixture(t);
-  fs.writeFileSync(f.source, line("historical"));
-  queue.observeConsent(f.root, f.source, scope, salt, true, "consent");
-  const file = path.join(queue.queueDirectories(f.root)[0], "consent.json");
-  const state = JSON.parse(fs.readFileSync(file));
-  state.excluded = [[-1, state.observed]];
-  fs.writeFileSync(file, JSON.stringify(state));
-  assert.throws(() => queue.observeConsent(f.root, f.source, scope, salt, true, "consent"), /invalid-consent-journal/);
-  assert.throws(() => f.stage({consent:state}), /invalid-consent-journal/);
-  assert.deepEqual(queue.pendingFiles(f.root), []);
-});
-test("a consent change during staging cannot publish a cursor or payload", t => {
-  const f = fixture(t);
-  fs.writeFileSync(f.source, line("synthetic"));
-  assert.throws(() => f.stage({authorizeCommit:() => false}), /consent-changed-during-stage/);
-  const dir = queue.queueDirectories(f.root)[0];
-  assert.equal(fs.existsSync(path.join(dir, "cursor.json")), false);
-  assert.equal(fs.readdirSync(dir).some(name => name.startsWith("batch-")), false);
+  const input = [
+    { type: "response_item", uuid: "synthetic-source-call", payload: {
+      type: "function_call", name: "read_file", call_id: "synthetic-call",
+      arguments: JSON.stringify({ file_path: "/private/undisclosed/src/customer.ts", password: "synthetic-password", note: "用户@example.com" }),
+    }, _sanitization: { policyVersion: "3.1.0", secrets: 0 } },
+    { type: "response_item", uuid: "synthetic-source-result", payload: {
+      type: "function_call_output", call_id: "synthetic-call", output: "contact 用户@example.com",
+    } },
+  ];
+  fs.writeFileSync(f.source, input.map(JSON.stringify).join("\n") + "\n");
+  const result = f.stage();
+  const records = f.records(result.files);
+  assert.equal(records.length, 2);
+  assert.deepEqual(records.map(r => r._codex_source_uuid), input.map(r => r.uuid));
+  assert.equal(records[0].payload.call_id, records[1].payload.call_id);
+  const args = JSON.parse(records[0].payload.arguments);
+  assert.match(args.file_path, /^\/[a-f0-9]{12}\/[a-f0-9]{12}\/src\/[a-f0-9]{12}\.ts$/);
+  assert.equal(args.password, "[REDACTED_SECRET]");
+  assert.equal(args.note, "[EMAIL]");
+  assert.equal(records[1].payload.output, "contact [EMAIL]");
+  assert.equal(records[0]._sanitization.secrets, 1);
+  assert.equal(records[0]._sanitization.counts.path, 3);
+  assert.equal(records[0]._sanitization.counts.email, 1);
+  assert.equal(JSON.stringify(records).includes("synthetic-password"), false);
+  assert.equal(f.stage().status, "unchanged");
 });

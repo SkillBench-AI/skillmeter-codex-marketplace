@@ -16,7 +16,7 @@ delete process.env.SKILLMETER_ACTIVATE_URL;
 const credentialPath = path.join(root, ".skillbench", "credentials.json");
 fs.mkdirSync(path.dirname(credentialPath), { recursive: true });
 const makeJwt = (sub, exp = Math.floor(Date.now() / 1000) + 3600) =>
-  [{ alg: "none" }, { sub, exp, github_id: sub === "tenant-a" ? 101 : 202, org: {login: sub}, aud: `https://${sub}.meter.skillbench.ai` }]
+  [{ alg: "none" }, { sub, exp, aud: `https://${sub}.meter.skillbench.ai` }]
     .map(value => Buffer.from(JSON.stringify(value)).toString("base64url")).join(".") + ".sig";
 const tokenA = makeJwt("tenant-a", 1);
 const tokenB = makeJwt("tenant-b");
@@ -49,7 +49,6 @@ beforeEach(() => {
   writeStore(baseline);
   credstore.setLicenseToken(tokenA); // Warm the cache with A.
   logger.clearLicenseRejected();
-  require("../scripts/lib/license-status").clearLicenseStatus();
   activationAttempts = 0;
 });
 afterEach(() => { global.fetch = originalFetch; logger.clearLicenseRejected(); });
@@ -77,12 +76,11 @@ test("signed-out disk state takes precedence over a fresh cached token", async (
   assert.equal(activationAttempts, 0);
 });
 
-for (const action of ["signin", "signout", "remove", "rotate", "same-token-signin", "device-change"]) {
+for (const action of ["signin", "signout", "remove", "rotate", "same-token-signin"]) {
   test(`in-flight refresh cannot overwrite ${action} or activate afterwards`, async () => {
     global.fetch = async () => {
       if (action === "signin") otherProcess(`store.commitSignin({jwt:${JSON.stringify(tokenB)},orgs:["b"]});`);
       if (action === "signout") otherProcess("store.signOut();");
-      if (action === "device-change") writeStore({ ...readStore(), device_id: "NEW-DEVICE" });
       // Model a legacy writer that does not participate in the new lock.
       if (action === "remove") { const state = readStore(); delete state.license_jwt; writeStore(state); }
       if (action === "rotate") otherProcess(`store.setLicenseToken(${JSON.stringify(tokenB)});`);
@@ -96,7 +94,6 @@ for (const action of ["signin", "signout", "remove", "rotate", "same-token-signi
     assert.equal(activationAttempts, 0);
     assert.notEqual(readStore().license_jwt, refreshedA);
     if (action === "signout") assert.equal(readStore().signed_out, true);
-    if (action === "device-change") assert.equal(readStore().device_id, "NEW-DEVICE");
     if (action === "signin" || action === "rotate") assert.equal(readStore().license_jwt, tokenB);
     if (action === "same-token-signin") assert.equal(readStore().license_jwt, tokenA);
   });
@@ -118,25 +115,24 @@ test("unchanged failed refresh retains the existing activation fallback", async 
   assert.equal(activationAttempts, 1);
 });
 
-test("concurrent recovery is single-flight and rejects a stale commit", async () => {
-  const expected = credstore.recoverySnapshot();
+test("only the first of two overlapping refresh responses may commit", async () => {
   const pending = [];
   global.fetch = () => new Promise(resolve => pending.push(resolve));
   const first = logger.tryRefreshLicense("TEST-DEVICE");
   const second = logger.tryRefreshLicense("TEST-DEVICE");
-  assert.equal(pending.length, 1);
-  assert.equal(await second, null);
+  assert.equal(pending.length, 2);
+  pending[1]({ ok: true, json: async () => ({ token: tokenB }) });
+  assert.equal(await second, tokenB);
   pending[0]({ ok: true, json: async () => ({ token: refreshedA }) });
-  assert.equal(await first, refreshedA);
-  assert.equal(credstore.commitRecovery(tokenA, expected), false);
-  assert.equal(readStore().license_jwt, refreshedA);
+  assert.equal(await first, null);
+  assert.equal(readStore().license_jwt, tokenB);
   assert.equal(activationAttempts, 0);
 });
 
 test("successful refresh preserves current organization and unrelated fields", async () => {
   writeStore({ ...readStore(), allowed_github_orgs: ["a"], custom_field: "preserve" });
   global.fetch = async () => ({ ok: true, json: async () => ({ token: refreshedA }) });
-  assert.equal(await logger.tryRefreshLicense("TEST-DEVICE"), refreshedA);
+  assert.equal(await activation.refreshExpiredJwt(tokenA, "TEST-DEVICE"), refreshedA);
   assert.equal(readStore().custom_field, "preserve");
   assert.deepEqual(readStore().allowed_github_orgs, ["a"]);
 });
@@ -168,8 +164,7 @@ test("writers read current state after waiting for the shared lock", async () =>
   const [code] = await exited;
   assert.equal(code, 0);
   assert.equal(readStore().license_jwt, tokenB);
-  assert.equal(readStore().telemetry_disabled, undefined);
-  assert.equal(require("../scripts/lib/telemetry-store").readPolicy().global.enabled, false);
+  assert.equal(readStore().telemetry_disabled, true);
 });
 
 // The age backstop can reap a holder that was paused long enough, so a writer

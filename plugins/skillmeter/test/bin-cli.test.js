@@ -1,17 +1,8 @@
 "use strict";
 
 /**
- * Unit tests for the auth/debug CLIs in bin/ (SBEE-159). These mirror the
- * Claude plugin's debug surface (sk-jwt, sk-refresh, sk-telemetry, signin,
- * signout) so a Codex user can inspect/refresh credentials and toggle telemetry
- * from a shell without an LLM round-trip.
- *
- * Each tool is exercised in an isolated HOME so the shared
- * ~/.skillbench/credentials.json is never touched. Network-touching flows
- * (signin / sk-refresh activation) are not driven here — we only assert the
- * local, side-effect-free behaviour (rendering, credstore mutations).
- *
- * Run with:  node --test plugins/skillmeter/test/bin-cli.test.js
+ * Exercise CLI output and local credential mutations in isolated homes.
+ * Network sign-in and activation are not exercised here.
  */
 
 const os = require("os");
@@ -109,9 +100,7 @@ test("sk-telemetry disable --global flips the machine kill switch", () => {
   const home = makeHome({ device_id: "DEV-1", hash_salt: "abcd" });
   const res = run("sk-telemetry", ["disable", "--global"], home);
   assert.equal(res.status, 0);
-  assert.equal(readCreds(home).telemetry_disabled, undefined);
-  const policy = JSON.parse(fs.readFileSync(path.join(home, ".skillbench/telemetry-policy.json"), "utf8"));
-  assert.equal(policy.global.enabled, false);
+  assert.equal(readCreds(home).telemetry_disabled, true);
 });
 
 // --- signout ---------------------------------------------------------------
