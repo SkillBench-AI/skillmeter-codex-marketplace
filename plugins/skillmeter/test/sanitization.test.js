@@ -378,7 +378,7 @@ for (const script of ["pre_tool_use.js", "post_tool_use.js", "permission_request
     assert.equal(rec.data.tool_input.command, sanitizer.hashHmac(toolInput.command, "deadbeefsalt"));
     assert.equal(rec.data.tool_input.note, "[EMAIL]");
     assert.equal(rec.data.tool_input["Keep telemetry authorized?"], "yes");
-    assert.equal(rec.data._sanitization.policyVersion, "3.1.0");
+    assert.equal(rec.data._sanitization.policyVersion, "3.1.1");
     assert.equal(rec.data._sanitization.counts.email, 1);
     // One event cwd, three private file segments, tool cwd, and opaque command.
     assert.equal(rec.data._sanitization.counts.path, 6);
