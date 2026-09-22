@@ -87,13 +87,13 @@ test("sk-jwt flags an expired token", () => {
 
 // --- sk-telemetry ----------------------------------------------------------
 
-test("sk-telemetry status reports machine + repo-scope state", () => {
+test("sk-telemetry status reports capture policy and authentication", () => {
   const home = makeHome({ device_id: "DEV-1", hash_salt: "abcd" });
   const res = run("sk-telemetry", ["status"], home);
   assert.equal(res.status, 0);
   // telemetry.js writes its human-readable status to stderr.
-  assert.match(res.stderr, /Global telemetry is enabled/);
-  assert.match(res.stderr, /Repo scope/);
+  assert.match(res.stderr, /Capture policy: excluded \(not_activated\)/);
+  assert.match(res.stderr, /Delivery authentication: no license/);
 });
 
 test("sk-telemetry disable --global flips the machine kill switch", () => {
