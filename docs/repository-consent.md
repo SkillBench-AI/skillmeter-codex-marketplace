@@ -49,7 +49,9 @@ The boundary is conservative: records written before the first lifecycle
 observation, or since the last observation before a settings change, may be
 excluded even if the user intended collection. Start a fresh session after opt-in
 and verify native startup timing before relying on complete capture. Settings
-revision changes also close unobserved intervals. Already queued payloads are not
+revision changes also close unobserved intervals. The existing authentication
+generation closes sign-out/sign-in intervals even for the same principal; a
+normal token refresh preserves the generation and capture continuity. Already queued payloads are not
 purged or retroactively filtered by this change.
 
 This is local interval enforcement, not a shared policy implementation. An

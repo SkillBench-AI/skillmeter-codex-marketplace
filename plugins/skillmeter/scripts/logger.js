@@ -671,7 +671,10 @@ function transcriptConsentStamp(cwd) {
   }
   const globalFile = path.join(TRANSCRIPT_CAPTURES_DIR, "global-boundary.json");
   const globalRevision = fs.existsSync(globalFile) ? JSON.parse(fs.readFileSync(globalFile, "utf8")) : null;
-  return JSON.stringify([revisions, getTelemetryGloballyDisabled(), globalRevision]);
+  // Existing signout/signin generation changes even for the same principal;
+  // ordinary refresh leaves it intact. Read it without changing shared auth.
+  const authGeneration = credstore.recoverySnapshot?.()?.generation ?? null;
+  return JSON.stringify([revisions, getTelemetryGloballyDisabled(), globalRevision, authGeneration]);
 }
 function observeTranscriptConsent(source, cwd, verifyReplacement = false) {
   const scope = transcriptScope(cwd, undefined, true);

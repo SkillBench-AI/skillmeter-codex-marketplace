@@ -410,3 +410,34 @@ test("enable advances an unselected source before any upload hint exists", () =>
   fs.appendFileSync(source,line("FIRST-AUTHORIZED-PROMPT"));
   assert.deepEqual(recordsIn([stage()]).map(r=>r.payload.content),["FIRST-AUTHORIZED-PROMPT"]);
 });
+
+test("same-principal signout/signin excludes the signed-out span without intervening hooks", async () => {
+  const storeApi = require("../scripts/credstore");
+  const file = stage();
+  global.fetch = async () => ({ok:true}); await upload(file);
+  storeApi.signOut();
+  fs.appendFileSync(source,line("SIGNED-OUT-EXCLUDED"));
+  storeApi.markEngaged();
+  assert.equal(storeApi.commitSignin({jwt:credentials.license_jwt,orgs:credentials.allowed_github_orgs}),true);
+  assert.equal(stage(),null, "first post-signin observation closes the unknown interval");
+  fs.appendFileSync(source,line("authorized after signin observation"));
+  const next=stage();
+  const requests=[];
+  global.fetch=async(_,options)=>{
+    requests.push(options);
+    return requests.length===1?{ok:false,status:409,json:async()=>({error:"transcript-baseline-missing"})}:{ok:true};
+  };
+  assert.equal(await upload(next),"sent");
+  const reset=require("node:zlib").gunzipSync(requests[1].body).toString();
+  assert.doesNotMatch(reset,/SIGNED-OUT-EXCLUDED/);
+  assert.match(reset,/synthetic first message/);
+  assert.match(reset,/authorized after signin observation/);
+});
+
+test("ordinary credential refresh does not close an authorized transcript interval", () => {
+  const storeApi=require("../scripts/credstore");
+  stage();const before=storeApi.recoverySnapshot();
+  fs.appendFileSync(source,line("captured across refresh"));
+  storeApi.commitRefresh(jwt("synthetic-user",4102444800,{jti:"refresh"}),before);
+  assert.deepEqual(recordsIn([stage()]).map(r=>r.payload.content),["captured across refresh"]);
+});
