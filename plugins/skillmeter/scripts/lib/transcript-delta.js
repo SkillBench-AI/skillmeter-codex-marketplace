@@ -8,6 +8,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const zlib = require("node:zlib");
 const { sanitizeLine } = require("../sanitizer");
+const { sessionMetadata } = require("./session-metadata");
 
 const MAX_ENVELOPE = 5 * 1024 * 1024; // below the 6 MiB Lambda event ceiling
 const ENVELOPE_RESERVE = 128 * 1024; // headers + JSON event wrapper
@@ -136,7 +137,67 @@ function recover(dir) {
   return cursor;
 }
 
+function validateConsent(state) {
+  if (!state || state.version !== 1 || typeof state.epoch !== "string" ||
+      typeof state.owner !== "string" || typeof state.fileId !== "string" ||
+      typeof state.enabled !== "boolean" || typeof state.stamp !== "string" ||
+      typeof state.authorization !== "string" || !Number.isSafeInteger(state.observed) || state.observed < 0 ||
+      !Array.isArray(state.excluded)) throw new Error("invalid-consent-journal");
+  let previous = 0;
+  for (const range of state.excluded) {
+    if (!Array.isArray(range) || range.length !== 2 ||
+        !range.every(Number.isSafeInteger) || range[0] < previous || range[1] < range[0] ||
+        range[1] > state.observed) throw new Error("invalid-consent-journal");
+    previous = range[1];
+  }
+}
+
+// Observe authorization at a lifecycle boundary using stat only. Ranges contain
+// byte positions, never transcript content. A first observation excludes the
+// existing prefix; enabling telemetry is not authorization for historical data.
+function observeConsent(root, source, scope, salt, enabled, stamp, rebase = false, verifyReplacement = false) {
+  const dir = path.join(root, hmac(salt, path.resolve(source)));
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const release = acquireLock(path.join(dir, "lock"));
+  if (!release) return null;
+  try {
+    const stat = fs.statSync(source), fileId = `${stat.dev}:${stat.ino}`;
+    const file = path.join(dir, "consent.json");
+    let state = fs.existsSync(file) ? readJson(file) : null;
+    if (state) validateConsent(state);
+    if (state && state.owner !== scope.owner) throw new Error("source-owner-changed");
+    if (state && state.fileId !== fileId && !rebase && enabled && state.enabled && state.stamp === stamp) {
+      // Hooks only stat. The background reader can prove that a restored file
+      // still has the exact committed prefix before reusing its authorization.
+      if (!verifyReplacement) return state;
+      const cursor = fs.existsSync(path.join(dir, "cursor.json")) ? readJson(path.join(dir, "cursor.json")) : null;
+      if (cursor && cursor.consentEpoch === state.epoch && state.observed <= cursor.offset && stat.size >= cursor.offset) {
+        const fd = fs.openSync(source, "r");
+        try {
+          if (prefix(fd, cursor.offset, salt).digest("hex") === cursor.prefix) state.fileId = fileId;
+        } finally { fs.closeSync(fd); }
+      }
+    }
+    if (!state || rebase || state.authorization !== scope.consentStamp || state.fileId !== fileId || stat.size < state.observed) {
+      state = { version: 1, epoch: crypto.randomUUID(), owner: scope.owner,
+        fileId, observed: stat.size, excluded: [[0, stat.size]], enabled, stamp, authorization: scope.consentStamp };
+    } else {
+      if (!enabled || !state.enabled || state.stamp !== stamp) {
+        const last = state.excluded.at(-1);
+        if (last && last[1] === state.observed) last[1] = stat.size;
+        else state.excluded.push([state.observed, stat.size]);
+      }
+      state.observed = stat.size;
+      state.enabled = enabled;
+      state.stamp = stamp;
+    }
+    writeDurable(file, JSON.stringify(state));
+    return state;
+  } finally { release(); }
+}
+
 function stage(root, source, scope, salt, options = {}) {
+  if (options.consent) validateConsent(options.consent);
   const id = hmac(salt, path.resolve(source));
   const dir = path.join(root, id);
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -150,14 +211,33 @@ function stage(root, source, scope, salt, options = {}) {
     }
     fd = fs.openSync(source, "r");
     const stat = fs.fstatSync(fd);
+    if (options.consent) {
+      if (!options.consent.enabled || options.consent.owner !== scope.owner ||
+          JSON.stringify(readJson(path.join(dir, "consent.json"))) !== JSON.stringify(options.consent)) {
+        throw new Error("consent-changed-during-stage");
+      }
+      stat.size = Math.min(stat.size, options.consent.observed);
+    }
     const fileId = `${stat.dev}:${stat.ino}`;
+    if (options.consent && options.consent.fileId !== fileId) throw new Error("consent-source-rewritten");
     let offset = cursor?.offset || 0;
     let rawPrefix;
     const requested = fs.existsSync(path.join(dir, "reset-request.json")) ? readJson(path.join(dir, "reset-request.json")) : null;
-    let reset = !cursor || cursor.fileId !== fileId || stat.size < offset || (requested && requested.baseline >= cursor.baseline);
+    const preserveMetadata = Boolean(options.consent && options.preserveSessionMetadata);
+    let reset = !cursor || cursor.fileId !== fileId || stat.size < offset ||
+      (preserveMetadata && cursor.metadataVersion !== 1) ||
+      (options.consent && (cursor.consentEpoch !== options.consent.epoch || cursor.scope.consentStamp !== scope.consentStamp)) ||
+      (requested && requested.baseline >= cursor.baseline);
+    if (reset && cursor && options.consent && cursor.consentEpoch === options.consent.epoch &&
+        (stat.size < offset || prefix(fd, offset, salt).digest("hex") !== cursor.prefix)) {
+      throw new Error("consent-source-rewritten");
+    }
     if (!reset) {
       rawPrefix = prefix(fd, offset, salt);
       reset = rawPrefix.digest("hex") !== cursor.prefix;
+      if (reset && options.consent && cursor.consentEpoch === options.consent.epoch) {
+        throw new Error("consent-source-rewritten");
+      }
       if (!reset && stat.size === offset) return { status: "unchanged", files: [], partial: false };
       if (!reset) rawPrefix = prefix(fd, offset, salt);
     }
@@ -179,42 +259,53 @@ function stage(root, source, scope, salt, options = {}) {
       while ((end = pending.indexOf(10)) >= 0) {
         const raw = pending.subarray(0, end + 1);
         if (raw.length > MAX_RECORD) throw new Error("oversized-single-record");
-        const text = new TextDecoder("utf-8", { fatal: true }).decode(raw).trim();
+        const excluded = options.consent?.excluded.some(([start, end]) => committed < end && committed + raw.length > start);
+        // Read only the first source record across the exclusion boundary, and
+        // project only its metadata. All other excluded records stay undecoded.
+        const header = preserveMetadata && committed === 0;
+        const text = excluded && !header ? "" : new TextDecoder("utf-8", { fatal: true }).decode(raw).trim();
         if (text) {
           let record;
           try { record = JSON.parse(text); } catch { throw new Error("malformed-complete-record"); }
           if (!record || Array.isArray(record) || typeof record !== "object") throw new Error("malformed-complete-record");
-          if (options.authorizeRecord && !options.authorizeRecord(record)) throw new Error("source-scope-changed");
-          // Collector merges on UUID. Identity uses raw position/content before
-          // sanitization, preserving identical authored records and redaction collisions.
-          const uuid = hmac(salt, `${id}\0${generation}\0${committed}\0${hmac(salt, raw)}`);
-          const sanitized = sanitizeLine(record, salt);
-          if (sanitized.uuid) sanitized._codex_source_uuid = sanitized.uuid;
-          sanitized.uuid = uuid;
-          const serialized = JSON.stringify(sanitized) + "\n";
-          if (Buffer.byteLength(serialized) >= MAX_RECORD) throw new Error("oversized-single-record");
-          lines.push(serialized);
+          if (header && excluded) record = sessionMetadata(record);
+          if (record) {
+            if (options.authorizeRecord && !options.authorizeRecord(record)) throw new Error("source-scope-changed");
+            // Collector merges on UUID. Identity uses raw position/content before
+            // sanitization, preserving identical authored records and redaction collisions.
+            const uuid = hmac(salt, `${id}\0${generation}\0${committed}\0${hmac(salt, raw)}`);
+            const sanitized = sanitizeLine(record, salt);
+            if (sanitized.uuid) sanitized._codex_source_uuid = sanitized.uuid;
+            sanitized.uuid = uuid;
+            const serialized = JSON.stringify(sanitized) + "\n";
+            if (Buffer.byteLength(serialized) >= MAX_RECORD) throw new Error("oversized-single-record");
+            lines.push(serialized);
+          }
         }
         rawPrefix.update(raw); committed += raw.length; lineCount++;
         pending = pending.subarray(end + 1);
       }
       if (pending.length > MAX_RECORD) throw new Error("oversized-single-record");
-      if (committed - offset >= (options.stageBytes || STAGE_BYTES)) break;
+      if (lines.length && committed - offset >= (options.stageBytes || STAGE_BYTES)) break;
     }
     if (!lines.length) return { status: "unchanged", files: [], partial: pending.length > 0 };
     const encoded = encodeChunks(lines, options.maxEnvelope);
     let seq = cursor?.seq || 0;
     const chunks = encoded.map(({ body, records }) => ({ file: `${++seq}.gz`, seq, reset: baseline, records, sha256: digest(body) }));
     const next = { version: 1, seq, baseline, generation, offset: committed, lineCount,
+      ...(options.consent ? { consentEpoch: options.consent.epoch } : {}),
+      ...(preserveMetadata ? { metadataVersion: 1 } : {}),
       prefix: rawPrefix.digest("hex"), fileId, scope, source: path.resolve(source), transcriptId: path.basename(source) };
     // Detect concurrent source rewrite before publishing any state.
     if (prefix(fd, committed, salt).digest("hex") !== next.prefix) throw new Error("source-changed-during-stage");
+    if (options.authorizeCommit && !options.authorizeCommit()) throw new Error("consent-changed-during-stage");
     const group = path.join(dir, `batch-${String(chunks[0].seq).padStart(16, "0")}-${crypto.randomUUID()}`);
     const temp = path.join(dir, `.stage-${crypto.randomUUID()}`);
     fs.mkdirSync(temp, { mode: 0o700 });
     for (let i = 0; i < chunks.length; i++) writeDurable(path.join(temp, chunks[i].file), encoded[i].body);
-    writeDurable(path.join(temp, "commit.json"), JSON.stringify({ cursor: next, chunks }));
+    writeDurable(path.join(temp, "commit.json"), JSON.stringify({ cursor: next, chunks, createdAt: Date.now() }));
     options.fault?.("before-publish");
+    if (options.authorizeCommit && !options.authorizeCommit()) throw new Error("consent-changed-during-stage");
     fs.renameSync(temp, group); syncDir(dir);
     options.fault?.("after-publish");
     writeDurable(path.join(dir, "cursor.json"), JSON.stringify(next));
@@ -224,7 +315,7 @@ function stage(root, source, scope, salt, options = {}) {
   } catch (e) {
     // Error code only. Never persist source text or arbitrary exception payloads.
     const code = ["oversized-single-record", "malformed-complete-record", "invalid-wire-budget",
-      "source-changed-during-stage", "source-truncated-during-read", "invalid-cursor", "incomplete-transaction", "source-scope-changed", "source-owner-changed"].includes(e.message) ? e.message : "stage-failed";
+      "source-changed-during-stage", "source-truncated-during-read", "invalid-cursor", "incomplete-transaction", "source-scope-changed", "source-owner-changed", "consent-source-rewritten", "consent-changed-during-stage", "invalid-session-metadata", "unsupported-session-source", "unsupported-session-originator"].includes(e.message) ? e.message : "stage-failed";
     writeDurable(path.join(dir, "diagnostic.json"), JSON.stringify({ code, at: new Date().toISOString() }));
     throw e;
   } finally { if (fd !== undefined) fs.closeSync(fd); release(); }
@@ -274,5 +365,5 @@ async function drainDirectory(dir, send) {
     return sent;
   } finally { release(); }
 }
-module.exports = { stage, encodeChunks, acquireLock, recover, queueDirectories, pendingFiles, metadata,
+module.exports = { stage, observeConsent, encodeChunks, acquireLock, recover, queueDirectories, pendingFiles, metadata,
   drainDirectory, writeDurable, hmac, MAX_ENVELOPE, ENVELOPE_RESERVE, MAX_RECORD, STAGE_BYTES };

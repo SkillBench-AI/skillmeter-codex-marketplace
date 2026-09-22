@@ -88,7 +88,12 @@ function getTelemetryGloballyDisabled() {
 }
 
 function setTelemetryGloballyDisabled(disabled) {
-  return credstore.setTelemetryDisabled(disabled);
+  // Record even an off/on cycle with no intervening hook in this plugin.
+  fs.mkdirSync(TRANSCRIPT_CAPTURES_DIR, { recursive: true, mode: 0o700 });
+  transcriptQueue.writeDurable(path.join(TRANSCRIPT_CAPTURES_DIR, "global-boundary.json"), JSON.stringify(crypto.randomUUID()));
+  const result = credstore.setTelemetryDisabled(disabled);
+  observeKnownTranscriptConsent();
+  return result;
 }
 
 // License recovery tries /refresh before GitHub activation. SessionStart and
@@ -630,13 +635,13 @@ function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) {
 // Immutable sanitized chunks and their cursor commit before any network call.
 // Legacy TRANSCRIPTS_PENDING_DIR snapshots remain available for selected recovery.
 
-function transcriptScope(cwd, token) {
+function transcriptScope(cwd, token, observeOnly = false) {
   credstore.refreshFromDisk?.();
-  if (getTelemetryGloballyDisabled() || credstore.getSignedOut()) return null;
+  if ((!observeOnly && getTelemetryGloballyDisabled()) || credstore.getSignedOut()) return null;
   token = token || getLicenseTokenUncached();
-  if (!token || isJwtExpired(token)) return null;
+  if (!token || (!observeOnly && isJwtExpired(token))) return null;
   const decision = getRepoScopeDecision(cwd);
-  if (!decision.allowed || !resolveTelemetryGate(getTelemetryOptIn(cwd), true).capture) return null;
+  if (!decision.repoRoot || (!observeOnly && (!decision.allowed || !resolveTelemetryGate(getTelemetryOptIn(cwd), true).capture))) return null;
   const salt = getOrCreateHashSalt(), deviceId = getDeviceId();
   if (!salt || !deviceId) return null;
   const claims = decodeJwtPayload(token);
@@ -645,20 +650,60 @@ function transcriptScope(cwd, token) {
   // Without a stable principal, token rotation cannot reuse this queue. Never
   // deliver one principal's queued transcript as another user.
   const owner = transcriptQueue.hmac(salt, JSON.stringify([claims.iss, claims.aud, claims.sub, identity || token]));
-  return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner };
+  return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner, consentStamp: owner + decision.repoRoot };
 }
 function scopeStillAllowed(scope, token) {
   const current = transcriptScope(scope.cwd, token);
   return current && ["repoRoot", "org", "deviceId", "owner"].every(k => current[k] === scope[k]);
 }
+// Local settings revisions identify transitions without depending on token
+// rotation. Shared policy storage and cross-client transitions are separate.
+function transcriptConsentStamp(cwd) {
+  const root = findGitRoot(cwd) || path.resolve(cwd), revisions = [];
+  let current = path.resolve(cwd);
+  while (true) {
+    try {
+      const stat = fs.statSync(path.join(current, SETTINGS_RELATIVE), { bigint: true });
+      revisions.push([current, String(stat.ino), String(stat.mtimeNs), String(stat.ctimeNs)]);
+    } catch (error) { if (error.code !== "ENOENT") throw error; revisions.push([current, null]); }
+    if (current === root || path.dirname(current) === current) break;
+    current = path.dirname(current);
+  }
+  const globalFile = path.join(TRANSCRIPT_CAPTURES_DIR, "global-boundary.json");
+  const globalRevision = fs.existsSync(globalFile) ? JSON.parse(fs.readFileSync(globalFile, "utf8")) : null;
+  return JSON.stringify([revisions, getTelemetryGloballyDisabled(), globalRevision]);
+}
+function observeTranscriptConsent(source, cwd, verifyReplacement = false) {
+  const scope = transcriptScope(cwd, undefined, true);
+  if (!scope || !source || !fs.existsSync(source)) return null;
+  const allowed = !getTelemetryGloballyDisabled() &&
+    resolveTelemetryGate(getTelemetryOptIn(cwd), getRepoScopeDecision(cwd).allowed).capture;
+  return transcriptQueue.observeConsent(TRANSCRIPT_CHUNKS_DIR, source, scope,
+    getOrCreateHashSalt(), allowed, transcriptConsentStamp(cwd), false, verifyReplacement);
+}
+function observeKnownTranscriptConsent(repoRoot) {
+  if (!fs.existsSync(TRANSCRIPT_CAPTURES_DIR)) return;
+  for (const name of fs.readdirSync(TRANSCRIPT_CAPTURES_DIR).filter(n => /^[a-f0-9]{64}(?:-[a-f0-9]{64})?\.json$/.test(n))) {
+    try {
+      const hint = JSON.parse(fs.readFileSync(path.join(TRANSCRIPT_CAPTURES_DIR, name), "utf8"));
+      if (repoRoot && hint.scope.repoRoot !== repoRoot) continue;
+      for (const source of hint.paths) observeTranscriptConsent(source, hint.scope.cwd);
+    } catch { console.error("[skillmeter] Consent boundary deferred for an unavailable capture hint"); }
+  }
+}
 function stageTranscriptForUpload(transcriptPath, context = {}) {
   const cwd = context.cwd || process.cwd();
-  const scope = transcriptScope(cwd);
-  if (!scope || (context.scope && !scopeStillAllowed(context.scope))) return null;
   if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
   try {
+    const consent = observeTranscriptConsent(transcriptPath, cwd, true);
+    const scope = transcriptScope(cwd);
+    if (!consent || !scope || (context.scope && !scopeStillAllowed(context.scope))) return null;
     const result = transcriptQueue.stage(TRANSCRIPT_CHUNKS_DIR, transcriptPath, scope, getOrCreateHashSalt(), {
+      consent,
+      preserveSessionMetadata: true,
+      authorizeCommit: () => scopeStillAllowed(scope) && consent.stamp === transcriptConsentStamp(cwd),
       authorizeRecord: record => {
+        if (record.type === "session_meta" && record.payload?.originator === "codex_work_desktop") return false;
         if (!["session_meta", "turn_context"].includes(record.type) || !record.payload?.cwd) return true;
         const sourceScope = transcriptScope(record.payload.cwd);
         return sourceScope && sourceScope.repoRoot === scope.repoRoot && sourceScope.owner === scope.owner;
@@ -764,6 +809,7 @@ function requestTranscriptCapture(input, options = {}) {
   // Separate source keys avoid lost updates when parent/subagent hooks race.
   // A later parent-only hook must not remove the subagent's capture request.
   for (const source of paths) {
+    if (!observeTranscriptConsent(source, cwd)) continue;
     const sourceKey = transcriptQueue.hmac(salt, path.resolve(source));
     const cachePath = path.join(TRANSCRIPT_CAPTURES_DIR, `${cacheKey}-${sourceKey}.json`);
     transcriptQueue.writeDurable(cachePath, JSON.stringify({ scope, paths: [source] }));
@@ -1516,6 +1562,7 @@ function saveTelemetryOptIn(cwd, value) {
   content.skillmeter = { ...content.skillmeter, telemetry: value };
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
   fs.writeFileSync(settingsPath, JSON.stringify(content, null, 2) + "\n");
+  observeKnownTranscriptConsent(findGitRoot(cwd) || path.resolve(cwd));
 }
 
 // In-context consent notice: printed to a Codex hook's stderr channel when a
@@ -1587,11 +1634,6 @@ async function runHook(eventName, buildData, options = {}) {
     process.exit(code);
   };
 
-  if (getTelemetryGloballyDisabled()) {
-    console.error(`[skillmeter] ${eventName}: skipped (telemetry globally disabled)`);
-    return exit(0);
-  }
-
   const deviceId = getDeviceId();
   if (!deviceId) {
     console.error(`[skillmeter] ${eventName}: skipped (no device ID)`);
@@ -1613,6 +1655,18 @@ async function runHook(eventName, buildData, options = {}) {
   }
 
   const cwd = input.cwd || process.cwd();
+  try {
+    for (const source of collectTranscriptPaths(input, { discover: false })) {
+      observeTranscriptConsent(source, cwd);
+    }
+  } catch {
+    console.error("[skillmeter] Transcript consent observation failed; capture deferred");
+    return exit(0);
+  }
+  if (getTelemetryGloballyDisabled()) {
+    console.error(`[skillmeter] ${eventName}: skipped (telemetry globally disabled)`);
+    return exit(0);
+  }
 
   // Repository scope and explicit consent must both permit capture.
   const repoScopeDecision = getRepoScopeDecision(cwd);
@@ -1717,6 +1771,7 @@ module.exports = {
   findCodexTranscriptBySessionId,
   collectTranscriptPaths,
   stageTranscriptForUpload,
+  observeTranscriptConsent,
   requestTranscriptCapture,
   stageRequestedTranscripts,
   TRANSCRIPT_CHUNKS_DIR,

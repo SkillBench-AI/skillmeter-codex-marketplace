@@ -27,7 +27,9 @@ beforeEach(() => {
   save({}); fs.rmSync(logger.LOG_DIR, { recursive: true, force: true });
   fs.rmSync(path.join(repo, ".codex"), { recursive: true, force: true });
   logger.saveTelemetryOptIn(repo, true);
-  fs.writeFileSync(source, line("synthetic first message"));
+  fs.writeFileSync(source, "");
+  logger.observeTranscriptConsent(source, repo);
+  fs.appendFileSync(source, line("synthetic first message"));
   global.fetch = async () => assert.fail("unexpected network attempt");
 });
 after(() => { global.fetch = realFetch; fs.rmSync(root, { recursive: true, force: true }); });
@@ -121,6 +123,9 @@ test("cleanup and dry-run inventory preserve old transcript copies", () => {
 
 test("tenant sub cannot substitute for user identity", async () => {
   save({ license_jwt: jwt("same-tenant", 4102444800, {github_id: 101}) });
+  fs.rmSync(logger.TRANSCRIPT_CHUNKS_DIR, {recursive:true,force:true});
+  fs.writeFileSync(source, ""); logger.observeTranscriptConsent(source, repo);
+  fs.appendFileSync(source, line("tenant-scoped message"));
   const file = stage(); assert.ok(file);
   save({ license_jwt: jwt("same-tenant", 4102444800, {github_id: 202}) });
   assert.equal(await upload(file), "skip"); assert.equal(fs.existsSync(file), true);
@@ -184,7 +189,9 @@ test("consent revoked during a 409 prevents reset staging and upload", async () 
 test("a corrupt queue does not block other authorized transcripts", async () => {
   stage();
   const secondSource = path.join(root, "second.jsonl");
-  fs.writeFileSync(secondSource, line("healthy second transcript"));
+  fs.writeFileSync(secondSource, "");
+  logger.observeTranscriptConsent(secondSource, repo);
+  fs.appendFileSync(secondSource, line("healthy second transcript"));
   logger.stageTranscriptForUpload(secondSource, { cwd: repo });
   const directories = queue.queueDirectories(logger.TRANSCRIPT_CHUNKS_DIR);
   const damaged = directories[0];
@@ -237,6 +244,9 @@ for (const changedPrincipal of [false, true]) test(`broker credential rotation $
     github_id: undefined, broker_sub: user, jti,
   });
   save({ license_jwt: brokerToken("broker-user-a", "old") });
+  fs.rmSync(logger.TRANSCRIPT_CHUNKS_DIR, {recursive:true,force:true});
+  fs.writeFileSync(source, ""); logger.observeTranscriptConsent(source, repo);
+  fs.appendFileSync(source, line("broker-scoped message"));
   const file = stage();
   assert.ok(file);
   const rotated = brokerToken(changedPrincipal ? "broker-user-b" : "broker-user-a", "new");
@@ -264,7 +274,9 @@ test("combined drain honors an explicit transcript endpoint override", async () 
 
 test("later parent hooks preserve a subagent source in the same session", async () => {
   const agentSource = path.join(root, "agent.jsonl");
-  fs.writeFileSync(agentSource, line("subagent message"));
+  fs.writeFileSync(agentSource, "");
+  logger.observeTranscriptConsent(agentSource, repo);
+  fs.appendFileSync(agentSource, line("subagent message"));
   logger.requestTranscriptCapture({ cwd: repo, session_id: "parent", transcript_path: source, agent_transcript_path: agentSource });
   logger.requestTranscriptCapture({ cwd: repo, session_id: "parent", transcript_path: source });
   const transcripts = new Set();
@@ -316,4 +328,73 @@ for (const corruption of ["chunk", "metadata", "cursor"]) test(`direct upload re
   assert.deepEqual(fs.readFileSync(file), before);
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "diagnostic.json"))).code, "queue-unavailable");
   assert.ok(!fs.readFileSync(path.join(dir, "diagnostic.json"), "utf8").includes("invalid fixture"));
+});
+
+const recordsIn = files => files.flatMap(file => require("node:zlib").gunzipSync(fs.readFileSync(file)).toString().trim().split("\n").map(JSON.parse));
+
+test("repository disable/re-enable without hooks excludes the interval through a server reset", async () => {
+  logger.requestTranscriptCapture({ cwd: repo, session_id: "interval", transcript_path: source });
+  global.fetch = async () => ({ok:true});
+  await upload(stage());
+  logger.saveTelemetryOptIn(repo, false);
+  fs.appendFileSync(source, line("MUST-NOT-UPLOAD-DISABLED"));
+  logger.saveTelemetryOptIn(repo, true);
+  fs.appendFileSync(source, line("authorized after enable"));
+  const file = stage();
+  assert.deepEqual(recordsIn([file]).map(r => r.payload.content), ["authorized after enable"]);
+  const requests = [];
+  global.fetch = async (_, options) => {
+    requests.push(options);
+    return requests.length === 1 ? {ok:false,status:409,json:async()=>({error:"transcript-baseline-missing"})} : {ok:true};
+  };
+  assert.equal(await upload(file), "sent");
+  const reset = require("node:zlib").gunzipSync(requests[1].body).toString();
+  assert.doesNotMatch(reset, /MUST-NOT-UPLOAD/);
+  assert.match(reset, /synthetic first message/);
+  assert.match(reset, /authorized after enable/);
+});
+
+test("local global pause retains queued chunks but excludes newly written interval", () => {
+  logger.requestTranscriptCapture({ cwd: repo, session_id: "pause", transcript_path: source });
+  const previous = stage(), bytes = fs.readFileSync(previous);
+  logger.setTelemetryGloballyDisabled(true);
+  fs.appendFileSync(source, line("GLOBAL-PAUSE-EXCLUDED"));
+  logger.setTelemetryGloballyDisabled(false);
+  fs.appendFileSync(source, line("authorized after global resume"));
+  const file = stage();
+  assert.deepEqual(fs.readFileSync(previous), bytes, "queue revocation policy is unchanged");
+  assert.deepEqual(recordsIn([file]).map(r => r.payload.content), ["authorized after global resume"]);
+});
+
+test("first discovery excludes history and preserves only sanitized source identity", () => {
+  fs.rmSync(logger.TRANSCRIPT_CHUNKS_DIR, {recursive:true,force:true});
+  fs.writeFileSync(source, JSON.stringify({type:"session_meta",payload:{id:"synthetic",cwd:repo,source:"cli",originator:"codex_cli_rs",instructions:"PRIVATE-OLD-INSTRUCTION"}}) + "\n" + line("PRIVATE-OLD-PROMPT"));
+  logger.observeTranscriptConsent(source, repo);
+  const call = {type:"response_item",payload:{type:"function_call",name:"exec_command",call_id:"pair-1",arguments:'{"cmd":"echo SYNTHETIC"}'}};
+  const result = {type:"response_item",payload:{type:"function_call_output",call_id:"pair-1",output:"SYNTHETIC"}};
+  fs.appendFileSync(source, [call,result].map(JSON.stringify).join("\n") + "\n");
+  const records = recordsIn([stage()]);
+  assert.equal(records[0].payload.originator, "codex_cli_rs");
+  assert.equal(records[0].payload.source, "cli");
+  assert.doesNotMatch(JSON.stringify(records), /PRIVATE-OLD/);
+  assert.deepEqual(records.slice(1).map(r => r.payload), [call,result].map(r => require("../scripts/sanitizer").sanitizeLine(r, credentials.hash_salt).payload));
+  assert.deepEqual(records.slice(1).map(r => r.payload.call_id), ["pair-1","pair-1"]);
+});
+
+test("a disabled native hook observes offsets without logging content or launching a worker", () => {
+  logger.saveTelemetryOptIn(repo, false);
+  fs.appendFileSync(source, line("DISABLED-HOOK-CONTENT"));
+  const preload = path.join(root,"blocked-hook.cjs"), marker = path.join(root,"blocked-spawn");
+  fs.writeFileSync(preload, `require("child_process").spawn=()=>{require("fs").writeFileSync(${JSON.stringify(marker)},"spawned");throw Error("disabled worker")};global.fetch=()=>{throw Error("network")};`);
+  const run = spawnSync(process.execPath,["--require",preload,path.join(__dirname,"../scripts/stop.js")],{
+    cwd:repo,env:process.env,encoding:"utf8",timeout:3000,
+    input:JSON.stringify({cwd:repo,session_id:"disabled",transcript_path:source,last_assistant_message:"DISABLED-HOOK-CONTENT"}),
+  });
+  assert.equal(run.status,0,run.stderr); assert.deepEqual(JSON.parse(run.stdout),{});
+  assert.equal(fs.existsSync(marker),false); assert.equal(fs.existsSync(logger.LOG_FILE),false);
+  logger.saveTelemetryOptIn(repo,true);
+  // No intervening enabled hook: first observation remains a conservative boundary.
+  logger.observeTranscriptConsent(source,repo);
+  fs.appendFileSync(source,line("enabled hook future"));
+  assert.deepEqual(recordsIn([stage()]).map(r=>r.payload.content),["enabled hook future"]);
 });

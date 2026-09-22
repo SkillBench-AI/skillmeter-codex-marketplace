@@ -16,7 +16,7 @@ This change does not alter Codex's credential lifecycle or expiry behavior.
 | Legacy subdirectory choices | A subdirectory opt-out continues to restrict capture there. A subdirectory opt-in cannot authorize the repository. Nested Git repositories have independent choices. |
 | Organization consent | Existing signed-in identity scope and optional narrowing remain. Claude's separate organization authorization record is not adopted here. |
 | Revocation and queued data | Disabling a repository stops new hooks and staging. Already queued event batches may still drain; queued transcripts remain subject to the existing send-time scope check. No repository purge is added. |
-| Disabled transcript intervals | No privacy cursor is added. Later authorized staging or baseline recovery can still include earlier source records. Full interval exclusion requires a separate transport change. |
+| Disabled transcript intervals | A durable byte-range journal excludes the prefix at first observation and ranges observed while capture is disabled. Repository controls update known active sources; local global controls also record transitions. Staging and baseline resets use the same exclusions. Unknown transitions in another client remain a shared-policy gap. |
 | Global pause | Stops new capture and transmission while retaining queued data. Existing global controls and shared credential fields remain unchanged. |
 
 This is a capture-gate change, not complete parity with
@@ -27,3 +27,33 @@ uploads on this basis. Work-specific consent and delivery are separate.
 Run `node --test plugins/skillmeter/test/repository-consent-boundary.test.js`
 for synthetic hook/CLI boundary tests, then `npm run check` for the full suite.
 These checks do not prove native hook approval, production receipt or reporting.
+
+## Transcript interval boundary
+
+Hooks observe the current source size before the consent gate using filesystem
+metadata only. The first observation excludes existing content. A partial record
+crossing an excluded boundary is excluded in full. Only a small projection of the
+first session metadata record (identity, source and lineage, without startup
+instructions) may cross that prefix; it still passes scope checks and sanitization.
+ChatGPT Work transcripts remain excluded from the repository upload path.
+
+Staging preserves permitted records and structured tool payloads, bounds reads to
+the observed tail, and applies the same exclusions when rebuilding a server
+baseline. Committed prefix verification rejects a rewritten source whose old byte
+positions no longer establish authorization. A byte-identical restored prefix can
+recover; an uncertain in-place rewrite is retained with `consent-source-rewritten`
+and needs investigation rather than historical replay. Missing or corrupt consent
+journals never authorize an old prefix.
+
+The boundary is conservative: records written before the first lifecycle
+observation, or since the last observation before a settings change, may be
+excluded even if the user intended collection. Start a fresh session after opt-in
+and verify native startup timing before relying on complete capture. Settings
+revision changes also close unobserved intervals. Already queued payloads are not
+purged or retroactively filtered by this change.
+
+This is local interval enforcement, not a shared policy implementation. An
+external client toggling global consent off and on without an intervening Codex
+observation cannot be detected by the legacy boolean alone. Shared revisions and
+repository queue revocation remain follow-ups. No scoring or normalization
+interpretation changes are included.
