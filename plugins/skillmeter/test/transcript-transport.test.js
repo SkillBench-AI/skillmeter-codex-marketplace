@@ -315,3 +315,20 @@ for (const corruption of ["chunk", "metadata", "cursor"]) test(`direct upload re
   assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "diagnostic.json"))).code, "queue-unavailable");
   assert.ok(!fs.readFileSync(path.join(dir, "diagnostic.json"), "utf8").includes("invalid fixture"));
 });
+
+for (const lateHeader of [false, true]) test(`Work metadata ${lateHeader ? "after a Codex prefix" : "at startup"} cannot enter repository transcript staging`, () => {
+  const header = originator => JSON.stringify({type:"session_meta",payload:{id:"synthetic-work",cwd:repo,source:"vscode",originator}}) + "\n";
+  fs.writeFileSync(source, header(lateHeader ? "codex_cli_rs" : "codex_work_desktop") + line("synthetic prompt"));
+  let before;
+  if (lateHeader) {
+    const first = stage(); assert.ok(first);
+    before = fs.readFileSync(path.join(path.dirname(path.dirname(first)), "cursor.json"));
+    fs.appendFileSync(source, header("codex_work_desktop") + line("Work continuation"));
+  }
+  assert.equal(stage(), null);
+  assert.equal(logger.listPendingTranscripts().length, lateHeader ? 1 : 0);
+  const [dir] = queue.queueDirectories(logger.TRANSCRIPT_CHUNKS_DIR);
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir,"diagnostic.json"))).code,"source-scope-changed");
+  if (lateHeader) assert.deepEqual(fs.readFileSync(path.join(dir,"cursor.json")),before);
+  else assert.equal(fs.existsSync(path.join(dir,"cursor.json")),false);
+});

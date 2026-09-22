@@ -38,6 +38,11 @@ Global pause retains queued data for later delivery; it does not delete it.
 
 ## Collection scope
 
+ChatGPT Work transcript delivery is not supported. A transcript containing
+`session_meta.originator=codex_work_desktop` is rejected during staging even in
+an eligible repository. This does not purge previously queued data or change
+hook-event collection. Per-task Work consent and delivery remain separate work.
+
 A valid sign-in, a recognized GitHub repository, and an allowed remote owner
 are required. In 0.6.x:
 
