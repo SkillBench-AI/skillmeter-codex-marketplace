@@ -4,7 +4,6 @@
 // so we always emit `{}` on every exit path.
 const {
   runHook,
-  sealEventLogAndTriggerDrain,
   flushAndTransfer,
 } = require("./logger.js");
 
@@ -21,7 +20,6 @@ runHook(
     requireJsonStdout: true,
     // Seal the durable queues and hand uploads to a detached drain so the hook
     // returns quickly instead of blocking on network I/O.
-    afterSkip: () => sealEventLogAndTriggerDrain(),
     afterLog: (input) => flushAndTransfer(input),
   }
 ).catch(() => {

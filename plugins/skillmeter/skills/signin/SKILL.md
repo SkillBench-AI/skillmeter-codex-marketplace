@@ -26,5 +26,10 @@ Successful sign-in stores the license and organization scope in the shared
 `~/.skillbench/credentials.json` and clears the global telemetry pause.
 Uploads use the license's `aud` claim for tenant routing.
 
+Sign-in does not enable repository capture. Explain the data collected in the
+plugin README and ask the user to choose a repository before running
+`node "$PLUGIN_ROOT/scripts/telemetry.js" enable` there. Do not infer capture
+consent from a request to sign in.
+
 If the script prints a welcome banner, reproduce it in a fenced code block to
 preserve alignment. Report the result without exposing credentials.

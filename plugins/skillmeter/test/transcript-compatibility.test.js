@@ -35,6 +35,7 @@ require.cache[credentialModule] = {
   },
 };
 const logger = require("../scripts/logger");
+logger.saveTelemetryOptIn(dataDir, true);
 const realFetch = global.fetch;
 
 after(() => {
