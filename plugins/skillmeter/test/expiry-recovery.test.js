@@ -27,6 +27,8 @@ function fixture() {
   fs.writeFileSync(credentialsPath, JSON.stringify(credentials));
   fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
   fs.writeFileSync(path.join(repo, ".git/config"), '[remote "origin"]\nurl = https://github.com/acme/widgets.git\n');
+  fs.mkdirSync(path.join(repo, ".codex"));
+  fs.writeFileSync(path.join(repo, ".codex/settings.local.json"), JSON.stringify({ skillmeter: { telemetry: true } }));
   const preload = path.join(root, "preload.cjs");
   fs.writeFileSync(preload, `
 const fs = require("fs"), cp = require("child_process");
@@ -119,7 +121,6 @@ test("signout after a hook blocks a pending worker from refreshing or sending", 
 
 test("project opt-out suppresses new capture and worker launch", () => {
   const f = fixture();
-  fs.mkdirSync(path.join(f.repo, ".codex"));
   fs.writeFileSync(path.join(f.repo, ".codex/settings.local.json"), JSON.stringify({ skillmeter: { telemetry: false } }));
   assert.match(f.hook(16).stderr, /disabled for this project/);
   assert.deepEqual(f.records(), []);
