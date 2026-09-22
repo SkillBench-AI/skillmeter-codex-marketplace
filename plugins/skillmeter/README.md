@@ -45,24 +45,35 @@ prove delivery or report generation; legacy snapshots are excluded from the coun
 
 ## Collection scope
 
-A valid sign-in, a recognized GitHub repository, and an allowed remote owner
-are required. In 0.6.x:
+A recognized GitHub repository and an allowed remote owner are required:
 
-- Eligible repositories auto-enable when no project choice has been made.
+- Eligible repositories remain off until explicitly enabled.
 - An explicit project opt-out stops collection even for an allowed owner.
 - Enabling a project cannot bring an out-of-scope repository into scope.
 - The global pause overrides project choices. There is no OS consent pop-up.
 
-Project choices live in `<project>/.codex/settings.local.json`. To opt out:
+Project controls read and write `<git-root>/.codex/settings.local.json`, including
+when run from a subdirectory. Existing root choices remain effective. Missing,
+malformed or non-boolean choices stay off. To opt in:
 
 ```json
-{ "skillmeter": { "telemetry": false } }
+{ "skillmeter": { "telemetry": true } }
 ```
 
 For additional narrowing, set `SKILLMETER_REPO_SCOPE_ORGS` to comma-separated
 owners, or use `skillmeter.repoScopeOrgs` in the same settings file. These filters
-can only restrict the allowed identities. The status command shows the effective
-capture policy; an unset choice can still auto-enable for an allowed owner.
+can only restrict the allowed identities. An unset choice does not authorize
+capture. Nested repositories require their own choice. Legacy subdirectory
+opt-outs remain restrictive; subdirectory opt-ins cannot enable the whole repo.
+
+This follows Claude's explicit repository opt-in rule. Codex still stores the
+choice per checkout, so clones and linked worktrees require separate choices.
+It does not yet use Claude's shared organization/repository policy store.
+Repository disable stops new capture but does not purge previously queued data;
+event batches may still drain. Global pause stops capture and transmission while
+retaining queues. Disabled transcript intervals are not yet excluded from a
+later authorized snapshot. Shared policy, queue revocation and privacy cursors
+remain required for full consent parity. See the [alignment boundary](../../docs/repository-consent.md).
 
 ## Data and privacy
 

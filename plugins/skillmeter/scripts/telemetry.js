@@ -16,6 +16,7 @@ const {
   listPendingTranscripts,
   LOG_DIR,
   LOG_FILE,
+  findGitRoot,
 } = require("./logger.js");
 const {
   getLicenseToken,
@@ -29,6 +30,7 @@ const path = require("path");
 const { isJwtExpired } = require("./lib/jwt");
 
 const cwd = process.cwd();
+const projectRoot = findGitRoot(cwd) || cwd;
 const action = process.argv[2];
 const isGlobal = process.argv.slice(3).includes("--global");
 
@@ -48,6 +50,7 @@ function capturePolicyLine() {
   const gate = resolveTelemetryGate(getTelemetryOptIn(cwd), scope.allowed);
   if (gate.mode === "opted_out") return "disabled for this project";
   if (!scope.allowed) return `excluded (${scope.classification})`;
+  if (!gate.capture) return "disabled; repository choice required";
   return "eligible for this repository; hook execution not verified";
 }
 
@@ -70,15 +73,29 @@ function queueLines() {
   }
 }
 
+function saveRepositoryChoice(value) {
+  try {
+    saveTelemetryOptIn(cwd, value);
+    return true;
+  } catch {
+    process.stderr.write(`SkillMeter: Could not update ${SETTINGS_RELATIVE}; check its JSON and file permissions.\n`);
+    process.exitCode = 1;
+    return false;
+  }
+}
+
 switch (action) {
   case "enable":
     if (isGlobal) {
       setTelemetryGloballyDisabled(false);
       process.stderr.write("SkillMeter: Global telemetry uploads enabled for this machine\n");
     } else {
-      saveTelemetryOptIn(cwd, true);
-      process.stderr.write(`SkillMeter: Telemetry enabled for ${cwd}\n`);
-      process.stderr.write(`           (saved to ${SETTINGS_RELATIVE})\n`);
+      if (!saveRepositoryChoice(true)) break;
+      process.stderr.write(`SkillMeter: Repository choice saved for ${projectRoot}\n`);
+      process.stderr.write(`           (saved to ${SETTINGS_RELATIVE}; scope and global pause still apply)\n`);
+      if (getTelemetryOptIn(cwd) !== true) {
+        process.stderr.write("SkillMeter: A subdirectory setting still blocks capture here; review its telemetry setting.\n");
+      }
       if (getTelemetryGloballyDisabled()) {
         process.stderr.write(
           "SkillMeter: Global telemetry is still disabled; run with --global to resume uploads\n"
@@ -92,8 +109,8 @@ switch (action) {
       process.stderr.write("SkillMeter: Global telemetry uploads disabled for this machine\n");
       process.stderr.write("SkillMeter: Pending uploads will remain queued until global telemetry is enabled\n");
     } else {
-      saveTelemetryOptIn(cwd, false);
-      process.stderr.write(`SkillMeter: Telemetry disabled for ${cwd}\n`);
+      if (!saveRepositoryChoice(false)) break;
+      process.stderr.write(`SkillMeter: New capture disabled for ${projectRoot}; previously queued data is not purged\n`);
     }
     break;
   case "status": {

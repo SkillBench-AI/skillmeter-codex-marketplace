@@ -26,6 +26,7 @@ const upload = file => logger.processPendingTranscript(file, credentials.device_
 beforeEach(() => {
   save({}); fs.rmSync(logger.LOG_DIR, { recursive: true, force: true });
   fs.rmSync(path.join(repo, ".codex"), { recursive: true, force: true });
+  logger.saveTelemetryOptIn(repo, true);
   fs.writeFileSync(source, line("synthetic first message"));
   global.fetch = async () => assert.fail("unexpected network attempt");
 });
@@ -39,7 +40,8 @@ for (const [name, change] of [
   ["changed device", () => save({ device_id: "ANOTHER-DEVICE" })],
   ["expired token", () => save({ license_jwt: jwt("synthetic-user", 1) })],
   ["missing token", () => save({ license_jwt: "" })],
-  ["project opt-out", () => { fs.mkdirSync(path.join(repo, ".codex")); fs.writeFileSync(path.join(repo, ".codex/settings.local.json"), '{"skillmeter":{"telemetry":false}}'); }],
+  ["project opt-out", () => { fs.mkdirSync(path.join(repo, ".codex"), { recursive: true }); fs.writeFileSync(path.join(repo, ".codex/settings.local.json"), '{"skillmeter":{"telemetry":false}}'); }],
+  ["removed repository choice", () => fs.unlinkSync(path.join(repo, ".codex/settings.local.json"))],
 ]) test(`${name} blocks queued upload without consuming it`, async () => {
   const file = stage(); assert.ok(file); change();
   assert.equal(await upload(file), "skip"); assert.equal(fs.existsSync(file), true);

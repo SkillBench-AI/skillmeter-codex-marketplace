@@ -10,7 +10,7 @@ const roots = [];
 after(() => roots.forEach(root => fs.rmSync(root, { recursive: true, force: true })));
 const plugin = path.resolve(__dirname, "..");
 
-function status({ seconds = 3600, credentials = {}, optedOut = false, queue = false, rejected = false, transcript = false, corrupt = false } = {}) {
+function status({ seconds = 3600, credentials = {}, choice = true, malformedChoice = false, queue = false, rejected = false, transcript = false, corrupt = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-"));
   roots.push(root);
   const repo = path.join(root, "repo"), data = path.join(root, "data"), state = path.join(root, ".skillbench");
@@ -21,9 +21,9 @@ function status({ seconds = 3600, credentials = {}, optedOut = false, queue = fa
   const store = JSON.stringify({ device_id: "synthetic-device", hash_salt: "synthetic-salt", license_jwt: token, allowed_github_orgs: ["acme"], ...credentials });
   const credentialPath = path.join(state, "credentials.json");
   fs.writeFileSync(credentialPath, store);
-  if (optedOut) {
+  if (choice !== null || malformedChoice) {
     fs.mkdirSync(path.join(repo, ".codex"));
-    fs.writeFileSync(path.join(repo, ".codex/settings.local.json"), JSON.stringify({ skillmeter: { telemetry: false } }));
+    fs.writeFileSync(path.join(repo, ".codex/settings.local.json"), malformedChoice ? "invalid json" : JSON.stringify({ skillmeter: { telemetry: choice } }));
   }
   const logs = path.join(data, "logs");
   if (rejected) {
@@ -84,7 +84,7 @@ test("healthy credentials and empty queues do not claim delivery or hook health"
 });
 
 test("project opt-out is reported independently of valid authentication", () => {
-  const text = status({ optedOut: true });
+  const text = status({ choice: false });
   assert.match(text, /Capture policy: disabled for this project/);
   assert.match(text, /Delivery authentication: license locally valid/);
 });
@@ -112,4 +112,23 @@ test("unreadable queue state is unavailable rather than empty", () => {
   const text = status({ corrupt: true });
   assert.match(text, /Upload queue: unavailable/);
   assert.doesNotMatch(text, /0 transcript chunks/);
+});
+
+for (const [name, options] of [
+  ["missing", { choice: null }],
+  ["malformed", { malformedChoice: true }],
+  ["non-boolean", { choice: "true" }],
+]) {
+  test(`${name} repository choice does not report capture eligibility`, () => {
+    const text = status(options);
+    assert.match(text, /Capture policy: disabled; repository choice required/);
+    assert.match(text, /Delivery authentication: license locally valid/);
+    assert.doesNotMatch(text, /Capture policy: eligible/);
+  });
+}
+
+test("explicit consent does not override organization scope", () => {
+  const text = status({ credentials: { allowed_github_orgs: ["other-org"] } });
+  assert.match(text, /Capture policy: excluded/);
+  assert.doesNotMatch(text, /Capture policy: eligible/);
 });

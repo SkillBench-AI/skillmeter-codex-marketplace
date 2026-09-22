@@ -12,9 +12,10 @@ transcripts, and custom skill content. Sanitization reduces exposure; it does
 not make arbitrary content anonymous. Read the [data and scope guide](plugins/skillmeter/README.md#data-and-privacy)
 before enabling collection.
 
-In 0.6.x, repositories owned by your allowed GitHub identities **auto-enable
-unless you opt out**. Other repositories remain outside the collection scope.
-This differs from Claude's newer explicit repository-selection flow.
+New capture requires an explicit repository choice as well as an allowed GitHub
+owner. Installation and sign-in alone do not enable capture. See
+[collection scope](plugins/skillmeter/README.md#collection-scope) for controls
+and the remaining differences from Claude's shared consent flow.
 
 ## Install
 
@@ -29,6 +30,9 @@ Restart Codex and start a new session. Review and enable the plugin's hooks if
 Codex prompts you. Then ask Codex:
 
 > Use SkillMeter's signin skill to sign me in with GitHub, scoped to my organization.
+
+Then review the collection notice and explicitly enable telemetry for the
+repository you want to capture using the [project controls](plugins/skillmeter/README.md#sign-in-and-controls).
 
 Already signed in with a shared GitHub-based SkillMeter credential? You can
 reuse it. Compatibility with Claude's latest broker sign-in remains follow-up
