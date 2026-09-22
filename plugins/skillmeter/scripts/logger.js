@@ -682,13 +682,16 @@ function observeTranscriptConsent(source, cwd, verifyReplacement = false) {
     getOrCreateHashSalt(), allowed, transcriptConsentStamp(cwd), false, verifyReplacement);
 }
 function observeKnownTranscriptConsent(repoRoot) {
-  if (!fs.existsSync(TRANSCRIPT_CAPTURES_DIR)) return;
-  for (const name of fs.readdirSync(TRANSCRIPT_CAPTURES_DIR).filter(n => /^[a-f0-9]{64}(?:-[a-f0-9]{64})?\.json$/.test(n))) {
+  // An unselected hook has no upload hint, but its consent journal already
+  // knows the source. Enable must move that boundary before the next prompt.
+  for (const dir of transcriptQueue.queueDirectories(TRANSCRIPT_CHUNKS_DIR)) {
+    const file = path.join(dir, "consent.json");
+    if (!fs.existsSync(file)) continue;
     try {
-      const hint = JSON.parse(fs.readFileSync(path.join(TRANSCRIPT_CAPTURES_DIR, name), "utf8"));
-      if (repoRoot && hint.scope.repoRoot !== repoRoot) continue;
-      for (const source of hint.paths) observeTranscriptConsent(source, hint.scope.cwd);
-    } catch { console.error("[skillmeter] Consent boundary deferred for an unavailable capture hint"); }
+      const state = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (repoRoot && state.repoRoot !== repoRoot) continue;
+      if (state.source && state.cwd) observeTranscriptConsent(state.source, state.cwd);
+    } catch { console.error("[skillmeter] Consent boundary deferred for an unavailable source journal"); }
   }
 }
 function stageTranscriptForUpload(transcriptPath, context = {}) {

@@ -191,6 +191,11 @@ function observeConsent(root, source, scope, salt, enabled, stamp, rebase = fals
       state.enabled = enabled;
       state.stamp = stamp;
     }
+    // Controls can establish the next boundary even before an upload hint
+    // exists. This is a source pointer and offsets only, never source content.
+    state.source = path.resolve(source);
+    state.cwd = scope.cwd;
+    state.repoRoot = scope.repoRoot;
     writeDurable(file, JSON.stringify(state));
     return state;
   } finally { release(); }

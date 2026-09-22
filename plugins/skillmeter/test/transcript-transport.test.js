@@ -398,3 +398,15 @@ test("a disabled native hook observes offsets without logging content or launchi
   fs.appendFileSync(source,line("enabled hook future"));
   assert.deepEqual(recordsIn([stage()]).map(r=>r.payload.content),["enabled hook future"]);
 });
+
+
+test("enable advances an unselected source before any upload hint exists", () => {
+  fs.rmSync(path.join(repo,".codex"),{recursive:true,force:true});
+  fs.rmSync(logger.TRANSCRIPT_CHUNKS_DIR,{recursive:true,force:true});
+  fs.writeFileSync(source,line("UNSELECTED-HISTORY"));
+  logger.observeTranscriptConsent(source,repo);
+  assert.equal(fs.existsSync(logger.TRANSCRIPT_CAPTURES_DIR),false);
+  logger.saveTelemetryOptIn(repo,true);
+  fs.appendFileSync(source,line("FIRST-AUTHORIZED-PROMPT"));
+  assert.deepEqual(recordsIn([stage()]).map(r=>r.payload.content),["FIRST-AUTHORIZED-PROMPT"]);
+});
