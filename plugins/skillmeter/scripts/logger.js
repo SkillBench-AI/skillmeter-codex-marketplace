@@ -1544,8 +1544,15 @@ function getTelemetryOptIn(cwd) {
   // Preserve legacy subdirectory opt-outs; a child cannot widen root consent.
   while (current !== root) {
     const content = readSettingsFile(current);
-    if (content?.skillmeter?.telemetry === false) return false;
-    if (fs.existsSync(path.join(current, SETTINGS_RELATIVE)) && !content) return null;
+    if (fs.existsSync(path.join(current, SETTINGS_RELATIVE))) {
+      if (!content || typeof content !== "object" || Array.isArray(content)) return null;
+      const settings = content.skillmeter;
+      if (settings !== undefined && (
+        !settings || typeof settings !== "object" || Array.isArray(settings) ||
+        (settings.telemetry !== undefined && typeof settings.telemetry !== "boolean")
+      )) return null;
+      if (settings?.telemetry === false) return false;
+    }
     const parent = path.dirname(current);
     if (parent === current) return null;
     current = parent;
