@@ -12,14 +12,14 @@ This change does not alter Codex's credential lifecycle or expiry behavior.
 
 | Boundary | Codex behavior / remaining difference from Claude |
 | --- | --- |
-| Repository choice | Stored at the checkout's Git root in `.codex/settings.local.json`. Subdirectory commands use the same file. Separate clones and linked worktrees still need separate choices; canonical identity and the shared policy store remain follow-up work. |
+| Repository choice | Stored at the checkout's Git root in `.codex/settings.local.json`. Subdirectory commands use the same file. Clones and linked worktrees use Claude's canonical GitHub identity for shared restrictions; positive grants still require a local choice pending migration agreement. |
 | Legacy subdirectory choices | A subdirectory opt-out continues to restrict capture there. A subdirectory opt-in cannot authorize the repository. Nested Git repositories have independent choices. |
-| Organization consent | Existing signed-in identity scope and optional narrowing remain. Claude's separate organization authorization record is not adopted here. |
-| Revocation and queued data | Repository disable revokes indexed queued events and transcript chunks while preserving cursors and consent journals. Mixed event batches retain permitted repositories. A durable local generation prevents disable/re-enable from restoring revoked payloads. In-flight requests can finish; busy cleanup retries on drain. Unattributed legacy events retain their previous behavior. |
-| Disabled transcript intervals | A durable byte-range journal excludes the prefix at first observation and ranges observed while capture is disabled. Repository controls update known active sources; local global controls and shared global `decided_at` changes also record transitions. Staging and baseline resets use the same exclusions. Shared repository and organization transitions remain a gap. |
+| Organization consent | Signed-in identity scope and optional narrowing remain. When shared policy exists, its organization and repository records must both be valid and enabled. Shared ON never overrides local OFF or an unset local choice. |
+| Revocation and queued data | Repository disable revokes indexed queued events and transcript chunks while preserving cursors and consent journals. Mixed event batches retain permitted repositories. A durable local generation prevents disable/re-enable from restoring revoked payloads. Observed shared OFF also revokes indexed payloads across clones/worktrees; shared decision changes are rechecked before delivery. In-flight requests can finish; busy cleanup retries on drain. Unattributed legacy events retain their previous behavior. |
+| Disabled transcript intervals | A durable byte-range journal excludes the prefix at first observation and ranges observed while capture is disabled. Repository controls update known active sources; local global controls and shared global `decided_at` changes also record transitions. Staging and baseline resets use the same exclusions. Relevant shared repository and organization decisions also close uncertain intervals. |
 | Global pause | Either the legacy Codex pause or shared `global.enabled: false` stops new capture and transmission while retaining queued data. Codex reads the shared policy without writing it; `enable --global` clears only the legacy pause and reports any shared blocker. |
 
-This is a capture-gate change, not complete parity with
+This is restrictive shared-policy compatibility, not complete parity with
 [Claude's collection contract](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/30659641c0ecd7aa4f1b41d8624ad0620d9eab93/skillmeter/README.md#collection-scope).
 Do not present it as retroactive consent isolation or enable a new surface's
 uploads on this basis. Work-specific consent and delivery are separate.
@@ -61,7 +61,7 @@ does not close intervals: another repository's choice must not discard this
 repository's authorized records. Writers that restore an identical global record
 leave no transition evidence; those unobserved cycles cannot be detected.
 
-## Shared global policy compatibility
+## Shared policy compatibility
 
 Codex reads schema version 1 from `telemetry-policy.json` under
 `SKILLMETER_STATE_DIR`, or `~/.skillbench` (`~/.skillbench-dev` when
@@ -69,11 +69,14 @@ Codex reads schema version 1 from `telemetry-policy.json` under
 [policy store](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/30659641c0ecd7aa4f1b41d8624ad0620d9eab93/skillmeter/scripts/lib/telemetry-store.js).
 Global OFF retains queues, consistent with Claude's
 [collection contract](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/30659641c0ecd7aa4f1b41d8624ad0620d9eab93/skillmeter/README.md#collection-scope).
-Organization/repository OFF purge requirements in the
-[token lifecycle ADR](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/30659641c0ecd7aa4f1b41d8624ad0620d9eab93/docs/adr/001-license-token-lifecycle.md)
-remain separate work.
+Organization/repository OFF purges indexed payloads while retaining privacy
+cursors, following the
+[token lifecycle ADR](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/30659641c0ecd7aa4f1b41d8624ad0620d9eab93/docs/adr/001-license-token-lifecycle.md);
+legacy unattributed event rows retain their previous behavior.
 
-A missing policy preserves Codex's existing explicit local consent rules. Shared
+A policy that has never been observed preserves Codex's existing explicit local
+consent rules. Removing a previously observed shared policy holds data and
+blocks capture until it is readable again. Shared
 ON does not grant repository consent or clear a legacy pause. Existing malformed,
 unreadable or unsupported-version policy pauses capture and delivery without
 rewriting it. This conservative read behavior differs from Claude's permissive
@@ -81,19 +84,38 @@ normalization and needs agreement before claiming full malformed-policy parity.
 Use the shared policy controls to resume a shared pause; Codex's status identifies
 that blocker instead of claiming uploads are enabled.
 
-Run `node --test plugins/skillmeter/test/shared-global-policy.test.js` for the
-implemented global boundary. Run `node --test compatibility/shared-policy.cjs`
-for the remaining repository/organization contract. The latter deliberately
-returns nonzero while those gaps remain, is outside the default regression suite,
-and must pass before claiming shared-policy parity. Its synthetic cases cover
-shared OFF, clones, linked worktrees and revocation of already queued payloads.
-Migration precedence between shared and legacy choices is not defined here.
+Run the shared boundary tests:
 
+```sh
+node --test plugins/skillmeter/test/shared-global-policy.test.js plugins/skillmeter/test/shared-repository-policy.test.js
+```
+
+The former standalone audit, `node --test compatibility/shared-policy.cjs`, now
+runs the same repository fixtures included in the default CI suite.
+
+Canonical identity parsing follows Claude's pinned `repo-scope.js`: matching
+origin wins, otherwise one unambiguous matching repository is required. SSH
+aliases and Git `insteadOf` rewrites are supported. Codex retains its existing
+stricter rejection of empty/unreadable `commondir`; long-lived processes reload
+remote-resolution configuration so a changed alias is not cached as permission.
+
+Only an observed OFF deletes queued data. A changed positive decision may be an
+unobserved OFF/ON cycle or just reaffirmation: older stamped payloads are held,
+not uploaded or deleted. Capture starts a new consent interval; resets cannot
+reconstruct the uncertain prefix. Unrelated repository decisions do not affect
+this queue. Requests already in flight can finish. Background drains and blocked
+hooks reconcile revocations, including quarantined and active event data.
+
+Migration precedence and shared positive-grant adoption remain undecided. Codex
+controls still write local choices only. This adapter does not rewrite the shared
+policy or change sign-in; use the shared policy controls for shared choices.
+Malformed-policy behavior and ambiguous historical payload handling need canonical
+ADR agreement before claiming full cross-client parity.
 
 ## Queued repository data
 
 The local queue adapter follows Claude's
-[payload-removal and cursor-retention contract](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/9c7e33e86f862d59ff20001ff52cd639f637c6b4/skillmeter/scripts/lib/repository-queue.js).
+[payload-removal and cursor-retention contract](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/30659641c0ecd7aa4f1b41d8624ad0620d9eab93/skillmeter/scripts/lib/repository-queue.js).
 Codex uses a private routing index because its existing event files can contain
 multiple repositories. Hook records carry a local generation, removed before
 upload. The index stores checkout paths locally; it is not sent to the collector.
@@ -116,8 +138,8 @@ capture with a diagnostic, and the control command reports that it needs a retry
 Global pause retains payloads. Explicit repository disable during a global pause
 still revokes that repository. Direct settings edits enforce the current capture
 and delivery gate but do not supply the durable off/on generation recorded by the
-CLI. Unknown legacy event ownership, separate organization consent and shared
-policy migration are not implemented here. Unattributed legacy batches keep their
+CLI. Unknown legacy event ownership, shared-policy controls and migration remain
+separate work. Unattributed legacy batches keep their
 existing delivery behavior; this is not a guarantee of retroactive isolation.
 
 Run `node --test plugins/skillmeter/test/queue-revocation.test.js` for mixed-batch,

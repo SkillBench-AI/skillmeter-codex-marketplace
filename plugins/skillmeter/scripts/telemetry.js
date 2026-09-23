@@ -11,6 +11,7 @@ const {
   setTelemetryGloballyDisabled,
   SETTINGS_RELATIVE,
   getRepoScopeDecision,
+  getRepositoryPolicyDecision,
   resolveTelemetryGate,
   isLicenseRejected,
   listPendingTranscripts,
@@ -57,6 +58,11 @@ function capturePolicyLine() {
   if (shared) return shared;
   if (getTelemetryGloballyDisabled()) return "globally disabled";
   const scope = getRepoScopeDecision(cwd);
+  const sharedRepository = getRepositoryPolicyDecision(cwd);
+  if (sharedRepository.reason === "shared_policy_missing") return "paused; previously observed shared policy is missing";
+  if (sharedRepository.reason === "routing_unavailable") return "paused; repository routing unavailable";
+  if (scope.allowed && sharedRepository.revoked) return "disabled by shared organization or repository policy";
+  if (scope.allowed && !sharedRepository.allowed) return "paused; shared organization and repository choices must be valid and enabled";
   const gate = resolveTelemetryGate(getTelemetryOptIn(cwd), scope.allowed);
   if (gate.mode === "opted_out") return "disabled for this project";
   if (!scope.allowed) return `excluded (${scope.classification})`;
@@ -109,7 +115,7 @@ switch (action) {
       process.stderr.write(`SkillMeter: Repository choice saved for ${projectRoot}\n`);
       process.stderr.write(`           (saved to ${SETTINGS_RELATIVE}; scope and global pause still apply)\n`);
       if (getTelemetryOptIn(cwd) !== true) {
-        process.stderr.write("SkillMeter: A subdirectory setting still blocks capture here; review its telemetry setting.\n");
+        process.stderr.write(`SkillMeter: Capture remains blocked: ${capturePolicyLine()}\n`);
       }
       if (getTelemetryGloballyDisabled()) {
         process.stderr.write(
