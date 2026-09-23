@@ -77,8 +77,12 @@ function saveRepositoryChoice(value) {
   try {
     saveTelemetryOptIn(cwd, value);
     return true;
-  } catch {
-    process.stderr.write(`SkillMeter: Could not update ${SETTINGS_RELATIVE}; check its JSON and file permissions.\n`);
+  } catch (error) {
+    if (error.message === "repository-routing-busy") {
+      process.stderr.write("SkillMeter: Repository controls are busy; retry this command.\n");
+    } else {
+      process.stderr.write(`SkillMeter: Could not update ${SETTINGS_RELATIVE}; check local routing state, JSON and file permissions.\n`);
+    }
     process.exitCode = 1;
     return false;
   }

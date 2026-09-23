@@ -21,23 +21,43 @@ function createRepositoryQueue(root, salt, allowed) {
     }
     catch (error) { if (error.code === "ENOENT") return null; throw error; }
   }
-  function register(cwd, repoRoot, revoke = false) {
+  function acquireRoutingLock(file) {
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const release = queue.acquireLock(file);
+      if (release) return release;
+      if (attempt < 4) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 25);
+    }
+    throw new Error("repository-routing-busy");
+  }
+  function register(cwd, repoRoot, revoke = false, prepareConsent) {
     fs.mkdirSync(index, { recursive: true, mode: 0o700 });
     const canonicalRoot = canonical(repoRoot), id = key(canonicalRoot), file = path.join(index, `${id}.json`);
-    const release = queue.acquireLock(`${file}.lock`);
-    if (!release) throw new Error("repository-routing-busy");
+    const release = acquireRoutingLock(`${file}.lock`);
     try {
       const state = read(id) || { repoRoot: canonicalRoot, epoch: 0, directories: {} };
       if (state.repoRoot !== canonicalRoot) throw new Error("repository-routing-mismatch");
+      // Prepare/validate settings under the same lock as registration. Publish
+      // the generation and choice before another hook can acquire this lock.
+      const publishConsent = prepareConsent?.();
+      const canonicalCwd = canonical(cwd);
+      if (!revoke && !publishConsent && state.directories[key(cwd)] === path.resolve(cwd) &&
+          state.directories[key(canonicalCwd)] === canonicalCwd && read(key(repoRoot))) return state;
       state.directories[key(cwd)] = path.resolve(cwd);
-      state.directories[key(canonical(cwd))] = canonical(cwd);
+      state.directories[key(canonicalCwd)] = canonicalCwd;
       if (revoke) state.epoch = crypto.randomUUID();
       queue.writeDurable(file, JSON.stringify(state));
       if (key(repoRoot) !== id) queue.writeDurable(path.join(index, `${key(repoRoot)}.json`), JSON.stringify({ canonical: id }));
+      publishConsent?.();
       return state;
     } finally { release(); }
   }
-  function epoch(repoRoot) { return read(key(canonical(repoRoot)))?.epoch || 0; }
+  function epoch(repoRoot) {
+    if (!fs.existsSync(index)) return 0;
+    const id = key(canonical(repoRoot));
+    const release = acquireRoutingLock(path.join(index, `${id}.json.lock`));
+    try { return read(id)?.epoch || 0; }
+    finally { release(); }
+  }
   function eventRoute(data) {
     const state = read(data?.repo_root);
     return state ? { epoch: state.epoch } : undefined;
@@ -49,7 +69,7 @@ function createRepositoryQueue(root, salt, allowed) {
   // from a session ID. New indexed rows with missing routing state are held.
   function filter(bytes) {
     const kept = [], wire = [];
-    let dropped = false;
+    let dropped = false, held = false;
     for (const line of bytes.toString().split("\n").filter(Boolean)) {
       let record;
       try { record = JSON.parse(line); } catch { kept.push(line); wire.push(line); continue; }
@@ -59,10 +79,11 @@ function createRepositoryQueue(root, salt, allowed) {
       if (state) {
         const cwd = state.directories[record.data.cwd];
         if (!cwd) return null;
-        if ((record._queue?.epoch || 0) !== state.epoch || !allowed(cwd)) {
+        if ((record._queue?.epoch || 0) !== state.epoch) {
           dropped = true;
           continue;
         }
+        if (!allowed(cwd)) held = true;
       }
       kept.push(line);
       delete record._queue;
@@ -70,7 +91,7 @@ function createRepositoryQueue(root, salt, allowed) {
     }
     return {
       kept: dropped ? (kept.length ? kept.join("\n") + "\n" : "") : bytes.toString(),
-      wire: wire.length ? wire.join("\n") + "\n" : "",
+      wire: held ? null : (wire.length ? wire.join("\n") + "\n" : ""),
     };
   }
   function pruneFile(file) {

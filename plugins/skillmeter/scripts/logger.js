@@ -49,8 +49,10 @@ const TRANSCRIPTS_PENDING_DIR = path.join(LOG_DIR, "transcripts", "pending");
 const TRANSCRIPT_CHUNKS_DIR = path.join(LOG_DIR, "transcripts", "chunks-v1");
 const TRANSCRIPT_CAPTURES_DIR = path.join(LOG_DIR, "transcripts", "captures-v1");
 
-const repositoryQueue = createRepositoryQueue(LOG_DIR, getOrCreateHashSalt, cwd =>
-  resolveTelemetryGate(getTelemetryOptIn(cwd), getRepoScopeDecision(cwd).allowed).capture);
+const repositoryQueue = createRepositoryQueue(LOG_DIR, getOrCreateHashSalt, cwd => {
+  credstore.refreshFromDisk();
+  return resolveTelemetryGate(getTelemetryOptIn(cwd), getRepoScopeDecision(cwd).allowed).capture;
+});
 
 const AGENT_NAME = "codex";
 
@@ -608,7 +610,7 @@ function transferAuthorizedEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEO
   let filtered;
   try { filtered = repositoryQueue.pruneFile(logFile); }
   catch { console.error("[skillmeter] Event delivery held; repository routing unavailable"); }
-  if (!filtered) return Promise.resolve("held");
+  if (!filtered || filtered.wire === null) return Promise.resolve("held");
   if (!filtered.wire) return Promise.resolve("skip");
   const compressed = zlib.gzipSync(filtered.wire);
 
@@ -665,7 +667,7 @@ function transcriptScope(cwd, token, observeOnly = false) {
   token = token || getLicenseTokenUncached();
   if (!token || (!observeOnly && isJwtExpired(token))) return null;
   const decision = getRepoScopeDecision(cwd);
-  if (!decision.repoRoot || (!observeOnly && (!decision.allowed || !resolveTelemetryGate(getTelemetryOptIn(cwd), true).capture))) return null;
+  if (!decision.repoRoot) return null;
   const salt = getOrCreateHashSalt(), deviceId = getDeviceId();
   if (!salt || !deviceId) return null;
   const claims = decodeJwtPayload(token);
@@ -675,6 +677,7 @@ function transcriptScope(cwd, token, observeOnly = false) {
   // deliver one principal's queued transcript as another user.
   const owner = transcriptQueue.hmac(salt, JSON.stringify([claims.iss, claims.aud, claims.sub, identity || token]));
   const queueEpoch = repositoryQueue.epoch(decision.repoRoot);
+  if (!observeOnly && (!decision.allowed || !resolveTelemetryGate(getTelemetryOptIn(cwd), true).capture)) return null;
   return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner, queueEpoch,
     consentStamp: owner + decision.repoRoot + (queueEpoch || "") };
 }
@@ -1593,21 +1596,20 @@ function getTelemetryOptIn(cwd) {
 function saveTelemetryOptIn(cwd, value) {
   if (typeof value !== "boolean") throw new Error("Telemetry choice must be boolean.");
   const settingsPath = path.join(findGitRoot(cwd) || cwd, SETTINGS_RELATIVE);
-  let content = {};
-  if (fs.existsSync(settingsPath)) {
-    content = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-    if (!content || typeof content !== "object" || Array.isArray(content) ||
-        (content.skillmeter !== undefined && (!content.skillmeter || typeof content.skillmeter !== "object" || Array.isArray(content.skillmeter)))) {
-      throw new Error("Invalid project settings; repair the file before changing consent.");
-    }
-  }
-  // Persist the revocation before changing consent. Old queued data stays
-  // revoked even if enable follows while a drain owns the queue lock.
   const repoRoot = findGitRoot(cwd) || path.resolve(cwd);
-  repositoryQueue.register(cwd, repoRoot, !value);
-  content.skillmeter = { ...content.skillmeter, telemetry: value };
-  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-  fs.writeFileSync(settingsPath, JSON.stringify(content, null, 2) + "\n");
+  repositoryQueue.register(cwd, repoRoot, !value, () => {
+    let content = {};
+    if (fs.existsSync(settingsPath)) {
+      content = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+      if (!content || typeof content !== "object" || Array.isArray(content) ||
+          (content.skillmeter !== undefined && (!content.skillmeter || typeof content.skillmeter !== "object" || Array.isArray(content.skillmeter)))) {
+        throw new Error("Invalid project settings; repair the file before changing consent.");
+      }
+    }
+    content.skillmeter = { ...content.skillmeter, telemetry: value };
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    return () => transcriptQueue.writeDurable(settingsPath, JSON.stringify(content, null, 2) + "\n");
+  });
   observeKnownTranscriptConsent(repoRoot);
   if (!value) {
     sealEventLog();
@@ -1709,7 +1711,7 @@ async function runHook(eventName, buildData, options = {}) {
     return exit(0);
   }
 
-  const cwd = input.cwd || process.cwd();
+  const cwd = path.resolve(input.cwd || process.cwd());
   try {
     for (const source of collectTranscriptPaths(input, { discover: false })) {
       observeTranscriptConsent(source, cwd);
@@ -1745,7 +1747,12 @@ async function runHook(eventName, buildData, options = {}) {
     return exit(0);
   }
 
-  const route = repositoryQueue.register(cwd, repoScopeDecision.repoRoot);
+  let route;
+  try { route = repositoryQueue.register(cwd, repoScopeDecision.repoRoot); }
+  catch {
+    console.error(`[skillmeter] ${eventName}: skipped (repository routing unavailable)`);
+    return exit(0);
+  }
   if (!resolveTelemetryGate(getTelemetryOptIn(cwd), getRepoScopeDecision(cwd).allowed).capture) return exit(0);
   const ctx = { hashSalt, cwd, sanitizeToolData, getTranscriptId };
   const eventData = buildData ? buildData(input, ctx) : {};

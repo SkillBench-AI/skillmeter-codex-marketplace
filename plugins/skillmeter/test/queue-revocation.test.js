@@ -248,3 +248,92 @@ test("a symlink checkout alias shares the revocation boundary", () => {
   assert.equal(fs.existsSync(sealed), false);
   assert.equal(fs.existsSync(chunk), false);
 });
+
+test("a hook at the disable settings-write boundary cannot inherit the revoked generation", async () => {
+  const settings = path.join(repos.a, logger.SETTINGS_RELATIVE);
+  const write = fs.writeFileSync, rename = fs.renameSync;
+  let snapshot, injected = false;
+  const intercept = () => {
+    if (injected) return;
+    injected = true;
+    // The child runs the hook's actual register + consent check while the
+    // control process is paused immediately before publishing its setting.
+    snapshot = JSON.parse(execFileSync(process.execPath, ["-e", `
+      const logger = require(process.argv[1]);
+      const { createRepositoryQueue } = require(process.argv[2]);
+      const cwd = process.argv[3];
+      const routing = createRepositoryQueue(logger.LOG_DIR, logger.getOrCreateHashSalt, () => true);
+      try {
+        const route = routing.register(cwd, logger.findGitRoot(cwd));
+        const allowed = logger.resolveTelemetryGate(logger.getTelemetryOptIn(cwd), logger.getRepoScopeDecision(cwd).allowed).capture;
+        if (allowed) {
+          logger.observeTranscriptConsent(process.argv[4], cwd);
+          require("fs").appendFileSync(process.argv[4], JSON.stringify({type:"response_item",payload:{type:"message",role:"user",content:"transition transcript"}}) + "\\n");
+          logger.stageTranscriptForUpload(process.argv[4], { cwd });
+        }
+        process.stdout.write(JSON.stringify(allowed ? { epoch: route.epoch } : null));
+      } catch (error) {
+        if (error.message !== "repository-routing-busy") throw error;
+        process.stdout.write("null");
+      }
+    `, path.resolve(__dirname, "../scripts/logger.js"), path.resolve(__dirname, "../scripts/lib/repository-queue.js"), repos.a, source("a")],
+    { env: process.env, encoding: "utf8", timeout: 5000 }));
+  };
+  fs.writeFileSync = function(file, ...args) {
+    if (file === settings) intercept();
+    return write.call(this, file, ...args);
+  };
+  fs.renameSync = function(from, to) {
+    if (to === settings) intercept();
+    return rename.call(this, from, to);
+  };
+  try { logger.saveTelemetryOptIn(repos.a, false); }
+  finally { fs.writeFileSync = write; fs.renameSync = rename; }
+  assert.equal(injected, true, "must exercise the settings publication boundary");
+  if (snapshot) {
+    logger.logInfo("Stop", "late-hook", {
+      cwd: logger.hashHmac(repos.a, credentials.hash_salt),
+      repo_root: logger.hashHmac(repos.a, credentials.hash_salt),
+    }, credentials.device_id, snapshot);
+  }
+  control("a", "enable");
+  const sealed = logger.sealEventLog(), received = [];
+  global.fetch = async (_, options) => { received.push(...decode(options.body)); return { ok: true }; };
+  if (sealed) await logger.processSealedBatch(sealed, endpoint, 1000);
+  await logger.drainPendingTranscripts(endpoint, 1000);
+  assert.deepEqual(received, [], "re-enable cannot resurrect a hook or transcript admitted during disable");
+});
+
+test("temporary missing organization authorization retains events for recovery", async () => {
+  event("a"); const sealed = logger.sealEventLog(), bytes = fs.readFileSync(sealed);
+  fs.writeFileSync(store, JSON.stringify({ ...credentials, allowed_github_orgs: [] }));
+  let blockedCalls = 0;
+  global.fetch = async () => { blockedCalls++; return { ok: false, status: 503 }; };
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "held");
+  assert.equal(blockedCalls, 0);
+  assert.deepEqual(fs.readFileSync(sealed), bytes);
+  fs.writeFileSync(store, JSON.stringify(credentials));
+  let calls = 0;
+  global.fetch = async () => { calls++; return { ok: true }; };
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "sent");
+  assert.equal(calls, 1);
+});
+
+
+test("missing credentials retain queued events without an upload or retry charge", async () => {
+  event("a"); const sealed = logger.sealEventLog(), bytes = fs.readFileSync(sealed);
+  fs.writeFileSync(store, JSON.stringify({ device_id: credentials.device_id, hash_salt: credentials.hash_salt }));
+  let calls = 0;
+  global.fetch = async () => { calls++; return { ok: false, status: 503 }; };
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "auth");
+  assert.equal(calls, 0);
+  assert.deepEqual(fs.readFileSync(sealed), bytes);
+  assert.equal(fs.existsSync(`${sealed}.meta`), false);
+});
+
+test("revocation removes A even when B's delivery authorization is temporarily unavailable", () => {
+  event("a"); event("b"); const sealed = logger.sealEventLog();
+  fs.writeFileSync(path.join(repos.b, logger.SETTINGS_RELATIVE), "{}");
+  control("a", "disable");
+  assert.deepEqual(fs.readFileSync(sealed, "utf8").trim().split("\n").map(JSON.parse).map(r => r.session_id), ["synthetic-b"]);
+});

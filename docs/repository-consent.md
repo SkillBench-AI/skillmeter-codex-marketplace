@@ -72,7 +72,11 @@ upload. The index stores checkout paths locally; it is not sent to the collector
 Symlink aliases share a generation, while separate checkouts retain separate
 consent choices. Every event delivery and retry checks known repository consent.
 Missing or corrupt routing for new indexed events holds the batch without using
-its retry budget. Transcript delivery also checks its captured generation.
+its retry budget. Temporary authorization failures also retain payloads; only an
+explicit generation change deletes indexed events. Transcript delivery also checks
+its captured generation. Repository controls publish the generation and choice
+under the registration lock. Lock retries are bounded; persistent contention skips
+capture with a diagnostic, and the control command reports that it needs a retry.
 
 Global pause retains payloads. Explicit repository disable during a global pause
 still revokes that repository. Direct settings edits enforce the current capture
