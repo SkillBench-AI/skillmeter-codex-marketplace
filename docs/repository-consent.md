@@ -15,7 +15,7 @@ This change does not alter Codex's credential lifecycle or expiry behavior.
 | Repository choice | Stored at the checkout's Git root in `.codex/settings.local.json`. Subdirectory commands use the same file. Separate clones and linked worktrees still need separate choices; canonical identity and the shared policy store remain follow-up work. |
 | Legacy subdirectory choices | A subdirectory opt-out continues to restrict capture there. A subdirectory opt-in cannot authorize the repository. Nested Git repositories have independent choices. |
 | Organization consent | Existing signed-in identity scope and optional narrowing remain. Claude's separate organization authorization record is not adopted here. |
-| Revocation and queued data | Disabling a repository stops new hooks and staging. Already queued event batches may still drain; queued transcripts remain subject to the existing send-time scope check. No repository purge is added. |
+| Revocation and queued data | Repository disable revokes indexed queued events and transcript chunks while preserving cursors and consent journals. Mixed event batches retain permitted repositories. A durable local generation prevents disable/re-enable from restoring revoked payloads. In-flight requests can finish; busy cleanup retries on drain. Unattributed legacy events retain their previous behavior. |
 | Disabled transcript intervals | A durable byte-range journal excludes the prefix at first observation and ranges observed while capture is disabled. Repository controls update known active sources; local global controls also record transitions. Staging and baseline resets use the same exclusions. Unknown transitions in another client remain a shared-policy gap. |
 | Global pause | Stops new capture and transmission while retaining queued data. Existing global controls and shared credential fields remain unchanged. |
 
@@ -51,11 +51,35 @@ excluded even if the user intended collection. Start a fresh session after opt-i
 and verify native startup timing before relying on complete capture. Settings
 revision changes also close unobserved intervals. The existing authentication
 generation closes sign-out/sign-in intervals even for the same principal; a
-normal token refresh preserves the generation and capture continuity. Already queued payloads are not
-purged or retroactively filtered by this change.
+normal token refresh preserves the generation and capture continuity. Repository
+revocation starts a new capture generation: server resets cannot reconstruct the
+pre-revocation prefix. Previously delivered remote data is not deleted.
 
 This is local interval enforcement, not a shared policy implementation. An
 external client toggling global consent off and on without an intervening Codex
 observation cannot be detected by the legacy boolean alone. Shared revisions and
-repository queue revocation remain follow-ups. No scoring or normalization
+cross-client revocation remain follow-ups. No scoring or normalization
 interpretation changes are included.
+
+
+## Queued repository data
+
+The local queue adapter follows Claude's
+[payload-removal and cursor-retention contract](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/9c7e33e86f862d59ff20001ff52cd639f637c6b4/skillmeter/scripts/lib/repository-queue.js).
+Codex uses a private routing index because its existing event files can contain
+multiple repositories. Hook records carry a local generation, removed before
+upload. The index stores checkout paths locally; it is not sent to the collector.
+Symlink aliases share a generation, while separate checkouts retain separate
+consent choices. Every event delivery and retry checks known repository consent.
+Missing or corrupt routing for new indexed events holds the batch without using
+its retry budget. Transcript delivery also checks its captured generation.
+
+Global pause retains payloads. Explicit repository disable during a global pause
+still revokes that repository. Direct settings edits enforce the current capture
+and delivery gate but do not supply the durable off/on generation recorded by the
+CLI. Unknown legacy event ownership, separate organization consent and shared
+policy migration are not implemented here. Unattributed legacy batches keep their
+existing delivery behavior; this is not a guarantee of retroactive isolation.
+
+Run `node --test plugins/skillmeter/test/queue-revocation.test.js` for mixed-batch,
+retry, cursor preservation, in-flight revocation and disable/re-enable checks.

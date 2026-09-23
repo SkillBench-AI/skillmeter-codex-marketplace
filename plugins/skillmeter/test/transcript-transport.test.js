@@ -350,7 +350,7 @@ test("repository disable/re-enable without hooks excludes the interval through a
   assert.equal(await upload(file), "sent");
   const reset = require("node:zlib").gunzipSync(requests[1].body).toString();
   assert.doesNotMatch(reset, /MUST-NOT-UPLOAD/);
-  assert.match(reset, /synthetic first message/);
+  assert.doesNotMatch(reset, /synthetic first message/, "a reset must not rebuild the pre-revocation prefix");
   assert.match(reset, /authorized after enable/);
 });
 

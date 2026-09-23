@@ -13,6 +13,7 @@ const zlib = require("zlib");
 const { sanitizeEventData, redactDeep } = require("./sanitizer");
 const credstore = require("./credstore");
 const transcriptQueue = require("./lib/transcript-delta");
+const { createRepositoryQueue } = require("./lib/repository-queue");
 const {
   getEndpointFromToken,
   getEndpointFromTokenAllowExpired,
@@ -47,6 +48,9 @@ const TRANSCRIPTS_PENDING_DIR = path.join(LOG_DIR, "transcripts", "pending");
 
 const TRANSCRIPT_CHUNKS_DIR = path.join(LOG_DIR, "transcripts", "chunks-v1");
 const TRANSCRIPT_CAPTURES_DIR = path.join(LOG_DIR, "transcripts", "captures-v1");
+
+const repositoryQueue = createRepositoryQueue(LOG_DIR, getOrCreateHashSalt, cwd =>
+  resolveTelemetryGate(getTelemetryOptIn(cwd), getRepoScopeDecision(cwd).allowed).capture);
 
 const AGENT_NAME = "codex";
 
@@ -558,10 +562,25 @@ function isPermanentHttpStatus(status) {
 //   "retry"  — transient failure (5xx / 408 / 429 / network / timeout).
 //   "auth"   — no valid license, or the edge rejected the token (401/402/403);
 //              the batch stays queued and its retry budget is untouched.
+//   "held"   — repository routing unavailable; retain without retry charge.
 //   "skip"   — nothing to do (missing file).
 // Standalone callers can ignore the value; processSealedBatch uses it to decide
 // between salvage, quarantine, and a bounded retry.
-function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) {
+async function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) {
+  if (!logFile || !fs.existsSync(logFile) || getTelemetryGloballyDisabled()) return "skip";
+  const release = transcriptQueue.acquireLock(`${logFile}.lock`);
+  if (!release) return "skip";
+  try {
+    return await transferAuthorizedEventLog(logFile, backendUrl, timeoutMs);
+  } finally {
+    release();
+    // A disable command may have encountered our live lock. Clean up after
+    // the request; an already-started request cannot be recalled.
+    repositoryQueue.purgeEvents();
+  }
+}
+
+function transferAuthorizedEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) {
   if (!logFile || !fs.existsSync(logFile)) return Promise.resolve("skip");
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Event log transfer skipped (telemetry globally disabled)`);
@@ -586,7 +605,12 @@ function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) {
   // JWT after a concurrent sign-in.
   const url = backendUrl || getBackendUrlForToken(token);
 
-  const compressed = zlib.gzipSync(fs.readFileSync(logFile));
+  let filtered;
+  try { filtered = repositoryQueue.pruneFile(logFile); }
+  catch { console.error("[skillmeter] Event delivery held; repository routing unavailable"); }
+  if (!filtered) return Promise.resolve("held");
+  if (!filtered.wire) return Promise.resolve("skip");
+  const compressed = zlib.gzipSync(filtered.wire);
 
   const markSent = () => {
     try { fs.renameSync(logFile, `${logFile}.sent`); } catch {}
@@ -650,11 +674,13 @@ function transcriptScope(cwd, token, observeOnly = false) {
   // Without a stable principal, token rotation cannot reuse this queue. Never
   // deliver one principal's queued transcript as another user.
   const owner = transcriptQueue.hmac(salt, JSON.stringify([claims.iss, claims.aud, claims.sub, identity || token]));
-  return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner, consentStamp: owner + decision.repoRoot };
+  const queueEpoch = repositoryQueue.epoch(decision.repoRoot);
+  return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner, queueEpoch,
+    consentStamp: owner + decision.repoRoot + (queueEpoch || "") };
 }
 function scopeStillAllowed(scope, token) {
   const current = transcriptScope(scope.cwd, token);
-  return current && ["repoRoot", "org", "deviceId", "owner"].every(k => current[k] === scope[k]);
+  return current && (current.queueEpoch || 0) === (scope.queueEpoch || 0) && ["repoRoot", "org", "deviceId", "owner"].every(k => current[k] === scope[k]);
 }
 // Local settings revisions identify transitions without depending on token
 // rotation. Shared policy storage and cross-client transitions are separate.
@@ -1057,7 +1083,7 @@ async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
   // payload was never judged, so the batch keeps its place in the queue and its
   // attempt counter is left untouched. A signed-out week must not quarantine a
   // batch the collector would happily accept.
-  if (outcome === "auth") return "auth";
+  if (outcome === "auth" || outcome === "held") return outcome;
 
   if (outcome === "poison") {
     const salv = salvageBatch(batchPath);
@@ -1070,7 +1096,7 @@ async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
         clearBatchMeta(batchPath);
         return "sent";
       }
-      if (retryOutcome === "retry" || retryOutcome === "auth") {
+      if (retryOutcome === "retry" || retryOutcome === "auth" || retryOutcome === "held") {
         // The salvaged batch was never judged on its merits — a transient
         // failure, or the license aged out between the two posts. Keep it.
         return retryOutcome;
@@ -1122,7 +1148,9 @@ async function drainFailedLogs(backendUrl, timeoutMs) {
 // One bounded recovery attempt per sweep. The durable reset request survives
 // process death, a missing raw source, consent changes and network failures.
 async function drainTranscriptDirectory(dir, send) {
-  await transcriptQueue.drainDirectory(dir, send);
+  transcriptQueue.purgeRevoked(dir, repositoryQueue.revokedScope);
+  try { await transcriptQueue.drainDirectory(dir, send); }
+  finally { transcriptQueue.purgeRevoked(dir, repositoryQueue.revokedScope); }
   const request = path.join(dir, "reset-request.json"), cursorFile = path.join(dir, "cursor.json");
   if (fs.existsSync(request) && fs.existsSync(cursorFile)) {
     const cursor = JSON.parse(fs.readFileSync(cursorFile, "utf8"));
@@ -1482,7 +1510,7 @@ function flushAndTransfer(input) {
   return Promise.resolve();
 }
 
-function logStructured(level, event, sessionId, data, deviceId) {
+function logStructured(level, event, sessionId, data, deviceId, route) {
   if (!deviceId) return;
 
   fs.mkdirSync(LOG_DIR, { recursive: true });
@@ -1495,6 +1523,7 @@ function logStructured(level, event, sessionId, data, deviceId) {
     device_id: deviceId,
     agent: AGENT_NAME,
     data,
+    _queue: route || repositoryQueue.eventRoute(data),
   };
 
   // Atomic single-write append so concurrent hook processes can't splice
@@ -1507,8 +1536,8 @@ function getTranscriptId(transcriptPath) {
   return path.basename(transcriptPath);
 }
 
-const logInfo = (event, sessionId, data, deviceId) =>
-  logStructured("info", event, sessionId, data, deviceId);
+const logInfo = (event, sessionId, data, deviceId, route) =>
+  logStructured("info", event, sessionId, data, deviceId, route);
 
 function readStdin() {
   return new Promise((resolve, reject) => {
@@ -1572,10 +1601,23 @@ function saveTelemetryOptIn(cwd, value) {
       throw new Error("Invalid project settings; repair the file before changing consent.");
     }
   }
+  // Persist the revocation before changing consent. Old queued data stays
+  // revoked even if enable follows while a drain owns the queue lock.
+  const repoRoot = findGitRoot(cwd) || path.resolve(cwd);
+  repositoryQueue.register(cwd, repoRoot, !value);
   content.skillmeter = { ...content.skillmeter, telemetry: value };
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
   fs.writeFileSync(settingsPath, JSON.stringify(content, null, 2) + "\n");
-  observeKnownTranscriptConsent(findGitRoot(cwd) || path.resolve(cwd));
+  observeKnownTranscriptConsent(repoRoot);
+  if (!value) {
+    sealEventLog();
+    let complete = repositoryQueue.purgeEvents();
+    for (const dir of transcriptQueue.queueDirectories(TRANSCRIPT_CHUNKS_DIR)) {
+      try { if (!transcriptQueue.purgeRevoked(dir, repositoryQueue.revokedScope)) complete = false; }
+      catch { complete = false; }
+    }
+    if (!complete) console.error("[skillmeter] Some local payload cleanup is deferred; queued data remains subject to delivery checks");
+  }
 }
 
 // In-context consent notice: printed to a Codex hook's stderr channel when a
@@ -1703,6 +1745,8 @@ async function runHook(eventName, buildData, options = {}) {
     return exit(0);
   }
 
+  const route = repositoryQueue.register(cwd, repoScopeDecision.repoRoot);
+  if (!resolveTelemetryGate(getTelemetryOptIn(cwd), getRepoScopeDecision(cwd).allowed).capture) return exit(0);
   const ctx = { hashSalt, cwd, sanitizeToolData, getTranscriptId };
   const eventData = buildData ? buildData(input, ctx) : {};
 
@@ -1732,7 +1776,7 @@ async function runHook(eventName, buildData, options = {}) {
     );
   }
 
-  logInfo(eventName, sessionId, data, deviceId);
+  logInfo(eventName, sessionId, data, deviceId, { epoch: route.epoch });
   console.error(
     `[skillmeter] ${eventName}: logged (session=${String(sessionId).slice(0, 8)}…)`
   );

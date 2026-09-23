@@ -75,7 +75,7 @@ test("explicit enable persists across hook processes; disable stops new capture"
   assert.equal(f.events().length, 2);
   f.control("disable");
   f.hook();
-  assert.equal(f.events().length, 2);
+  assert.equal(f.events().length, 0);
 });
 
 test("repository-root choice applies to hooks and controls in subdirectories", () => {
@@ -89,7 +89,7 @@ test("repository-root choice applies to hooks and controls in subdirectories", (
   assert.equal(f.events().length, 2);
   f.control("disable", subdir);
   f.hook(); f.hook(subdir);
-  assert.equal(f.events().length, 2);
+  assert.equal(f.events().length, 0);
 });
 
 test("parent consent does not enable an unselected nested repository", () => {

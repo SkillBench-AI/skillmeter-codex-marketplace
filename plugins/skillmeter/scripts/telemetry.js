@@ -110,7 +110,7 @@ switch (action) {
       process.stderr.write("SkillMeter: Pending uploads will remain queued until global telemetry is enabled\n");
     } else {
       if (!saveRepositoryChoice(false)) break;
-      process.stderr.write(`SkillMeter: New capture disabled for ${projectRoot}; previously queued data is not purged\n`);
+      process.stderr.write(`SkillMeter: New capture disabled for ${projectRoot}; queued repository payloads revoked (in-flight requests may finish)\n`);
     }
     break;
   case "status": {
