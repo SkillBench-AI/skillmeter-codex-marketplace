@@ -1,12 +1,14 @@
 # Codex sanitizer parity
 
 The on-device engine, rule table and path vocabulary follow
-[Claude ADR002](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/a50a38e98dc1302cb8a952adac00ee90e0d9f55a/docs/adr/002-two-stage-sanitization.md),
-policy **3.1.0**. Their bytes and the shared fixture corpora are pinned to Claude
-commit `a50a38e98dc1302cb8a952adac00ee90e0d9f55a` in
+[Claude ADR002](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/ac93536df5f7f272d6f9ececad5875ea3560b5ea/docs/adr/002-two-stage-sanitization.md),
+policy **3.1.1**. Their bytes and the shared fixture corpora are pinned to Claude
+commit `ac93536df5f7f272d6f9ececad5875ea3560b5ea` in
 [`source.json`](../plugins/skillmeter/test/fixtures/claude-3.1/source.json).
 `npm run check` verifies those hashes and runs the policy and queue tests.
 Update shared policy in Claude first, then refresh these files and the pin.
+Colliding keys receive record-local suffixes, with filename extensions preserved. These suffixes
+do not establish file identity across records.
 
 The Codex adapter handles differences in record format:
 

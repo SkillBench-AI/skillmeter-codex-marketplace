@@ -20,7 +20,7 @@ test("Codex records receive fresh policy metadata, preserving tool links and nes
   assert.equal(args.access_token, "[REDACTED_SECRET]");
   assert.equal(args.note, "[EMAIL]");
   assert.match(args.file_path, /\/src\/[a-f0-9]{12}\.ts$/);
-  assert.equal(out._sanitization.policyVersion, "3.1.0");
+  assert.equal(out._sanitization.policyVersion, "3.1.1");
   assert.equal(out._sanitization.secrets, 1);
   assert.equal(out._sanitization.pii, 1);
   assert.ok(out._sanitization.counts.path > 0);
