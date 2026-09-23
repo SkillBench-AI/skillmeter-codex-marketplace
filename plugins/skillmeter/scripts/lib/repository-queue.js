@@ -67,37 +67,45 @@ function createRepositoryQueue(root, salt, allowed) {
   }
   // Unknown legacy rows retain their existing behavior; do not infer a repo
   // from a session ID. New indexed rows with missing routing state are held.
-  function filter(bytes) {
-    const kept = [], wire = [];
-    let dropped = false, held = false;
+  function filter(bytes, authorize) {
+    const kept = [], wire = [], ready = [], held = [];
+    const decisions = new Map(), states = new Map();
+    let dropped = false;
     for (const line of bytes.toString().split("\n").filter(Boolean)) {
       let record;
-      try { record = JSON.parse(line); } catch { kept.push(line); wire.push(line); continue; }
-      if (!record || typeof record !== "object" || Array.isArray(record)) { kept.push(line); wire.push(line); continue; }
-      const state = read(record?.data?.repo_root);
-      if (record._queue && !state) return null;
+      try { record = JSON.parse(line); } catch { kept.push(line); ready.push(line); wire.push(line); continue; }
+      if (!record || typeof record !== "object" || Array.isArray(record)) { kept.push(line); ready.push(line); wire.push(line); continue; }
+      const id = record?.data?.repo_root;
+      if (!states.has(id)) states.set(id, read(id));
+      const state = states.get(id);
+      let blocked = Boolean(record._queue && !state);
       if (state) {
         const cwd = state.directories[record.data.cwd];
-        if (!cwd) return null;
-        if ((record._queue?.epoch || 0) !== state.epoch) {
+        if (!cwd) blocked = true;
+        else if ((record._queue?.epoch || 0) !== state.epoch) {
           dropped = true;
           continue;
+        } else if (authorize) {
+          if (!decisions.has(cwd)) decisions.set(cwd, allowed(cwd));
+          blocked = !decisions.get(cwd);
         }
-        if (!allowed(cwd)) held = true;
       }
       kept.push(line);
+      if (blocked) { held.push(line); continue; }
+      ready.push(line);
       delete record._queue;
       wire.push(JSON.stringify(record));
     }
+    const ndjson = lines => lines.length ? lines.join("\n") + "\n" : "";
     return {
-      kept: dropped ? (kept.length ? kept.join("\n") + "\n" : "") : bytes.toString(),
-      wire: held ? null : (wire.length ? wire.join("\n") + "\n" : ""),
+      kept: dropped ? ndjson(kept) : bytes.toString(),
+      ready: ndjson(ready), held: ndjson(held),
+      wire: !wire.length && held.length ? null : ndjson(wire),
     };
   }
-  function pruneFile(file) {
+  function pruneFile(file, authorize = true) {
     if (!fs.existsSync(file)) return null;
-    const bytes = fs.readFileSync(file), result = filter(bytes);
-    if (!result) return null;
+    const bytes = fs.readFileSync(file), result = filter(bytes, authorize);
     if (!result.kept) fs.unlinkSync(file);
     else if (result.kept !== bytes.toString()) queue.writeDurable(file, result.kept);
     return result;
@@ -109,7 +117,10 @@ function createRepositoryQueue(root, salt, allowed) {
       if (!/^events\.jsonl\.\d+(?:\.sent)?$/.test(name)) continue;
       const file = path.join(root, name), release = queue.acquireLock(`${file}.lock`);
       if (!release) { complete = false; continue; } // in-flight delivery rechecks on completion
-      try { if (!pruneFile(file)) complete = false; }
+      try {
+        const result = pruneFile(file, false);
+        if (!result || result.held) complete = false;
+      }
       catch { complete = false; console.error("[skillmeter] Repository payload cleanup deferred; routing unavailable"); }
       finally { release(); }
     }

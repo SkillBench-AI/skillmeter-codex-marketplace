@@ -14,6 +14,7 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-revocation-"));
 process.env.HOME = root;
 process.env.USERPROFILE = root;
 process.env.PLUGIN_DATA = path.join(root, "data");
+process.env.SKILLMETER_MAX_BATCH_RETRIES = "3";
 delete process.env.SKILLMETER_REPO_SCOPE_ORGS;
 delete process.env.SKILLMETER_BACKEND_URL;
 const store = path.join(root, ".skillbench/credentials.json");
@@ -336,4 +337,165 @@ test("revocation removes A even when B's delivery authorization is temporarily u
   fs.writeFileSync(path.join(repos.b, logger.SETTINGS_RELATIVE), "{}");
   control("a", "disable");
   assert.deepEqual(fs.readFileSync(sealed, "utf8").trim().split("\n").map(JSON.parse).map(r => r.session_id), ["synthetic-b"]);
+});
+
+function holdA() {
+  fs.writeFileSync(path.join(repos.a, logger.SETTINGS_RELATIVE), "{}");
+}
+function sessions(file) {
+  return fs.readFileSync(file, "utf8").trim().split("\n").map(JSON.parse).map(r => r.session_id);
+}
+
+test("temporary hold of A delivers B once and recovers A separately", async () => {
+  event("a"); event("b"); const sealed = logger.sealEventLog(); holdA();
+  const received = [];
+  global.fetch = async (_, options) => { received.push(...decode(options.body)); return { ok: true }; };
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "sent");
+  assert.deepEqual(received.map(r => r.session_id), ["synthetic-b"]);
+  assert.deepEqual(sessions(sealed), ["synthetic-a"]);
+  assert.equal(fs.existsSync(`${sealed}.sent`), false);
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "held");
+  control("a", "enable");
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "sent");
+  assert.deepEqual(received.map(r => r.session_id), ["synthetic-b", "synthetic-a"]);
+  assert.ok(received.every(r => !r._queue));
+});
+
+test("permanent rejection quarantines only the deliverable part of a mixed batch", async () => {
+  event("a"); event("b"); const sealed = logger.sealEventLog(); holdA();
+  global.fetch = async (_, options) => {
+    assert.deepEqual(decode(options.body).map(r => r.session_id), ["synthetic-b"]);
+    return { ok: false, status: 400 };
+  };
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "poison");
+  assert.deepEqual(sessions(sealed), ["synthetic-a"]);
+  assert.deepEqual(sessions(path.join(logger.LOG_DIR, "poison", path.basename(sealed))), ["synthetic-b"]);
+});
+
+test("expired mixed batch retains held records outside quarantine", async () => {
+  event("a"); event("b"); const sealed = logger.sealEventLog(); holdA();
+  const old = path.join(logger.LOG_DIR, `events.jsonl.${Date.now() - logger.BATCH_MAX_AGE_MS - 60000}`);
+  fs.renameSync(sealed, old);
+  assert.equal(await logger.processSealedBatch(old, endpoint, 1000), "poison");
+  assert.deepEqual(sessions(old), ["synthetic-a"]);
+  assert.deepEqual(sessions(path.join(logger.LOG_DIR, "poison", path.basename(old))), ["synthetic-b"]);
+  assert.equal(await logger.processSealedBatch(old, endpoint, 1000), "held");
+});
+
+test("salvage of a rejected mixed batch never uploads held records", async () => {
+  event("a"); event("b"); const sealed = logger.sealEventLog(); holdA();
+  fs.appendFileSync(sealed, "broken-json\n");
+  let calls = 0;
+  global.fetch = async (_, options) => {
+    if (++calls === 1) return { ok: false, status: 400 };
+    assert.deepEqual(decode(options.body).map(r => r.session_id), ["synthetic-b"]);
+    return { ok: true };
+  };
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "sent");
+  assert.equal(calls, 2);
+  assert.deepEqual(sessions(sealed), ["synthetic-a"]);
+});
+
+test("authorization is evaluated once per cwd per attempt and never during purge", () => {
+  event("a"); event("b"); event("a"); const sealed = logger.sealEventLog();
+  const { createRepositoryQueue } = require("../scripts/lib/repository-queue");
+  const calls = [];
+  const routing = createRepositoryQueue(logger.LOG_DIR, () => credentials.hash_salt, cwd => { calls.push(cwd); return true; });
+  routing.pruneFile(sealed);
+  assert.deepEqual(calls.sort(), [repos.a, repos.b].sort());
+  routing.purgeEvents();
+  assert.equal(calls.length, 2);
+  routing.pruneFile(sealed);
+  assert.equal(calls.length, 4, "the next delivery must recheck authorization");
+});
+
+test("retry exhaustion quarantines B while retaining held A", async () => {
+  event("a"); event("b"); const sealed = logger.sealEventLog(); holdA();
+  global.fetch = async () => ({ ok: false, status: 503 });
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "retry");
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "retry");
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "poison");
+  assert.deepEqual(sessions(sealed), ["synthetic-a"]);
+  assert.deepEqual(sessions(path.join(logger.LOG_DIR, "poison", path.basename(sealed))), ["synthetic-b"]);
+  control("a", "enable");
+  global.fetch = async () => ({ ok: true });
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "sent");
+});
+
+test("a newly eligible subset does not inherit earlier delivery failures", async () => {
+  event("a"); event("b"); const sealed = logger.sealEventLog(); holdA();
+  global.fetch = async () => ({ ok: false, status: 503 });
+  await logger.processSealedBatch(sealed, endpoint, 1000);
+  await logger.processSealedBatch(sealed, endpoint, 1000);
+  assert.equal(logger.readBatchMeta(sealed).attempts, 2);
+  control("a", "enable");
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "retry");
+  assert.equal(logger.readBatchMeta(sealed).attempts, 1);
+  assert.deepEqual(sessions(sealed), ["synthetic-a", "synthetic-b"]);
+});
+
+test("authentication rejection preserves both parts without spending retry budget", async () => {
+  event("a"); event("b"); const sealed = logger.sealEventLog(); holdA();
+  const bytes = fs.readFileSync(sealed);
+  global.fetch = async (_, options) => {
+    assert.deepEqual(decode(options.body).map(r => r.session_id), ["synthetic-b"]);
+    return { ok: false, status: 401 };
+  };
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "auth");
+  assert.deepEqual(fs.readFileSync(sealed), bytes);
+  assert.equal(logger.readBatchMeta(sealed).attempts, 0);
+});
+
+test("a concurrent drain cannot expire or modify a batch during delivery", async () => {
+  event("a"); event("b"); const sealed = logger.sealEventLog(); holdA();
+  global.fetch = async () => {
+    const bytes = fs.readFileSync(sealed);
+    const now = Date.now;
+    Date.now = () => now() + logger.BATCH_MAX_AGE_MS + 60000;
+    try { assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "held"); }
+    finally { Date.now = now; }
+    assert.deepEqual(fs.readFileSync(sealed), bytes);
+    return { ok: true };
+  };
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "sent");
+  assert.deepEqual(sessions(sealed), ["synthetic-a"]);
+});
+
+test("failed local acknowledgment preserves held records and reports a retry", async () => {
+  event("a"); event("b"); const sealed = logger.sealEventLog(); holdA();
+  const bytes = fs.readFileSync(sealed), rename = fs.renameSync;
+  global.fetch = async () => ({ ok: true });
+  fs.renameSync = function(from, to) {
+    if (to === sealed) throw new Error("synthetic disk failure");
+    return rename.call(this, from, to);
+  };
+  try { assert.equal(await logger.transferEventLog(sealed, endpoint, 1000), "retry"); }
+  finally { fs.renameSync = rename; }
+  assert.deepEqual(fs.readFileSync(sealed), bytes);
+  assert.equal(fs.existsSync(`${sealed}.sent`), false);
+});
+
+test("later quarantine of a recovered subset preserves the earlier rejected subset", async () => {
+  event("a"); event("b"); const sealed = logger.sealEventLog(); holdA();
+  global.fetch = async () => ({ ok: false, status: 400 });
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "poison");
+  control("a", "enable");
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "poison");
+  assert.equal(fs.existsSync(sealed), false);
+  assert.deepEqual(sessions(path.join(logger.LOG_DIR, "poison", path.basename(sealed))), ["synthetic-b", "synthetic-a"]);
+});
+
+test("global pause during rejection leaves salvage queued rather than quarantined", async () => {
+  event("b"); const sealed = logger.sealEventLog();
+  fs.appendFileSync(sealed, "broken-json\n");
+  let calls = 0;
+  global.fetch = async () => {
+    calls++;
+    logger.setTelemetryGloballyDisabled(true);
+    return { ok: false, status: 400 };
+  };
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "skip");
+  assert.equal(calls, 1);
+  assert.deepEqual(sessions(sealed), ["synthetic-b"]);
+  assert.equal(fs.existsSync(path.join(logger.LOG_DIR, "poison", path.basename(sealed))), false);
 });

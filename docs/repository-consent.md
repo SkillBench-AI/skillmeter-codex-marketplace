@@ -71,9 +71,15 @@ multiple repositories. Hook records carry a local generation, removed before
 upload. The index stores checkout paths locally; it is not sent to the collector.
 Symlink aliases share a generation, while separate checkouts retain separate
 consent choices. Every event delivery and retry checks known repository consent.
-Missing or corrupt routing for new indexed events holds the batch without using
-its retry budget. Temporary authorization failures also retain payloads; only an
-explicit generation change deletes indexed events. Transcript delivery also checks
+Missing or corrupt routing fails closed without using the retry budget.
+Temporarily unauthorized rows remain queued while permitted rows are delivered.
+Acknowledgment atomically retains the held portion at the original path; salvage,
+retry exhaustion and age quarantine operate only on the deliverable portion.
+Retry counts reset when that portion changes. The existing age limit still
+applies when a held record becomes eligible again. Failed local acknowledgment
+can repeat an upload, consistent with the queue's existing at-least-once delivery.
+Authorization is checked once per directory per attempt, never cached across
+attempts. Revocation cleanup skips authorization checks. Transcript delivery checks
 its captured generation. Repository controls publish the generation and choice
 under the registration lock. Lock retries are bounded; persistent contention skips
 capture with a diagnostic, and the control command reports that it needs a retry.
