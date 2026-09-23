@@ -152,3 +152,22 @@ test("a dangling shared policy symlink fails closed without replacing the link",
   assert.match(f.cli(['status']).stderr,/shared policy.*invalid/i);
   assert.equal(fs.lstatSync(f.policyFile).isSymbolicLink(),true);
 });
+
+for (const suffix of ['', '/nested/state']) {
+  test(`dangling shared state parent blocks capture: ${suffix || 'direct'}`, t => {
+    fixture(t).run(`
+      const link=path.join(process.env.HOME,'broken-state'); fs.symlinkSync('missing-directory',link);
+      process.env.SKILLMETER_STATE_DIR=link+${JSON.stringify(suffix)};
+      assert.equal(logger.getTelemetryGloballyDisabled(),true);
+    `);
+  });
+}
+
+test("a valid directory symlink with no policy retains absent-policy compatibility", t => {
+  fixture(t).run(`
+    const dir=path.join(process.env.HOME,'empty-state'); fs.mkdirSync(dir);
+    const link=path.join(process.env.HOME,'linked-state'); fs.symlinkSync(dir,link);
+    process.env.SKILLMETER_STATE_DIR=link;
+    assert.equal(logger.getTelemetryGloballyDisabled(),false);
+  `);
+});
