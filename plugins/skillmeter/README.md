@@ -150,3 +150,15 @@ For implementation details, see the [hook definitions](hooks/hooks.json),
 [upload code](scripts/logger.js), [sanitizer](scripts/sanitizer.js), and
 [transport and recovery guide](integration/README.md). Run `npm run check` from
 the repository root when changing plugin code.
+
+Queue revocation fixtures run with `node --test
+plugins/skillmeter/test/queue-revocation.test.js` from the repository root.
+They use synthetic repositories and intercepted requests to check repository
+payload purge, mixed event isolation, and retry authorization. Set
+`SKILLMETER_STRICT_QUEUE_CONTRACT=1` on the same command to make every assertion
+mandatory, including cases marked TODO. A green default run does not establish
+that TODO assertions pass. The reference is
+Claude's `scripts/lib/repository-queue.js`: repository revocation removes its
+queued payloads while preserving cursors, and global pause retains queues.
+Legacy batch migration and crash recovery during a future purge remain separate
+implementation decisions; these fixtures do not select a migration policy.
