@@ -190,3 +190,28 @@ test("a subdirectory opt-in cannot authorize the repository", () => {
   f.hook(subdir); f.hook();
   assert.deepEqual(f.events(), []);
 });
+
+for (const value of [42, [], { skillmeter: [] }, { skillmeter: null },
+  { skillmeter: { telemetry: "false" } }, { skillmeter: { telemetry: [] } },
+  { skillmeter: { telemetry: 42 } }, { skillmeter: { telemetry: null } }]) {
+  test(`malformed descendant settings block root consent: ${JSON.stringify(value)}`, () => {
+    const f = fixture(); f.control("enable");
+    const subdir = path.join(f.repo, "src");
+    fs.mkdirSync(path.join(subdir, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(subdir, ".codex/settings.local.json"), JSON.stringify(value));
+    f.hook(subdir);
+    assert.deepEqual(f.events(), []);
+    assert.equal(fs.existsSync(path.join(f.root, "spawns")), false);
+  });
+}
+
+for (const value of [{ unrelated: true }, { skillmeter: {} }, { skillmeter: { telemetry: true } }]) {
+  test(`valid descendant settings retain root consent: ${JSON.stringify(value)}`, () => {
+    const f = fixture(); f.control("enable");
+    const subdir = path.join(f.repo, "src");
+    fs.mkdirSync(path.join(subdir, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(subdir, ".codex/settings.local.json"), JSON.stringify(value));
+    f.hook(subdir);
+    assert.equal(f.events().length, 1);
+  });
+}
