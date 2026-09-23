@@ -54,7 +54,7 @@ cp.spawn = () => { require("fs").appendFileSync(process.env.TEST_SPAWNS, "spawn\
     const file = path.join(data, "logs/events.jsonl");
     return fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : [];
   };
-  return { root, repo, data, settings, credentialFile, saveCredentials, run, control, hook, events };
+  return { root, repo, data, settings, credentialFile, saveCredentials, preload, run, control, hook, events };
 }
 
 test("an unselected owned repository creates no events or capture hints", () => {
@@ -252,4 +252,41 @@ for (const spelling of ["relative", "trailing slash"]) {
     const states = fs.readdirSync(routing).filter(name => name.endsWith(".json")).map(name => JSON.parse(fs.readFileSync(path.join(routing, name))));
     assert.ok(states.some(state => state.directories?.[event.data.cwd] === resolved));
   });
+}
+
+for (const script of ["stop.js", "subagent_stop.js"]) {
+  for (const failure of ["busy", "missing-checkout"]) {
+    test(`${script} defers transcript capture if routing fails after the event is sealed: ${failure}`, () => {
+      const f = fixture(); f.control("enable");
+      // Inject at the real final flush boundary, after registration and the
+      // earlier guarded capture request succeeded. No hook logic is mocked.
+      fs.appendFileSync(f.preload, `
+const fs = require("node:fs"), path = require("node:path");
+const rename = fs.renameSync;
+fs.renameSync = function(from, to) {
+  const result = rename.call(this, from, to);
+  if (from === path.join(process.env.PLUGIN_DATA, "logs/events.jsonl")) {
+    ${failure === "busy" ? `
+    const id = require("node:crypto").createHmac("sha256", "synthetic-salt").update(fs.realpathSync(process.cwd())).digest("hex").slice(0, 12);
+    fs.writeFileSync(path.join(process.env.PLUGIN_DATA, "logs/repository-routing", id + ".json.lock"), JSON.stringify({pid:process.pid}));
+    ` : `
+    const realpath = fs.realpathSync;
+    fs.realpathSync = function(file, ...args) {
+      if (file === ${JSON.stringify(f.repo)}) throw Object.assign(new Error("synthetic missing checkout"), {code:"ENOENT"});
+      return realpath.call(this, file, ...args);
+    };
+    `}
+  }
+  return result;
+};
+`);
+      const result = f.run(script);
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), {});
+      assert.match(result.stderr, /routing unavailable.*capture deferred/);
+      assert.equal(fs.existsSync(path.join(f.data, "logs/transcripts/captures-v1")), true);
+      assert.deepEqual(fs.readdirSync(path.join(f.data, "logs/transcripts/captures-v1")), []);
+      assert.equal(fs.readdirSync(path.join(f.data, "logs")).filter(n => /^events\.jsonl\.\d+$/.test(n)).length, 1);
+    });
+  }
 }

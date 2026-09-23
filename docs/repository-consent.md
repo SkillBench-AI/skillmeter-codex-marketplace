@@ -79,7 +79,8 @@ Retry counts reset when that portion changes. The existing age limit still
 applies when a held record becomes eligible again. Failed local acknowledgment
 can repeat an upload, consistent with the queue's existing at-least-once delivery.
 Authorization is checked once per directory per attempt, never cached across
-attempts. Revocation cleanup skips authorization checks. Transcript delivery checks
+attempts. Revocation cleanup skips authorization checks and includes sent and quarantined
+event files under the original batch lock. Transcript delivery checks
 its captured generation. Repository controls publish the generation and choice
 under the registration lock. Lock retries are bounded; persistent contention skips
 capture with a diagnostic, and the control command reports that it needs a retry.

@@ -113,16 +113,23 @@ function createRepositoryQueue(root, salt, allowed) {
   function purgeEvents() {
     if (!fs.existsSync(root)) return true;
     let complete = true;
-    for (const name of fs.readdirSync(root)) {
-      if (!/^events\.jsonl\.\d+(?:\.sent)?$/.test(name)) continue;
-      const file = path.join(root, name), release = queue.acquireLock(`${file}.lock`);
-      if (!release) { complete = false; continue; } // in-flight delivery rechecks on completion
-      try {
-        const result = pruneFile(file, false);
-        if (!result || result.held) complete = false;
+    for (const directory of [root, path.join(root, "poison")]) {
+      if (!fs.existsSync(directory)) continue;
+      for (const name of fs.readdirSync(directory)) {
+        if (!/^events\.jsonl\.\d+(?:\.sent)?$/.test(name)) continue;
+        const file = path.join(directory, name);
+        // Delivery can rename or partition the source while holding its lock.
+        // Sent and quarantined copies belong to that same batch lock domain.
+        const batch = path.join(root, name.replace(/\.sent$/, ""));
+        const release = queue.acquireLock(`${batch}.lock`);
+        if (!release) { complete = false; continue; }
+        try {
+          const result = pruneFile(file, false);
+          if (!result || result.held) complete = false;
+        }
+        catch { complete = false; console.error("[skillmeter] Repository payload cleanup deferred; routing unavailable"); }
+        finally { release(); }
       }
-      catch { complete = false; console.error("[skillmeter] Repository payload cleanup deferred; routing unavailable"); }
-      finally { release(); }
     }
     return complete;
   }

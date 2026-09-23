@@ -686,7 +686,12 @@ function transcriptScope(cwd, token, observeOnly = false) {
   // Without a stable principal, token rotation cannot reuse this queue. Never
   // deliver one principal's queued transcript as another user.
   const owner = transcriptQueue.hmac(salt, JSON.stringify([claims.iss, claims.aud, claims.sub, identity || token]));
-  const queueEpoch = repositoryQueue.epoch(decision.repoRoot);
+  let queueEpoch;
+  try { queueEpoch = repositoryQueue.epoch(decision.repoRoot); }
+  catch {
+    console.error("[skillmeter] Transcript routing unavailable; capture deferred");
+    return null;
+  }
   if (!observeOnly && (!decision.allowed || !resolveTelemetryGate(getTelemetryOptIn(cwd), true).capture)) return null;
   return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner, queueEpoch,
     consentStamp: owner + decision.repoRoot + (queueEpoch || "") };

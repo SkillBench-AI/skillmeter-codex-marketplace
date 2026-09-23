@@ -499,3 +499,30 @@ test("global pause during rejection leaves salvage queued rather than quarantine
   assert.deepEqual(sessions(sealed), ["synthetic-b"]);
   assert.equal(fs.existsSync(path.join(logger.LOG_DIR, "poison", path.basename(sealed))), false);
 });
+
+test("repository disable removes its quarantined rows and preserves other repositories", async () => {
+  event("a"); event("b"); const sealed = logger.sealEventLog();
+  global.fetch = async () => ({ ok: false, status: 400 });
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "poison");
+  const poison = path.join(logger.LOG_DIR, "poison", path.basename(sealed));
+  control("a", "disable");
+  assert.deepEqual(sessions(poison), ["synthetic-b"]);
+  control("b", "disable");
+  assert.equal(fs.existsSync(poison), false);
+});
+
+test("quarantine purge shares the source lock and retries after it is released", async () => {
+  event("a"); const sealed = logger.sealEventLog();
+  global.fetch = async () => ({ ok: false, status: 400 });
+  await logger.processSealedBatch(sealed, endpoint, 1000);
+  const poison = path.join(logger.LOG_DIR, "poison", path.basename(sealed));
+  const bytes = fs.readFileSync(poison);
+  const release = queue.acquireLock(`${sealed}.lock`);
+  assert.ok(release);
+  try { control("a", "disable"); assert.deepEqual(fs.readFileSync(poison), bytes); }
+  finally { release(); }
+  const { createRepositoryQueue } = require("../scripts/lib/repository-queue");
+  const routing = createRepositoryQueue(logger.LOG_DIR, () => credentials.hash_salt, () => assert.fail("purge must not authorize"));
+  assert.equal(routing.purgeEvents(), true);
+  assert.equal(fs.existsSync(poison), false);
+});
