@@ -4,6 +4,25 @@ const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
+// ENOENT can mean a missing file or an unresolved link in any parent path.
+function policyPathIsAbsent(file) {
+  let current = file;
+  while (true) {
+    let entry;
+    try { entry = fs.lstatSync(current); }
+    catch (error) {
+      if (error.code !== "ENOENT") return false;
+      const parent = path.dirname(current);
+      if (parent === current) return false;
+      current = parent;
+      continue;
+    }
+    try { if (entry.isSymbolicLink()) fs.statSync(current); }
+    catch { return false; }
+    return current !== file;
+  }
+}
+
 // Read Claude's canonical global pause without migrating repository choices or
 // writing shared state. Daemons must observe changes made by another client.
 function readSharedGlobalPolicy() {
@@ -14,11 +33,8 @@ function readSharedGlobalPolicy() {
   try {
     raw = fs.readFileSync(file, "utf8");
   } catch (error) {
-    if (error.code === "ENOENT") {
-      try { fs.lstatSync(file); }
-      catch (statError) {
-        if (statError.code === "ENOENT") return { disabled: false, reason: "absent", boundary: null };
-      }
+    if (error.code === "ENOENT" && policyPathIsAbsent(file)) {
+      return { disabled: false, reason: "absent", boundary: null };
     }
     return { disabled: true, reason: "invalid", boundary: "invalid" };
   }
