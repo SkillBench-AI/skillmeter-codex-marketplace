@@ -88,7 +88,12 @@ function getTelemetryGloballyDisabled() {
 }
 
 function setTelemetryGloballyDisabled(disabled) {
-  return credstore.setTelemetryDisabled(disabled);
+  // Record even an off/on cycle with no intervening hook in this plugin.
+  fs.mkdirSync(TRANSCRIPT_CAPTURES_DIR, { recursive: true, mode: 0o700 });
+  transcriptQueue.writeDurable(path.join(TRANSCRIPT_CAPTURES_DIR, "global-boundary.json"), JSON.stringify(crypto.randomUUID()));
+  const result = credstore.setTelemetryDisabled(disabled);
+  observeKnownTranscriptConsent();
+  return result;
 }
 
 // License recovery tries /refresh before GitHub activation. SessionStart and
@@ -630,13 +635,13 @@ function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) {
 // Immutable sanitized chunks and their cursor commit before any network call.
 // Legacy TRANSCRIPTS_PENDING_DIR snapshots remain available for selected recovery.
 
-function transcriptScope(cwd, token) {
+function transcriptScope(cwd, token, observeOnly = false) {
   credstore.refreshFromDisk?.();
-  if (getTelemetryGloballyDisabled() || credstore.getSignedOut()) return null;
+  if ((!observeOnly && getTelemetryGloballyDisabled()) || credstore.getSignedOut()) return null;
   token = token || getLicenseTokenUncached();
-  if (!token || isJwtExpired(token)) return null;
+  if (!token || (!observeOnly && isJwtExpired(token))) return null;
   const decision = getRepoScopeDecision(cwd);
-  if (!decision.allowed || !resolveTelemetryGate(getTelemetryOptIn(cwd), true).capture) return null;
+  if (!decision.repoRoot || (!observeOnly && (!decision.allowed || !resolveTelemetryGate(getTelemetryOptIn(cwd), true).capture))) return null;
   const salt = getOrCreateHashSalt(), deviceId = getDeviceId();
   if (!salt || !deviceId) return null;
   const claims = decodeJwtPayload(token);
@@ -645,21 +650,65 @@ function transcriptScope(cwd, token) {
   // Without a stable principal, token rotation cannot reuse this queue. Never
   // deliver one principal's queued transcript as another user.
   const owner = transcriptQueue.hmac(salt, JSON.stringify([claims.iss, claims.aud, claims.sub, identity || token]));
-  return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner };
+  return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner, consentStamp: owner + decision.repoRoot };
 }
 function scopeStillAllowed(scope, token) {
   const current = transcriptScope(scope.cwd, token);
   return current && ["repoRoot", "org", "deviceId", "owner"].every(k => current[k] === scope[k]);
 }
+// Local settings revisions identify transitions without depending on token
+// rotation. Shared policy storage and cross-client transitions are separate.
+function transcriptConsentStamp(cwd) {
+  const root = findGitRoot(cwd) || path.resolve(cwd), revisions = [];
+  let current = path.resolve(cwd);
+  while (true) {
+    try {
+      const stat = fs.statSync(path.join(current, SETTINGS_RELATIVE), { bigint: true });
+      revisions.push([current, String(stat.ino), String(stat.mtimeNs), String(stat.ctimeNs)]);
+    } catch (error) { if (error.code !== "ENOENT") throw error; revisions.push([current, null]); }
+    if (current === root || path.dirname(current) === current) break;
+    current = path.dirname(current);
+  }
+  const globalFile = path.join(TRANSCRIPT_CAPTURES_DIR, "global-boundary.json");
+  const globalRevision = fs.existsSync(globalFile) ? JSON.parse(fs.readFileSync(globalFile, "utf8")) : null;
+  // Existing signout/signin generation changes even for the same principal;
+  // ordinary refresh leaves it intact. Read it without changing shared auth.
+  const authGeneration = credstore.recoverySnapshot?.()?.generation ?? null;
+  return JSON.stringify([revisions, getTelemetryGloballyDisabled(), globalRevision, authGeneration]);
+}
+function observeTranscriptConsent(source, cwd, verifyReplacement = false) {
+  const scope = transcriptScope(cwd, undefined, true);
+  if (!scope || !source || !fs.existsSync(source)) return null;
+  const allowed = !getTelemetryGloballyDisabled() &&
+    resolveTelemetryGate(getTelemetryOptIn(cwd), getRepoScopeDecision(cwd).allowed).capture;
+  return transcriptQueue.observeConsent(TRANSCRIPT_CHUNKS_DIR, source, scope,
+    getOrCreateHashSalt(), allowed, transcriptConsentStamp(cwd), false, verifyReplacement);
+}
+function observeKnownTranscriptConsent(repoRoot) {
+  // An unselected hook has no upload hint, but its consent journal already
+  // knows the source. Enable must move that boundary before the next prompt.
+  for (const dir of transcriptQueue.queueDirectories(TRANSCRIPT_CHUNKS_DIR)) {
+    const file = path.join(dir, "consent.json");
+    if (!fs.existsSync(file)) continue;
+    try {
+      const state = JSON.parse(fs.readFileSync(file, "utf8"));
+      if (repoRoot && state.repoRoot !== repoRoot) continue;
+      if (state.source && state.cwd) observeTranscriptConsent(state.source, state.cwd);
+    } catch { console.error("[skillmeter] Consent boundary deferred for an unavailable source journal"); }
+  }
+}
 function stageTranscriptForUpload(transcriptPath, context = {}) {
   const cwd = context.cwd || process.cwd();
-  const scope = transcriptScope(cwd);
-  if (!scope || (context.scope && !scopeStillAllowed(context.scope))) return null;
   if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
   try {
+    const consent = observeTranscriptConsent(transcriptPath, cwd, true);
+    const scope = transcriptScope(cwd);
+    if (!consent || !scope || (context.scope && !scopeStillAllowed(context.scope))) return null;
     const result = transcriptQueue.stage(TRANSCRIPT_CHUNKS_DIR, transcriptPath, scope, getOrCreateHashSalt(), {
+      consent,
+      preserveSessionMetadata: true,
+      authorizeCommit: () => scopeStillAllowed(scope) && consent.stamp === transcriptConsentStamp(cwd),
       authorizeRecord: record => {
-        // Repository consent does not authorize ChatGPT Work transcript delivery.
         if (record.type === "session_meta" && record.payload?.originator === "codex_work_desktop") return false;
         if (!["session_meta", "turn_context"].includes(record.type) || !record.payload?.cwd) return true;
         const sourceScope = transcriptScope(record.payload.cwd);
@@ -766,6 +815,7 @@ function requestTranscriptCapture(input, options = {}) {
   // Separate source keys avoid lost updates when parent/subagent hooks race.
   // A later parent-only hook must not remove the subagent's capture request.
   for (const source of paths) {
+    if (!observeTranscriptConsent(source, cwd)) continue;
     const sourceKey = transcriptQueue.hmac(salt, path.resolve(source));
     const cachePath = path.join(TRANSCRIPT_CAPTURES_DIR, `${cacheKey}-${sourceKey}.json`);
     transcriptQueue.writeDurable(cachePath, JSON.stringify({ scope, paths: [source] }));
@@ -1481,44 +1531,48 @@ function readStdin() {
   });
 }
 
-// Telemetry opt-in
-// Eligible repositories auto-enable unless opted out in project settings.
-// The global pause overrides project choices. Hooks print controls without an
-// OS dialog. This is the released Codex policy, not Claude's repo-selection flow.
+// Explicit repository consent, following Claude's default-off capture rule.
+// Storage remains checkout-local until the shared policy/queue adapter lands.
 
 function telemetryCliCommand(action) {
   return `node ${JSON.stringify(path.join(PLUGIN_ROOT, "scripts", "telemetry.js"))} ${action}`;
 }
 
 function getTelemetryOptIn(cwd) {
-  try {
-    const content = readSettingsFile(cwd);
-    if (!content) return null;
-    if (!content.skillmeter || typeof content.skillmeter.telemetry !== "boolean") return null;
-    return content.skillmeter.telemetry;
-  } catch {
-    return null;
+  const root = findGitRoot(cwd) || path.resolve(cwd);
+  let current = path.resolve(cwd);
+  // Preserve legacy subdirectory opt-outs; a child cannot widen root consent.
+  while (current !== root) {
+    const content = readSettingsFile(current);
+    if (content?.skillmeter?.telemetry === false) return false;
+    if (fs.existsSync(path.join(current, SETTINGS_RELATIVE)) && !content) return null;
+    const parent = path.dirname(current);
+    if (parent === current) return null;
+    current = parent;
   }
+  const choice = readSettingsFile(root)?.skillmeter?.telemetry;
+  return typeof choice === "boolean" ? choice : null;
 }
 
 function saveTelemetryOptIn(cwd, value) {
-  const settingsPath = path.join(cwd, SETTINGS_RELATIVE);
+  if (typeof value !== "boolean") throw new Error("Telemetry choice must be boolean.");
+  const settingsPath = path.join(findGitRoot(cwd) || cwd, SETTINGS_RELATIVE);
   let content = {};
-  try {
-    if (fs.existsSync(settingsPath)) {
-      content = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+  if (fs.existsSync(settingsPath)) {
+    content = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+    if (!content || typeof content !== "object" || Array.isArray(content) ||
+        (content.skillmeter !== undefined && (!content.skillmeter || typeof content.skillmeter !== "object" || Array.isArray(content.skillmeter)))) {
+      throw new Error("Invalid project settings; repair the file before changing consent.");
     }
-  } catch {
-    content = {};
   }
   content.skillmeter = { ...content.skillmeter, telemetry: value };
   fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
   fs.writeFileSync(settingsPath, JSON.stringify(content, null, 2) + "\n");
+  observeKnownTranscriptConsent(findGitRoot(cwd) || path.resolve(cwd));
 }
 
 // In-context consent notice: printed to a Codex hook's stderr channel when a
-// project has no explicit opt-in and isn't owned-org auto-enabled. No decision
-// is saved — the project stays "not configured" until the user runs
+// project has no explicit opt-in. No decision is saved until the user runs
 // `telemetry.js enable|disable`.
 function writeTelemetryConsentFallback(cwd, stream = process.stderr) {
   stream.write(
@@ -1535,16 +1589,16 @@ function writeTelemetryConsentFallback(cwd, stream = process.stderr) {
 
 /**
  * Resolve project consent: explicit false stops capture; explicit true enables
- * it subject to repository scope. An unset choice enables eligible repositories.
+ * it subject to repository scope. An unset choice never authorizes capture.
  *
  * @param {boolean|null} optIn - getTelemetryOptIn(cwd) result
  * @param {boolean} repoOrgOwned - repoScopeDecision.allowed
- * @returns {{capture: boolean, mode: "opted_out"|"opted_in"|"auto_org"|"not_enabled"}}
+ * @returns {{capture: boolean, mode: "opted_out"|"opted_in"|"out_of_scope"|"not_enabled"}}
  */
 function resolveTelemetryGate(optIn, repoOrgOwned) {
   if (optIn === false) return { capture: false, mode: "opted_out" };
+  if (repoOrgOwned !== true) return { capture: false, mode: "out_of_scope" };
   if (optIn === true) return { capture: true, mode: "opted_in" };
-  if (repoOrgOwned === true) return { capture: true, mode: "auto_org" };
   return { capture: false, mode: "not_enabled" };
 }
 
@@ -1555,14 +1609,9 @@ function defaultGateMessaging(eventName, gate) {
     const reason =
       gate.mode === "opted_out"
         ? "telemetry disabled for this project"
-        : "telemetry not enabled";
+        : gate.mode === "out_of_scope" ? "repository out of scope" : "telemetry not enabled";
     console.error(`[skillmeter] ${eventName}: skipped (${reason})`);
     return;
-  }
-  if (gate.mode === "auto_org") {
-    console.error(
-      `[skillmeter] ${eventName}: telemetry auto-enabled (repo owned by allowed org; run \`${telemetryCliCommand("disable")}\` to opt out)`
-    );
   }
 }
 
@@ -1578,7 +1627,6 @@ function defaultGateMessaging(eventName, gate) {
  * @param {function} [options.onGate] - Gate reactor: ({ gate, repoScopeDecision, cwd, input, eventName }) => void.
  *   Runs after the gate is resolved (for banners/side-effects). The capture decision stays central —
  *   runHook exits when gate.capture is false regardless. Without it, default stderr messaging is used.
- * @param {function} [options.afterSkip] - Hook for repo-scope-rejected case
  * @param {function} [options.afterLog] - Called after logInfo (e.g. flush)
  * @param {boolean} [options.requireJsonStdout] - If true, write `{}` to stdout
  *   before any exit. Required by Codex for Stop and SubagentStop.
@@ -1591,11 +1639,6 @@ async function runHook(eventName, buildData, options = {}) {
     }
     process.exit(code);
   };
-
-  if (getTelemetryGloballyDisabled()) {
-    console.error(`[skillmeter] ${eventName}: skipped (telemetry globally disabled)`);
-    return exit(0);
-  }
 
   const deviceId = getDeviceId();
   if (!deviceId) {
@@ -1618,13 +1661,23 @@ async function runHook(eventName, buildData, options = {}) {
   }
 
   const cwd = input.cwd || process.cwd();
+  try {
+    for (const source of collectTranscriptPaths(input, { discover: false })) {
+      observeTranscriptConsent(source, cwd);
+    }
+  } catch {
+    console.error("[skillmeter] Transcript consent observation failed; capture deferred");
+    return exit(0);
+  }
+  if (getTelemetryGloballyDisabled()) {
+    console.error(`[skillmeter] ${eventName}: skipped (telemetry globally disabled)`);
+    return exit(0);
+  }
 
-  // Resolve repo ownership up front: it both gates capture (below) and, for
-  // projects with no explicit opt-in, decides whether telemetry auto-enables.
+  // Repository scope and explicit consent must both permit capture.
   const repoScopeDecision = getRepoScopeDecision(cwd);
 
-  // Single per-project gate combining the explicit opt-in with owned-org
-  // auto-enable. Callers REACT via onGate (banners/side-effects); the capture
+  // Callers react via onGate (banners/side-effects); the capture
   // decision stays central — runHook exits below when gate.capture is false.
   // Hooks without an onGate get the default stderr messaging. (Replaces the
   // former OS consent dialog + per-hook checkOptIn override.)
@@ -1640,21 +1693,6 @@ async function runHook(eventName, buildData, options = {}) {
   const hashSalt = getOrCreateHashSalt();
   if (!hashSalt) {
     console.error(`[skillmeter] ${eventName}: skipped (no hash salt)`);
-    return exit(0);
-  }
-
-  // Hard repo-scope block: only opted_in projects can reach here on a repo not
-  // owned by an allowed org (auto_org requires allowed=true). Drop those events.
-  if (!repoScopeDecision.allowed) {
-    console.error(
-      `[skillmeter] ${eventName}: skipped (${repoScopeDecision.classification})`
-    );
-    if (options.afterSkip) {
-      const result = options.afterSkip(input, deviceId);
-      if (result && typeof result.then === "function") {
-        await result;
-      }
-    }
     return exit(0);
   }
 
@@ -1739,6 +1777,7 @@ module.exports = {
   findCodexTranscriptBySessionId,
   collectTranscriptPaths,
   stageTranscriptForUpload,
+  observeTranscriptConsent,
   requestTranscriptCapture,
   stageRequestedTranscripts,
   TRANSCRIPT_CHUNKS_DIR,
@@ -1784,6 +1823,7 @@ module.exports = {
   resolveTelemetryGate,
   defaultGateMessaging,
   getRepoScopeDecision,
+  findGitRoot,
   getRepoScopeOrgFilter,
   runHook,
   PLUGIN_ROOT,

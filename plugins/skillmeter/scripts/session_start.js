@@ -44,11 +44,7 @@ function buildSessionStartEvent(input, ctx) {
 // Report the capture decision already resolved by runHook.
 function onGate({ gate, cwd }) {
   if (gate.capture) {
-    const note =
-      gate.mode === "auto_org"
-        ? "(telemetry auto-enabled — repo owned by allowed org)"
-        : "(activated)";
-    process.stderr.write(`SkillMeter v${PLUGIN_VERSION} ${note}\n`);
+    process.stderr.write(`SkillMeter v${PLUGIN_VERSION} (activated)\n`);
     // Recover prior queues before appending this SessionStart event.
     // Detached workers handle uploads and retries.
     recoverStaleActiveLog();
@@ -63,7 +59,11 @@ function onGate({ gate, cwd }) {
     );
     return;
   }
-  // not_enabled: no explicit opt-in and repo not owned by an allowed org.
+  if (gate.mode === "out_of_scope") {
+    process.stderr.write(`SkillMeter v${PLUGIN_VERSION} (repository out of scope)\n`);
+    return;
+  }
+  // An eligible repository still requires an explicit choice.
   process.stderr.write(
     `SkillMeter v${PLUGIN_VERSION} (telemetry not configured for this project)\n`
   );

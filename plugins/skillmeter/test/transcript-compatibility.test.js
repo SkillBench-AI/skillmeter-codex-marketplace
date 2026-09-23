@@ -35,6 +35,7 @@ require.cache[credentialModule] = {
   },
 };
 const logger = require("../scripts/logger");
+logger.saveTelemetryOptIn(dataDir, true);
 const realFetch = global.fetch;
 
 after(() => {
@@ -58,6 +59,8 @@ test("real staged request satisfies the collector chunk-header contract", async 
   const fixture = path.join(dataDir, "codex-m0.jsonl");
   const fixtureRecords = fs.readFileSync(path.join(__dirname, "fixtures", "codex-m0.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
   for (const record of fixtureRecords) if (record.payload?.cwd) record.payload.cwd = dataDir;
+  fs.writeFileSync(fixture, "");
+  logger.observeTranscriptConsent(fixture, dataDir);
   fs.writeFileSync(fixture, fixtureRecords.map(JSON.stringify).join("\n") + "\n");
   const pending = logger.stageTranscriptForUpload(fixture, { cwd: dataDir });
   assert.ok(pending, "actual sanitizer and staging must produce a pending file");
