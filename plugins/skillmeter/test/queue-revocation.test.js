@@ -1,0 +1,168 @@
+"use strict";
+
+// Exercise real queue/control code with synthetic state. No hooks, daemon,
+// credentials from the host, or network. TODO assertions describe known gaps;
+// SKILLMETER_STRICT_QUEUE_CONTRACT=1 makes them ordinary failing tests.
+const { test, beforeEach, after } = require("node:test");
+const assert = require("node:assert/strict");
+const fs = require("node:fs");
+const os = require("node:os");
+const path = require("node:path");
+const zlib = require("node:zlib");
+const { execFileSync } = require("node:child_process");
+
+const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-revocation-"));
+process.env.HOME = root;
+process.env.USERPROFILE = root;
+process.env.PLUGIN_DATA = path.join(root, "data");
+delete process.env.SKILLMETER_REPO_SCOPE_ORGS;
+delete process.env.SKILLMETER_BACKEND_URL;
+const store = path.join(root, ".skillbench/credentials.json");
+fs.mkdirSync(path.dirname(store), { recursive: true });
+const token = "e30." + Buffer.from(JSON.stringify({
+  sub: "synthetic-tenant", github_id: "synthetic-user", exp: 4102444800,
+  aud: "https://synthetic.meter.skillbench.com",
+})).toString("base64url") + ".fixture";
+const credentials = {
+  device_id: "SYNTHETIC", hash_salt: "synthetic-salt", license_jwt: token,
+  allowed_github_orgs: ["synthetic"],
+};
+fs.writeFileSync(store, JSON.stringify(credentials));
+const logger = require("../scripts/logger");
+const queue = require("../scripts/lib/transcript-delta");
+const realFetch = global.fetch;
+const endpoint = "https://collector.invalid/logs/codex";
+const repos = Object.fromEntries(["a", "b"].map(name => {
+  const directory = path.join(root, name);
+  execFileSync("git", ["init", "--quiet", directory]);
+  execFileSync("git", ["-C", directory, "remote", "add", "origin", `https://github.com/synthetic/${name}.git`]);
+  return [name, directory];
+}));
+const gap = reason => ({ todo: process.env.SKILLMETER_STRICT_QUEUE_CONTRACT === "1" ? false : reason });
+const decode = body => zlib.gunzipSync(body).toString().trim().split("\n").map(JSON.parse);
+const line = content => JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content } }) + "\n";
+const source = name => path.join(root, `${name}.jsonl`);
+
+function control(name, action) {
+  execFileSync(process.execPath, [path.resolve(__dirname, "../scripts/telemetry.js"), action], {
+    cwd: repos[name], env: process.env, stdio: "pipe", timeout: 5000,
+  });
+}
+
+function stage(name, content = `authorized-${name}`) {
+  fs.appendFileSync(source(name), line(content));
+  const file = logger.stageTranscriptForUpload(source(name), { cwd: repos[name] });
+  assert.ok(file, "fixture must stage a real authorized chunk");
+  return file;
+}
+
+function event(name) {
+  // Match the current event's hashed repository fields; do not add a proposed
+  // routing field that the actual producer does not yet write.
+  logger.logInfo("Stop", `synthetic-${name}`, {
+    cwd: logger.hashHmac(repos[name], credentials.hash_salt),
+    repo_root: logger.hashHmac(repos[name], credentials.hash_salt),
+    repo_remote_org: logger.hashHmac("synthetic", credentials.hash_salt),
+  }, credentials.device_id);
+}
+
+beforeEach(() => {
+  fs.writeFileSync(store, JSON.stringify(credentials));
+  fs.rmSync(logger.LOG_DIR, { recursive: true, force: true });
+  for (const name of ["a", "b"]) {
+    logger.saveTelemetryOptIn(repos[name], true);
+    fs.writeFileSync(source(name), "");
+    logger.observeTranscriptConsent(source(name), repos[name]);
+  }
+  global.fetch = async () => assert.fail("unexpected network attempt");
+});
+after(() => {
+  global.fetch = realFetch;
+  fs.rmSync(root, { recursive: true, force: true });
+});
+
+test("disabling A preserves B's pending chunk and cursor byte for byte", () => {
+  stage("a");
+  const b = stage("b");
+  const cursor = path.join(path.dirname(path.dirname(b)), "cursor.json");
+  const before = [b, cursor].map(file => fs.readFileSync(file));
+  control("a", "disable");
+  assert.deepEqual([b, cursor].map(file => fs.readFileSync(file)), before);
+});
+
+test("transcript drain rechecks disabled A while delivering authorized B", async () => {
+  stage("a"); stage("b");
+  control("a", "disable");
+  const received = [];
+  global.fetch = async (_, options) => { received.push(...decode(options.body)); return { ok: true }; };
+  await logger.drainPendingTranscripts(endpoint, 1000);
+  assert.deepEqual(received.map(record => record.payload.content), ["authorized-b"]);
+});
+
+test("revocation after a request starts cannot undo it but blocks the next chunk", async () => {
+  stage("a", "first"); stage("a", "second");
+  const received = [];
+  global.fetch = async (_, options) => {
+    received.push(...decode(options.body));
+    control("a", "disable");
+    return { ok: true };
+  };
+  await logger.drainPendingTranscripts(endpoint, 1000);
+  assert.deepEqual(received.map(record => record.payload.content), ["first"]);
+});
+
+test("global pause retains sealed events and transcript bytes without sending", async () => {
+  const chunks = [stage("a"), stage("b")];
+  event("a"); event("b");
+  const sealed = logger.sealEventLog();
+  const files = [sealed, ...chunks];
+  const before = files.map(file => fs.readFileSync(file));
+  logger.setTelemetryGloballyDisabled(true);
+  assert.equal(await logger.drainQueuesOnce(endpoint, 1000), 0);
+  assert.deepEqual(files.map(file => fs.readFileSync(file)), before);
+});
+
+test("repository disable does not guess ownership or destroy an unattributed legacy batch", () => {
+  fs.mkdirSync(logger.LOG_DIR, { recursive: true });
+  const legacy = path.join(logger.LOG_DIR, `events.jsonl.${Date.now()}`);
+  const bytes = '{"hook_event_name":"Stop","data":{"fixture":"unknown-repository"}}\n';
+  fs.writeFileSync(legacy, bytes);
+  control("a", "disable");
+  assert.equal(fs.readFileSync(legacy, "utf8"), bytes);
+  // Delivery/quarantine/migration of this batch is intentionally undecided.
+});
+
+test("repository revocation removes A's queued transcript payloads but preserves its cursor",
+  gap("Codex retains revoked payloads; Claude repository-queue removes them while retaining cursors"), () => {
+    const a = stage("a");
+    const b = stage("b");
+    const cursor = path.join(path.dirname(path.dirname(a)), "cursor.json");
+    const before = fs.readFileSync(cursor);
+    control("a", "disable");
+    assert.ok(fs.existsSync(b), "unrelated repository must survive revocation");
+    assert.deepEqual(fs.readFileSync(cursor), before, "cursor must survive payload removal");
+    assert.equal(fs.existsSync(a), false, "revoked payload must be removed");
+  });
+
+test("mixed event batch delivers B without disclosing disabled A",
+  gap("Codex event batches lack repository delivery authorization/partitioning"), async () => {
+    event("a"); event("b");
+    const sealed = logger.sealEventLog();
+    control("a", "disable");
+    const received = [];
+    global.fetch = async (_, options) => { received.push(...decode(options.body)); return { ok: true }; };
+    await logger.processSealedBatch(sealed, endpoint, 1000);
+    assert.deepEqual(received.map(record => record.session_id), ["synthetic-b"]);
+  });
+
+test("a failed event delivery rechecks repository consent before retrying",
+  gap("Codex sealed event retry currently checks global pause and auth only"), async () => {
+    event("a");
+    const sealed = logger.sealEventLog();
+    let calls = 0;
+    global.fetch = async () => { calls++; return { ok: false, status: 503 }; };
+    assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "retry");
+    control("a", "disable");
+    await logger.processSealedBatch(sealed, endpoint, 1000);
+    assert.equal(calls, 1, "a revoked repository cannot be sent again");
+  });
