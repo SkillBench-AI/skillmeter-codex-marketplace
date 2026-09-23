@@ -13,6 +13,7 @@ const zlib = require("zlib");
 const { sanitizeEventData, redactDeep } = require("./sanitizer");
 const credstore = require("./credstore");
 const transcriptQueue = require("./lib/transcript-delta");
+const { readSharedGlobalPolicy } = require("./lib/shared-telemetry-policy");
 const {
   getEndpointFromToken,
   getEndpointFromTokenAllowExpired,
@@ -84,7 +85,7 @@ function getLicenseTokenUncached() {
 }
 
 function getTelemetryGloballyDisabled() {
-  return credstore.getTelemetryDisabled();
+  return credstore.getTelemetryDisabled() || readSharedGlobalPolicy().disabled;
 }
 
 function setTelemetryGloballyDisabled(disabled) {
@@ -656,8 +657,8 @@ function scopeStillAllowed(scope, token) {
   const current = transcriptScope(scope.cwd, token);
   return current && ["repoRoot", "org", "deviceId", "owner"].every(k => current[k] === scope[k]);
 }
-// Local settings revisions identify transitions without depending on token
-// rotation. Shared policy storage and cross-client transitions are separate.
+// Local settings and shared global decisions identify transitions without
+// depending on token rotation or unrelated repository policy revisions.
 function transcriptConsentStamp(cwd) {
   const root = findGitRoot(cwd) || path.resolve(cwd), revisions = [];
   let current = path.resolve(cwd);
@@ -674,7 +675,10 @@ function transcriptConsentStamp(cwd) {
   // Existing signout/signin generation changes even for the same principal;
   // ordinary refresh leaves it intact. Read it without changing shared auth.
   const authGeneration = credstore.recoverySnapshot?.()?.generation ?? null;
-  return JSON.stringify([revisions, getTelemetryGloballyDisabled(), globalRevision, authGeneration]);
+  const stamp = [revisions, getTelemetryGloballyDisabled(), globalRevision, authGeneration];
+  const shared = readSharedGlobalPolicy();
+  if (shared.boundary !== null) stamp.push(shared.boundary);
+  return JSON.stringify(stamp);
 }
 function observeTranscriptConsent(source, cwd, verifyReplacement = false) {
   const scope = transcriptScope(cwd, undefined, true);

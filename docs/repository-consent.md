@@ -1,7 +1,7 @@
 # Repository capture consent
 
 Codex follows the explicit repository opt-in rule in Claude's
-[capture policy](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/a50a38e98dc1302cb8a952adac00ee90e0d9f55a/skillmeter/scripts/lib/telemetry-policy.js).
+[capture policy](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/30659641c0ecd7aa4f1b41d8624ad0620d9eab93/skillmeter/scripts/lib/telemetry-policy.js).
 An allowed GitHub owner makes a repository eligible; it does not enable capture.
 The repository choice must be the boolean `true`. Missing or invalid choices
 stay off, and explicit opt-out, scope exclusion and global pause block capture.
@@ -16,11 +16,11 @@ This change does not alter Codex's credential lifecycle or expiry behavior.
 | Legacy subdirectory choices | A subdirectory opt-out continues to restrict capture there. A subdirectory opt-in cannot authorize the repository. Nested Git repositories have independent choices. |
 | Organization consent | Existing signed-in identity scope and optional narrowing remain. Claude's separate organization authorization record is not adopted here. |
 | Revocation and queued data | Disabling a repository stops new hooks and staging. Already queued event batches may still drain; queued transcripts remain subject to the existing send-time scope check. No repository purge is added. |
-| Disabled transcript intervals | A durable byte-range journal excludes the prefix at first observation and ranges observed while capture is disabled. Repository controls update known active sources; local global controls also record transitions. Staging and baseline resets use the same exclusions. Unknown transitions in another client remain a shared-policy gap. |
-| Global pause | Stops new capture and transmission while retaining queued data. Existing global controls and shared credential fields remain unchanged. |
+| Disabled transcript intervals | A durable byte-range journal excludes the prefix at first observation and ranges observed while capture is disabled. Repository controls update known active sources; local global controls and shared global `decided_at` changes also record transitions. Staging and baseline resets use the same exclusions. Shared repository and organization transitions remain a gap. |
+| Global pause | Either the legacy Codex pause or shared `global.enabled: false` stops new capture and transmission while retaining queued data. Codex reads the shared policy without writing it; `enable --global` clears only the legacy pause and reports any shared blocker. |
 
 This is a capture-gate change, not complete parity with
-[Claude's collection contract](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/a50a38e98dc1302cb8a952adac00ee90e0d9f55a/skillmeter/README.md#collection-scope).
+[Claude's collection contract](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/30659641c0ecd7aa4f1b41d8624ad0620d9eab93/skillmeter/README.md#collection-scope).
 Do not present it as retroactive consent isolation or enable a new surface's
 uploads on this basis. Work-specific consent and delivery are separate.
 
@@ -54,8 +54,36 @@ generation closes sign-out/sign-in intervals even for the same principal; a
 normal token refresh preserves the generation and capture continuity. Already queued payloads are not
 purged or retroactively filtered by this change.
 
-This is local interval enforcement, not a shared policy implementation. An
-external client toggling global consent off and on without an intervening Codex
-observation cannot be detected by the legacy boolean alone. Shared revisions and
-repository queue revocation remain follow-ups. No scoring or normalization
-interpretation changes are included.
+A shared global decision's `decided_at` change closes the unobserved interval,
+including an OFF/ON cycle between Codex hooks. The policy's overall `revision`
+does not close intervals: another repository's choice must not discard this
+repository's authorized records. Writers that restore an identical global record
+leave no transition evidence; those unobserved cycles cannot be detected.
+
+## Shared global policy compatibility
+
+Codex reads schema version 1 from `telemetry-policy.json` under
+`SKILLMETER_STATE_DIR`, or `~/.skillbench` (`~/.skillbench-dev` when
+`SKILLMETER_ENV=dev`). This matches Claude's
+[policy store](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/30659641c0ecd7aa4f1b41d8624ad0620d9eab93/skillmeter/scripts/lib/telemetry-store.js).
+Global OFF retains queues, consistent with Claude's
+[collection contract](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/30659641c0ecd7aa4f1b41d8624ad0620d9eab93/skillmeter/README.md#collection-scope).
+Organization/repository OFF purge requirements in the
+[token lifecycle ADR](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/30659641c0ecd7aa4f1b41d8624ad0620d9eab93/docs/adr/001-license-token-lifecycle.md)
+remain separate work.
+
+A missing policy preserves Codex's existing explicit local consent rules. Shared
+ON does not grant repository consent or clear a legacy pause. Existing malformed,
+unreadable or unsupported-version policy pauses capture and delivery without
+rewriting it. This conservative read behavior differs from Claude's permissive
+normalization and needs agreement before claiming full malformed-policy parity.
+Use the shared policy controls to resume a shared pause; Codex's status identifies
+that blocker instead of claiming uploads are enabled.
+
+Run `node --test plugins/skillmeter/test/shared-global-policy.test.js` for the
+implemented global boundary. Run `node --test compatibility/shared-policy.cjs`
+for the remaining repository/organization contract. The latter deliberately
+returns nonzero while those gaps remain, is outside the default regression suite,
+and must pass before claiming shared-policy parity. Its synthetic cases cover
+shared OFF, clones, linked worktrees and revocation of already queued payloads.
+Migration precedence between shared and legacy choices is not defined here.
