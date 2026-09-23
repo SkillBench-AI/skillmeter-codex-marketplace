@@ -22,7 +22,7 @@ Run project controls from the repository you want to configure:
 | --- | --- |
 | Sign in and limit scope to your organization | `node "$PLUGIN_ROOT/bin/signin" --org your-github-org` |
 | Inspect sign-in claims and expiry (no raw token) | `node "$PLUGIN_ROOT/bin/sk-jwt"` |
-| Show project settings and allowed identities | `node "$PLUGIN_ROOT/bin/sk-telemetry" status` |
+| Check capture policy, authentication and local queues | `node "$PLUGIN_ROOT/bin/sk-telemetry" status` |
 | Enable / disable this project | `node "$PLUGIN_ROOT/bin/sk-telemetry" enable` / `disable` |
 | Pause / resume all Codex collection and uploads | `node "$PLUGIN_ROOT/bin/sk-telemetry" disable --global` / `enable --global` |
 | Sign out | `node "$PLUGIN_ROOT/bin/signout"` |
@@ -35,6 +35,13 @@ are eligible for collection.
 The credential file is shared with SkillMeter for Claude Code. Signing out
 removes the shared license, so it affects both clients. Device identity is kept.
 Global pause retains queued data for later delivery; it does not delete it.
+
+`status` is read-only. It separates repository capture eligibility from license
+freshness and reports pending event batches and current-format transcript chunks
+across repositories. Expired credentials can pause delivery while eligible local
+capture continues. It does not verify hook execution or server acceptance, and
+this version does not track the last successful upload. An empty queue does not
+prove delivery or report generation; legacy snapshots are excluded from the count.
 
 ## Collection scope
 
