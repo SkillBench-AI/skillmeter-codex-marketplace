@@ -1,7 +1,7 @@
 "use strict";
 
 /**
- * Project opt-out and eligible-repository auto-enable behavior.
+ * Explicit repository consent and scope boundaries.
  * Consent messaging stays in the hook output; no OS dialog is used.
  */
 
@@ -39,7 +39,6 @@ test("the plugin exposes no OS-dialog consent surface", () => {
 });
 
 test("resolveTelemetryGate: explicit opt-out is always respected", () => {
-  // opted_out beats owned-org auto-enable.
   assert.deepEqual(logger.resolveTelemetryGate(false, true), {
     capture: false,
     mode: "opted_out",
@@ -50,42 +49,39 @@ test("resolveTelemetryGate: explicit opt-out is always respected", () => {
   });
 });
 
-test("resolveTelemetryGate: explicit opt-in captures regardless of ownership", () => {
-  // Downstream repo-scope still drops out-of-scope repos; the gate only decides
-  // per-project intent.
+test("resolveTelemetryGate: explicit opt-in cannot widen ownership scope", () => {
   assert.deepEqual(logger.resolveTelemetryGate(true, true), {
     capture: true,
     mode: "opted_in",
   });
   assert.deepEqual(logger.resolveTelemetryGate(true, false), {
-    capture: true,
-    mode: "opted_in",
+    capture: false,
+    mode: "out_of_scope",
   });
 });
 
-test("resolveTelemetryGate: unset auto-enables only for an owned-org repo", () => {
+test("resolveTelemetryGate: unset never authorizes capture", () => {
   assert.deepEqual(logger.resolveTelemetryGate(null, true), {
-    capture: true,
-    mode: "auto_org",
-  });
-  assert.deepEqual(logger.resolveTelemetryGate(null, false), {
     capture: false,
     mode: "not_enabled",
   });
+  assert.deepEqual(logger.resolveTelemetryGate(null, false), {
+    capture: false,
+    mode: "out_of_scope",
+  });
 });
 
-test("defaultGateMessaging: auto_org announces auto-enable + how to opt out", () => {
+test("defaultGateMessaging: out-of-scope capture is reported", () => {
   const original = console.error;
   const lines = [];
   console.error = (msg) => lines.push(msg);
   try {
-    logger.defaultGateMessaging("PreToolUse", { capture: true, mode: "auto_org" });
+    logger.defaultGateMessaging("PreToolUse", { capture: false, mode: "out_of_scope" });
   } finally {
     console.error = original;
   }
   assert.equal(lines.length, 1);
-  assert.match(lines[0], /auto-enabled/);
-  assert.match(lines[0], /disable/);
+  assert.match(lines[0], /out of scope/);
 });
 
 test("defaultGateMessaging: opted_in is silent, skips report a reason", () => {

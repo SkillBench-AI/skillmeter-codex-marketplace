@@ -8,6 +8,11 @@ it with the user's allowed scope. Report whether it matches, is excluded, has
 no Git repository, or has no recognizable GitHub remote. Non-GitHub remotes are
 outside GitHub-owner filtering.
 
+An allowed owner only makes the repository eligible. Capture also requires an
+explicit repository opt-in and an enabled global switch. Check the repository
+choice with `node "$PLUGIN_ROOT/scripts/telemetry.js" status`; do not equate
+an in-scope result with active capture or successful delivery.
+
 Scope can be narrowed through:
 
 - `signin --org your-github-org`: stored sign-in scope.
