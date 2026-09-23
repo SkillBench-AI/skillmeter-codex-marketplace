@@ -366,16 +366,17 @@ test("local global pause retains queued chunks but excludes newly written interv
   assert.deepEqual(recordsIn([file]).map(r => r.payload.content), ["authorized after global resume"]);
 });
 
-test("first discovery excludes history and preserves only sanitized source identity", () => {
+for (const [sessionSource, originator] of [["cli", "codex_cli_rs"], ["vscode", "Codex Desktop"]])
+test(`first discovery excludes history and preserves ${originator} source identity`, () => {
   fs.rmSync(logger.TRANSCRIPT_CHUNKS_DIR, {recursive:true,force:true});
-  fs.writeFileSync(source, JSON.stringify({type:"session_meta",payload:{id:"synthetic",cwd:repo,source:"cli",originator:"codex_cli_rs",instructions:"PRIVATE-OLD-INSTRUCTION"}}) + "\n" + line("PRIVATE-OLD-PROMPT"));
+  fs.writeFileSync(source, JSON.stringify({type:"session_meta",payload:{id:"synthetic",cwd:repo,source:sessionSource,originator,instructions:"PRIVATE-OLD-INSTRUCTION"}}) + "\n" + line("PRIVATE-OLD-PROMPT"));
   logger.observeTranscriptConsent(source, repo);
   const call = {type:"response_item",payload:{type:"function_call",name:"exec_command",call_id:"pair-1",arguments:'{"cmd":"echo SYNTHETIC"}'}};
   const result = {type:"response_item",payload:{type:"function_call_output",call_id:"pair-1",output:"SYNTHETIC"}};
   fs.appendFileSync(source, [call,result].map(JSON.stringify).join("\n") + "\n");
   const records = recordsIn([stage()]);
-  assert.equal(records[0].payload.originator, "codex_cli_rs");
-  assert.equal(records[0].payload.source, "cli");
+  assert.equal(records[0].payload.originator, originator);
+  assert.equal(records[0].payload.source, sessionSource);
   assert.doesNotMatch(JSON.stringify(records), /PRIVATE-OLD/);
   assert.deepEqual(records.slice(1).map(r => r.payload), [call,result].map(r => require("../scripts/sanitizer").sanitizeLine(r, credentials.hash_salt).payload));
   assert.deepEqual(records.slice(1).map(r => r.payload.call_id), ["pair-1","pair-1"]);
@@ -440,4 +441,14 @@ test("ordinary credential refresh does not close an authorized transcript interv
   fs.appendFileSync(source,line("captured across refresh"));
   storeApi.commitRefresh(jwt("synthetic-user",4102444800,{jti:"refresh"}),before);
   assert.deepEqual(recordsIn([stage()]).map(r=>r.payload.content),["captured across refresh"]);
+});
+
+for (const originator of ["codex_work_desktop", "line\nbreak", "\u001bcontrol", "x".repeat(81), "   ", { name: "Codex Desktop" }])
+test(`metadata boundary rejects unsupported originator ${JSON.stringify(originator)}`, () => {
+  fs.rmSync(logger.TRANSCRIPT_CHUNKS_DIR, {recursive:true,force:true});
+  fs.writeFileSync(source, JSON.stringify({type:"session_meta",payload:{id:"synthetic",cwd:repo,source:"vscode",originator}}) + "\n");
+  logger.observeTranscriptConsent(source, repo);
+  fs.appendFileSync(source, line("authorized future"));
+  assert.equal(stage(), null);
+  assert.deepEqual(logger.listPendingTranscripts(), []);
 });

@@ -18,7 +18,8 @@ function sessionMetadata(record) {
     } else throw new Error("unsupported-session-source");
   }
   if (payload.originator != null) {
-    if (typeof payload.originator !== "string" || !/^[a-zA-Z0-9_-]{1,80}$/.test(payload.originator)) {
+    if (typeof payload.originator !== "string" || payload.originator.length > 80 ||
+        !/^[a-zA-Z0-9_-]+(?: [a-zA-Z0-9_-]+)*$/.test(payload.originator)) {
       throw new Error("unsupported-session-originator");
     }
     selected.originator = payload.originator;
