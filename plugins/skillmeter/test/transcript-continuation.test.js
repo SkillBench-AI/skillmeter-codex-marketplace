@@ -23,6 +23,23 @@ const meta = JSON.stringify({ type: "session_meta", timestamp: "2026-09-01T00:00
   id: "thread-1", cwd: "/synthetic", originator: "codex_cli_rs", instructions: "private startup context", cli_version: "0.1.0" } }) + "\n";
 const line = value => JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: value } }) + "\n";
 
+test("continuation identity survives a startup record spanning multiple read buffers", t => {
+  const f = fixture(t);
+  const header = JSON.parse(meta);
+  header.payload.instructions = "private startup context ".repeat(10000);
+  header.payload.parent_thread_id = "parent-at-end";
+  f.start(JSON.stringify(header) + "\n");
+  fs.appendFileSync(f.source, line("first"));
+  const first = f.records(f.stage().files)[0];
+  fs.appendFileSync(f.source, line("second"));
+  const later = f.records(f.stage().files);
+  assert.deepEqual(later.map(r => r.type), ["session_continuation", "response_item"]);
+  assert.deepEqual(later[0].payload, first.payload);
+  assert.equal(later[0].payload.parent_thread_id, "parent-at-end");
+  assert.equal(later[1].payload.content, "second");
+  assert.ok(!JSON.stringify(later).includes("private startup context"));
+});
+
 test("batches staged past the file start open with the session's routing identity", t => {
   const f = fixture(t);
   f.start(meta);
