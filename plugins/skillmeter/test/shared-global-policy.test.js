@@ -144,3 +144,11 @@ test("enabled shared policy allows an explicitly enabled native hook path", t =>
   const events=fs.readFileSync(require("node:path").join(f.root,'data/logs/events.jsonl'),'utf8').trim().split('\n');
   assert.equal(events.length,1);
 });
+
+test("a dangling shared policy symlink fails closed without replacing the link", t => {
+  const f=fixture(t);
+  fs.symlinkSync('missing-policy.json',f.policyFile);
+  f.run("assert.equal(logger.getTelemetryGloballyDisabled(),true);");
+  assert.match(f.cli(['status']).stderr,/shared policy.*invalid/i);
+  assert.equal(fs.lstatSync(f.policyFile).isSymbolicLink(),true);
+});

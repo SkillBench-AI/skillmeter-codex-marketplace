@@ -9,11 +9,17 @@ const path = require("path");
 function readSharedGlobalPolicy() {
   const stateDir = process.env.SKILLMETER_STATE_DIR ||
     path.join(os.homedir(), process.env.SKILLMETER_ENV === "dev" ? ".skillbench-dev" : ".skillbench");
+  const file = path.join(stateDir, "telemetry-policy.json");
   let raw;
   try {
-    raw = fs.readFileSync(path.join(stateDir, "telemetry-policy.json"), "utf8");
+    raw = fs.readFileSync(file, "utf8");
   } catch (error) {
-    if (error.code === "ENOENT") return { disabled: false, reason: "absent", boundary: null };
+    if (error.code === "ENOENT") {
+      try { fs.lstatSync(file); }
+      catch (statError) {
+        if (statError.code === "ENOENT") return { disabled: false, reason: "absent", boundary: null };
+      }
+    }
     return { disabled: true, reason: "invalid", boundary: "invalid" };
   }
   try {
