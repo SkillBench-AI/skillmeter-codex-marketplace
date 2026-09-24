@@ -56,6 +56,13 @@ async function rehearse(claudeRepo) {
     run("shared", "repo", "clone", "off");
     for (const label of ["a", "clone", "worktree"]) hook(label, "pre_tool_use");
     assert.deepEqual(eventRows().map(r => r.session_id), ["synthetic-b"]);
+    hook("b", "pre_tool_use"); // Observe restored permission before appending permitted source bytes.
+    const records = [
+      { type: "response_item", payload: { type: "message", role: "user", content: "SHARED-B-PERMITTED" } },
+      { type: "response_item", payload: { type: "function_call", call_id: "synthetic-call", name: "read_file", arguments: '{"path":"source.csv"}' } },
+      { type: "response_item", payload: { type: "function_call_output", call_id: "synthetic-call", output: "60 minutes" } },
+    ];
+    fs.appendFileSync(path.join(base, "b.jsonl"), records.map(r => JSON.stringify(r) + "\n").join(""));
     run("receiver", "200"); hook("b", "stop"); await settled();
     const received = fs.readdirSync(path.join(base, "received")).filter(f => f.endsWith(".gz"));
     assert.ok(received.length, "Stop must invoke the intercepted receiver");
@@ -63,8 +70,10 @@ async function rehearse(claudeRepo) {
     assert.ok(rows.some(r => r.session_id === "synthetic-b"));
     assert.equal(rows.some(r => ["synthetic-a", "synthetic-clone", "synthetic-worktree"].includes(r.session_id)), false);
     assert.equal(rows.some(r => Object.hasOwn(r, "_queue")), false);
+    assert.ok(rows.some(r => r.payload?.content === "SHARED-B-PERMITTED"));
+    assert.deepEqual(rows.filter(r => r.payload?.call_id === "synthetic-call").map(r => r.payload.type).sort(), ["function_call", "function_call_output"]);
     return { evidence: "synthetic-subprocess-only", heads: prepared.heads, checks: ["local opt-in retained", "canonical Claude controls",
-      "global pause retention", "malformed policy hold", "clone/worktree shared revocation", "unaffected B delivery", "private routing stripped"] };
+      "global pause retention", "malformed policy hold", "clone/worktree shared revocation", "unaffected B delivery", "linked transcript tool pair", "private routing stripped"] };
   } finally {
     run("retire"); await settled(); fs.rmSync(root, { recursive: true, force: true });
   }
