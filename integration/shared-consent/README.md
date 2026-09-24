@@ -26,6 +26,11 @@ are copied. It starts disabled and installs no hooks until explicitly armed.
 The six automated harness tests use a Claude-store spy to verify delegation and
 isolation. The rehearsal uses the supplied committed Claude store, synthetic
 hook subprocesses and intercepted delivery. Neither is native evidence.
+The rehearsal waits for the detached drain lock to clear between transitions.
+A hook arriving during an existing drain can need a subsequent drain to service
+its capture hint; the serial rehearsal does not establish concurrent-hook delivery
+liveness. Failed rehearsals retire the harness and retain synthetic artifacts for
+inspection instead of deleting the evidence.
 
 ## Native preflight, coordinated with the assistant
 
@@ -61,6 +66,7 @@ Claude native-hook acceptance. Repository changes use its expected-revision chec
 | --- | --- | --- |
 | Shared ON alone | `shared org on`, `shared repo a on`, `shared repo b on` | Prompt in A/clone/worktree without local opt-in: no capture. |
 | Eligible capture | `local a enable`, then `local b enable`; receiver stays 503 | In each bound task: `SHARED-A-ONE` or `SHARED-B-ONE`, read `source.csv` with a local tool and report total minutes (60). No settings, network, connectors or subagents. Verify both prompts and linked tool calls/results in queued records. |
+| Clone/worktree capture baseline | `local clone enable`, `local worktree enable`; receiver stays 503 | In each bound task, read `source.csv` with `SHARED-CLONE-ONE` / `SHARED-WORKTREE-ONE`. Verify each checkout actually captures before testing shared revocation; silence without this baseline is inconclusive. |
 | Cross-checkout revoke | Record queue/cursor hashes; `shared repo clone off` | Prompt in A and enabled clone/worktree. All A payloads removed after reconciliation, no new A capture, privacy cursors retained; B bytes unchanged. |
 | B delivery | `receiver 200` | Native B no-tool follow-up triggers Stop: B arrives at the intercepted receiver; no A records or private `_queue` fields. |
 | Pause | `receiver 503`, capture fresh B; `shared global off` | `SHARED-B-PAUSED` prompt: no capture/delivery; queued bytes retained. |
@@ -69,6 +75,9 @@ Claude native-hook acceptance. Repository changes use its expected-revision chec
 | Unknown state | Assistant replaces only the isolated policy with malformed JSON or temporarily removes it, then restores exact bytes | Prompt during hold is excluded; policy is not overwritten, queues retained, status reports the blocker. |
 
 Commands above are arguments to `node /absolute/new/canary/run.cjs`.
+Before changing policy/receiver state or measuring settled queues, the assistant
+checks that `data/logs/.drain-once.lock` has cleared. A pending capture hint is not
+proof of delivery. Record any required follow-up hook separately.
 Do not count manual drains/replayed hook subprocesses as native dispatch. Older
 payloads after an ambiguous positive timestamp change stay held; that contract
 still needs engineering agreement. Concurrent/in-flight races and expiry remain

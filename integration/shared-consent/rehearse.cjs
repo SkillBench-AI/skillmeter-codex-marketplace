@@ -12,12 +12,13 @@ async function rehearse(claudeRepo) {
     const r = cp.spawnSync(process.execPath, [path.join(base, "run.cjs"), ...args], { encoding: "utf8", timeout: 10000 });
     assert.equal(r.status, 0, r.stderr); return r;
   }
-  function hook(label, name) {
+  async function hook(label, name) {
     const r = cp.spawnSync(process.execPath, [path.join(base, "run.cjs"), "hook", name + ".js"], {
       encoding: "utf8", timeout: 10000, input: JSON.stringify({ cwd: path.join(base, label), session_id: "synthetic-" + label,
         transcript_path: path.join(base, label + ".jsonl"), tool_name: "synthetic", tool_input: {}, last_assistant_message: "synthetic" }),
     });
     assert.equal(r.status, 0, r.stderr);
+    await settled();
   }
   async function settled() {
     // Stop creates the worker lock before spawning the detached process.
@@ -32,38 +33,44 @@ async function rehearse(claudeRepo) {
     return fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => /^events\.jsonl/.test(f)).flatMap(f =>
       fs.readFileSync(path.join(dir, f), "utf8").trim().split("\n").filter(Boolean).map(JSON.parse)) : [];
   }
+  function eventSnapshot() {
+    const dir = path.join(base, "data/logs");
+    return Object.fromEntries(fs.readdirSync(dir).filter(f => /^events\.jsonl/.test(f)).sort()
+      .map(f => [f, fs.readFileSync(path.join(dir, f)).toString("hex")]));
+  }
   const policyFile = path.join(base, "home/.skillbench/telemetry-policy.json");
+  let succeeded = false;
   try {
     run("arm"); run("shared", "org", "on"); run("shared", "repo", "a", "on"); run("shared", "repo", "b", "on");
     for (const label of ["a", "clone", "worktree", "b"]) {
       const source = path.join(base, label + ".jsonl");
       fs.writeFileSync(source, JSON.stringify({ type: "session_meta", payload: { id: "synthetic-" + label, cwd: path.join(base, label), source: "cli" } }) + "\n");
       run("bind", label, "synthetic-" + label, source);
-      hook(label, "pre_tool_use");
+      await hook(label, "pre_tool_use");
       assert.equal(eventRows().some(r => r.session_id === "synthetic-" + label), false, "shared ON must not replace local consent");
-      run("local", label, "enable"); hook(label, "pre_tool_use");
+      run("local", label, "enable"); await hook(label, "pre_tool_use");
     }
     assert.equal(eventRows().length, 4);
-    const before = fs.readFileSync(path.join(base, "data/logs/events.jsonl"));
-    run("shared", "global", "off"); hook("b", "pre_tool_use");
-    assert.deepEqual(fs.readFileSync(path.join(base, "data/logs/events.jsonl")), before);
+    const before = eventSnapshot();
+    run("shared", "global", "off"); await hook("b", "pre_tool_use");
+    assert.deepEqual(eventSnapshot(), before);
     run("shared", "global", "on");
     const policy = fs.readFileSync(policyFile);
-    fs.writeFileSync(policyFile, "{broken"); hook("b", "pre_tool_use");
+    fs.writeFileSync(policyFile, "{broken"); await hook("b", "pre_tool_use");
     assert.deepEqual(fs.readFileSync(policyFile), Buffer.from("{broken"));
-    assert.deepEqual(fs.readFileSync(path.join(base, "data/logs/events.jsonl")), before);
+    assert.deepEqual(eventSnapshot(), before);
     fs.writeFileSync(policyFile, policy);
     run("shared", "repo", "clone", "off");
-    for (const label of ["a", "clone", "worktree"]) hook(label, "pre_tool_use");
+    for (const label of ["a", "clone", "worktree"]) await hook(label, "pre_tool_use");
     assert.deepEqual(eventRows().map(r => r.session_id), ["synthetic-b"]);
-    hook("b", "pre_tool_use"); // Observe restored permission before appending permitted source bytes.
+    await hook("b", "pre_tool_use"); // Observe restored permission before appending permitted source bytes.
     const records = [
       { type: "response_item", payload: { type: "message", role: "user", content: "SHARED-B-PERMITTED" } },
       { type: "response_item", payload: { type: "function_call", call_id: "synthetic-call", name: "read_file", arguments: '{"path":"source.csv"}' } },
       { type: "response_item", payload: { type: "function_call_output", call_id: "synthetic-call", output: "60 minutes" } },
     ];
     fs.appendFileSync(path.join(base, "b.jsonl"), records.map(r => JSON.stringify(r) + "\n").join(""));
-    run("receiver", "200"); hook("b", "stop"); await settled();
+    run("receiver", "200"); await hook("b", "stop");
     const received = fs.readdirSync(path.join(base, "received")).filter(f => f.endsWith(".gz"));
     assert.ok(received.length, "Stop must invoke the intercepted receiver");
     const rows = received.flatMap(f => require("node:zlib").gunzipSync(fs.readFileSync(path.join(base, "received", f))).toString().trim().split("\n").filter(Boolean).map(JSON.parse));
@@ -72,10 +79,13 @@ async function rehearse(claudeRepo) {
     assert.equal(rows.some(r => Object.hasOwn(r, "_queue")), false);
     assert.ok(rows.some(r => r.payload?.content === "SHARED-B-PERMITTED"));
     assert.deepEqual(rows.filter(r => r.payload?.call_id === "synthetic-call").map(r => r.payload.type).sort(), ["function_call", "function_call_output"]);
+    succeeded = true;
     return { evidence: "synthetic-subprocess-only", heads: prepared.heads, checks: ["local opt-in retained", "canonical Claude controls",
       "global pause retention", "malformed policy hold", "clone/worktree shared revocation", "unaffected B delivery", "linked transcript tool pair", "private routing stripped"] };
   } finally {
-    run("retire"); await settled(); fs.rmSync(root, { recursive: true, force: true });
+    run("retire"); await settled();
+    if (succeeded) fs.rmSync(root, { recursive: true, force: true });
+    else console.error(`Synthetic failure artifacts retained at ${root}`);
   }
 }
 if (require.main === module) {
