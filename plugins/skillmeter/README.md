@@ -10,10 +10,11 @@ In Codex, ask SkillMeter to sign you in, sign you out, or check whether the
 current repository is in scope. The bundled skills are listed below.
 
 For terminal commands, set `PLUGIN_ROOT` to the **Installed plugin root** printed
-by `codex plugin add`. For a default 0.6.1 installation:
+by `codex plugin add`. Replace the placeholder below with that exact path so the
+commands use the installed version rather than an older cached copy:
 
 ```sh
-export PLUGIN_ROOT="$HOME/.codex/plugins/cache/skillbench/skillmeter/0.6.1"
+export PLUGIN_ROOT="/absolute/path/to/installed/skillmeter"
 ```
 
 Run project controls from the repository you want to configure:
@@ -90,7 +91,7 @@ Collected data can include:
 - Configuration names and counts, plus bounded descriptions and bodies of
   custom project/user skills. This is **not metadata-only collection**.
 
-Policy 3.1.0 redacts recognized secrets, email addresses, VCS author names,
+Policy 3.1.1 redacts recognized secrets, email addresses, VCS author names,
 phone numbers, IP addresses, national identifiers and payment-card numbers with
 typed placeholders. File-path fields retain hierarchy, extensions and approved
 technical vocabulary; other segments are hashed. Directory fields, commands and
