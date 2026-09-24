@@ -450,6 +450,7 @@ const ACTIVE_LOG_STALE_MS =
 // SessionStart) from each spawning a redundant detached drain within a short
 // window. The lock is advisory and self-heals once it goes stale.
 const DRAIN_ONCE_LOCK_FILE = path.join(LOG_DIR, ".drain-once.lock");
+const DRAIN_ONCE_REQUEST_FILE = path.join(LOG_DIR, ".drain-once.request");
 const DRAIN_ONCE_LOCK_STALE_MS = 30_000;
 
 // Ingest 401/403 forces refresh even if the token has not expired locally.
@@ -1199,11 +1200,31 @@ function clearDrainOnceLock() {
   try { fs.unlinkSync(DRAIN_ONCE_LOCK_FILE); } catch {}
 }
 
+function getDrainOnceRequest() {
+  try { return fs.readFileSync(DRAIN_ONCE_REQUEST_FILE, "utf8"); }
+  catch (error) { if (error.code === "ENOENT") return null; throw error; }
+}
+
+function finishDrainOnce(request) {
+  // Release before checking: a hook either leaves a newer request for this
+  // worker to hand off, or acquires the released slot and starts its own worker.
+  clearDrainOnceLock();
+  if (getDrainOnceRequest() !== request) startDetachedDrain();
+}
+
 /**
  * Spawn a detached drain that resolves credentials and routing when it sends.
  * Do not freeze a tenant endpoint into the child's environment.
  */
 function spawnDetachedDrain() {
+  // Persist even coalesced triggers. A final hook can arrive after the active
+  // worker has enumerated/staged its queues, with no later hook to wake it.
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  transcriptQueue.writeDurable(DRAIN_ONCE_REQUEST_FILE, crypto.randomUUID());
+  return startDetachedDrain();
+}
+
+function startDetachedDrain() {
   if (!shouldSpawnDrainOnce()) return false;
 
   const script = path.join(PLUGIN_ROOT, "scripts", "drain_once.js");
@@ -1815,6 +1836,8 @@ module.exports = {
   // Detached drain (one-shot)
   shouldSpawnDrainOnce,
   clearDrainOnceLock,
+  getDrainOnceRequest,
+  finishDrainOnce,
   spawnDetachedDrain,
   // Retry monitor (long-running singleton)
   isRetryDaemonRunning,
