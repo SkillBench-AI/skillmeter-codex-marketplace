@@ -106,3 +106,53 @@ The network/process guard is cooperative test interception, not an OS security
 sandbox. Only the pinned drain worker may spawn; only the fake collector origin
 is intercepted. This harness changes no real shared settings, authentication,
 installed plugin, schedule, release or production service.
+
+## Automate turn verification
+
+Once native sessions are explicitly bound, the assistant can perform the controls
+and source comparisons without asking the operator to find logs. Before each
+prompt, record a private snapshot with the verifier from this checkout:
+
+```sh
+node integration/shared-consent/verify-turn.cjs begin /absolute/canary b SHARED-B-BACKLOG queued 1
+# Submit the matching prompt in the selected desktop task and wait for completion.
+node integration/shared-consent/verify-turn.cjs verify /absolute/canary SHARED-B-BACKLOG
+```
+
+The last argument is the expected number of linked tool call/result pairs. Use
+`queued` for capture while the intercepted receiver returns503, `delivered` when
+it returns200, or `excluded` for a paused turn. Use a new marker for every turn.
+Receipts under `verification/` are private and must stay outside Git. `begin`
+refuses reused snapshots, already-used markers, inactive candidates and active
+drains. `verify` may inspect a completed run after retirement. It fails with a
+bounded diagnostic instead of printing transcript content or credentials.
+
+The verifier requires a native user message, completion, matching bound
+UserPromptSubmit/Stop callbacks and the expected linked tool pairs. Captured turns
+must match the pinned sanitizer's output record by record. Excluded turns must
+leave queued payload bytes, attempts and received files unchanged. A successful
+turn receipt covers only that turn: the operator still checks baseline backlog
+preservation, revoked-prefix absence, session isolation and collector semantics
+as described above. It is not a whole-suite or production pass.
+
+For the final four steps, the assistant owns this sequence:
+
+1. After B delivery, set receiver503. Snapshot B BACKLOG as `queued 1`, submit the
+   CSV-read prompt, verify it, and retain backlog hashes.
+2. Set shared global OFF. Snapshot B PAUSED as `excluded 0`, submit its no-tool
+   prompt and verify byte retention and no attempts.
+3. Set shared global ON and receiver200. Snapshot B RESUMED as `delivered 0`,
+   submit its no-tool prompt and verify. Compare delivered backlog with step1 and
+   exclude all source records from the paused interval, including its response.
+4. Set shared repository A ON. Snapshot A REENABLED as `delivered 1`, submit its
+   CSV-read prompt and verify. Check that old A payloads and the revoked interval
+   never return, including under a reset. Retire after the drain settles.
+
+Prompt submission is a separate driver capability. A driver must use the actual
+native composer and pass a no-tool qualification probe before automating the
+suite. Task-messaging APIs can insert a tool-output record and invoke Stop without
+UserPromptSubmit; that is not an equivalent native user turn. The regression
+fixture explicitly rejects this shape. If desktop UI control is unavailable or
+disallowed, retain manual prompt submission and automate the controls/verifier.
+Never bypass hook trust, use direct hook replay as native evidence, or silently
+substitute CLI execution for desktop validation. Do not run scheduled canaries.
