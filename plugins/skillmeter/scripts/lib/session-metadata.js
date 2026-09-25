@@ -33,4 +33,14 @@ function sessionMetadata(record) {
     ...(typeof record.uuid === "string" ? {uuid:record.uuid} : {}), payload:selected };
 }
 
-module.exports = { sessionMetadata };
+// A batch staged past the file start repeats the routing identity under its own
+// type, so a stored object that holds only later chunks can be attributed to
+// its session and told apart from the session's first record. No timestamp:
+// the collector dates objects from their earliest line, and the session start
+// would file a continuation under the day the session began.
+function sessionContinuation(record) {
+  const header = sessionMetadata(record);
+  return header && { type: "session_continuation", payload: header.payload };
+}
+
+module.exports = { sessionMetadata, sessionContinuation };

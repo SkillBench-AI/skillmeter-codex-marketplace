@@ -111,7 +111,12 @@ for downstream analysis.
 
 Uploads use durable local queues. Transcript chunks retain their order and
 retry identity across interruption and restart. A send failure does not require
-reinstalling the plugin or deleting its data.
+reinstalling the plugin or deleting its data. A chunk staged past a transcript's
+first record opens with a `session_continuation` record that carries only the
+session id, working directory, originator and lineage, so a stored object that
+holds later chunks of a long session can still be attributed to that session.
+This requires a usable first `session_meta` record and metadata preservation;
+otherwise, later batches remain content-only.
 
 | Symptom | Check |
 | --- | --- |
