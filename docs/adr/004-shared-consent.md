@@ -13,8 +13,8 @@ plugin made first, and the boundary it documents)
 
 The gate order (decision 2): global pause, license, repository resolvable,
 licensed organization, organization authorized, repository enabled. Unset is
-"consent required", not OFF. Transmission re-evaluates the gate. Consent
-names an organization or a repository, never a client (decision 3).
+"consent required", not OFF. Consent names an organization or a repository,
+never a client (decision 3).
 
 ## Differences in the Codex plugin, as of 0.7.0
 
@@ -25,10 +25,11 @@ names an organization or a repository, never a client (decision 3).
 | Global pause | `telemetry_disabled` in the credential file, also set by sign-out; #55 adds the shared `global.enabled` as a second gate, read-only | one field, `global.enabled` (decision 1) |
 | Shared ON | never used as permission; #55 and #56 read shared OFF only and keep the local opt-in | shared ON authorizes every client after the one-time scope acknowledgement (decisions 3 and 4) |
 | Malformed or missing shared policy | #55 and #56 fail closed; missing policy keeps local consent | the same, adopted for every client (decision 5) |
+| Send-time re-check | transcript chunks re-check scope before each send (`scopeStillAllowed`); event batches re-check the global pause and license only, so a batch sealed before a repository OFF can still drain (#52 adds the consent re-check on retry) | every queued item re-evaluates the full gate before transmission (decision 2) |
 | Repository OFF with queued data | capture stops, queued data stays (0.7.0); #52 purges payloads, keeps cursors, and adds a checkout generation so enable/disable cannot restore them | purge known payloads, keep cursors; organization or repository OFF before global pause (decision 6) |
 | Interval proof | consent journal per transcript (#49): first observation excludes the existing prefix, disabled byte ranges are excluded from staging and baseline rebuilds, settings revision and authentication generation close intervals | stays per client (decision 8); the Claude plugin uses privacy cursors |
 | Historical backfill | none | stays per client and per installation (decision 7) |
-| ChatGPT Work transcripts | `session_meta.originator=codex_work_desktop` rejected at staging | a capability boundary, not a consent choice (decision 3); Work consent is INF-247 |
+| ChatGPT Work transcripts | `session_meta.originator=codex_work_desktop` rejected at staging | a capability boundary, not a consent choice (decision 3); Work consent is a separate decision |
 
 ## Implementation mapping
 

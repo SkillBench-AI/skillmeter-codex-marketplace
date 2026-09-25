@@ -3,14 +3,13 @@
 **Status:** Adopted by reference, pending the canonical decision. Canonical
 text: [Claude Code plugin ADR 003](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/seungho/inf-174-adr-003-collection-state-visibility/docs/adr/003-collection-state-visibility.md)
 (Proposed, [PR #111](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/pull/111); the link moves to `main` when it lands).
-**Tracker:** INF-174 (canonical), INF-177
+**Tracker:** INF-174
 
 ## What is the same
 
 A single local resolver decides whether collection can proceed, with no
-network call in hooks (decision 1). The retry daemon exits when the client
-cannot proceed without the user (decision 3). The wording rules (decision 5)
-apply to every user-facing line this plugin prints.
+network call in hooks (decision 1). The wording rules (decision 5) apply to
+every user-facing line this plugin prints.
 
 ## Differences in the Codex plugin
 
@@ -23,8 +22,15 @@ apply to every user-facing line this plugin prints.
 - The local status record of decision 1 has no Codex counterpart yet. Until
   it exists, `status` derives its answer from the credential file, the
   policy files and the queue directories on each call.
+- The retry daemon (`scripts/monitors/retry_daemon.js`) exits on idle and on
+  its lifetime limit, not on a blocked state. With a queued batch and an
+  unrecoverable authentication state (402, missing token) it keeps sweeping
+  until the lifetime ends. The blocked-state exit of decision 3 is not
+  implemented.
 
 ## Open items
 
 - Write the local status record in the same shape as the Claude plugin once
   ADR 003 is accepted, so a shared status view can read both.
+- Exit the retry daemon on a blocked state instead of running out the
+  lifetime.

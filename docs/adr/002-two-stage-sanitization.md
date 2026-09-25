@@ -2,16 +2,17 @@
 
 **Status:** Adopted by reference. Canonical text:
 [Claude Code plugin ADR 002](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/main/docs/adr/002-two-stage-sanitization.md)
-(Accepted 2026-09-11, amended 2026-09-11: path handling, repository identity,
-file-name policy).
-**Tracker:** INF-192 (canonical), INF-177
+(Accepted 2026-09-11; amended 2026-09-11 for path handling, repository
+identity and file-name policy, and 2026-09-23 for colliding object keys,
+policy `3.1.1`).
+**Tracker:** INF-192
 **Related:** `docs/sanitizer-parity.md` (the adapter this plugin keeps over
 the shared rule table)
 
 ## What is the same
 
-Stage 1 runs on the device before anything is queued: the same 24 secret
-detectors, the same typed placeholders, the same path hashing with the shared
+Stage 1 runs on the device before anything is queued: policy `3.1.1` in
+both clients, the same 24 secret detectors, the same typed placeholders, the same path hashing with the shared
 per-device salt, and the shared fixture corpus in CI
 (`test/sanitizer-parity.test.js`). Every record carries the `_sanitization`
 stamp with counts per category and no values. Stage 2 does not exist yet for
@@ -19,8 +20,8 @@ either client.
 
 ## Differences in the Codex plugin
 
-- Policy version is `3.1.1` (Claude `3.1.0`). The extra step: a
-  `function_call` record's `arguments` is a JSON string in Codex transcripts;
+- The argument adapter: a `function_call` record's `arguments` is a JSON
+  string in Codex transcripts;
   the sanitizer parses it so labelled secrets and path rules see its
   structure, then re-serializes. Arguments that do not parse are hashed
   whole, marked `_codex_arguments_format: unsupported-json-opaque`, and
