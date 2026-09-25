@@ -1,22 +1,7 @@
 "use strict";
 
-const fs = require("fs");
 const path = require("path");
-const { SETTINGS_RELATIVE } = require("./settings");
-const { policyPathIsAbsent } = require("./shared-telemetry-policy");
-const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
-
-function localChoice(directory) {
-  const file = path.join(directory, SETTINGS_RELATIVE);
-  try {
-    const settings = JSON.parse(fs.readFileSync(file, "utf8"));
-    if (!object(settings) || (settings.skillmeter !== undefined && !object(settings.skillmeter))) return "invalid";
-    const choice = settings.skillmeter?.telemetry;
-    return choice === true ? "on" : choice === false ? "off" : choice === undefined ? "unset" : "invalid";
-  } catch (error) {
-    return error.code === "ENOENT" && policyPathIsAbsent(file) ? "unset" : "invalid";
-  }
-}
+const { SETTINGS_RELATIVE, readTelemetryChoice: localChoice } = require("./settings");
 
 function buildConsentPreview({ cwd, scope, policy, policyError = null, repoRoot = scope.repoRoot }) {
   const result = {

@@ -35,8 +35,25 @@ function getSkillmeterStringSetting(cwd, key) {
   }
 }
 
+// Missing consent is distinct from malformed or unreadable settings: a shared
+// grant may replace an unset choice, but must never bypass a local restriction.
+function readTelemetryChoice(directory) {
+  const file = path.join(directory, SETTINGS_RELATIVE);
+  const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
+  try {
+    const settings = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (!object(settings) || (settings.skillmeter !== undefined && !object(settings.skillmeter))) return "invalid";
+    const choice = settings.skillmeter?.telemetry;
+    return choice === true ? "on" : choice === false ? "off" : choice === undefined ? "unset" : "invalid";
+  } catch (error) {
+    const { policyPathIsAbsent } = require("./shared-telemetry-policy");
+    return error.code === "ENOENT" && policyPathIsAbsent(file) ? "unset" : "invalid";
+  }
+}
+
 module.exports = {
   SETTINGS_RELATIVE,
+  readTelemetryChoice,
   readSettingsFile,
   getSkillmeterStringSetting,
 };

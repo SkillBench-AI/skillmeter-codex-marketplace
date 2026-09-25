@@ -14,7 +14,8 @@ const { sanitizeEventData, redactDeep } = require("./sanitizer");
 const credstore = require("./credstore");
 const transcriptQueue = require("./lib/transcript-delta");
 const { createRepositoryQueue } = require("./lib/repository-queue");
-const { readSharedGlobalPolicy, readSharedRepositoryPolicy } = require("./lib/shared-telemetry-policy");
+const { createSharedConsentReader } = require("./lib/shared-consent-reader");
+const { readTelemetryChoice } = require("./lib/settings");
 const {
   getEndpointFromToken,
   getEndpointFromTokenAllowExpired,
@@ -40,6 +41,8 @@ const PLUGIN_DATA =
 
 const LOG_DIR = path.join(PLUGIN_DATA, "logs");
 const LOG_FILE = path.join(LOG_DIR, "events.jsonl");
+const { readSharedGlobalPolicy, readSharedRepositoryPolicy } =
+  createSharedConsentReader(path.join(LOG_DIR, "shared-policy-observed"));
 const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const CODEX_SESSIONS_DIR = path.join(CODEX_HOME, "sessions");
 
@@ -1529,7 +1532,7 @@ function readStdin() {
 }
 
 // Explicit repository consent, following Claude's default-off capture rule.
-// Storage remains checkout-local until the shared policy/queue adapter lands.
+// Acknowledged shared grants replace local ON; local restrictions still apply.
 
 function telemetryCliCommand(action) {
   return `node ${JSON.stringify(path.join(PLUGIN_ROOT, "scripts", "telemetry.js"))} ${action}`;
@@ -1549,30 +1552,24 @@ function getRepositoryPolicyDecision(cwd) {
 function getTelemetryOptIn(cwd) {
   const shared = getRepositoryPolicyDecision(cwd);
   if (!shared.allowed) return shared.revoked ? false : null;
-  return getLocalTelemetryOptIn(cwd);
+  const local = getLocalTelemetryChoice(cwd);
+  if (local === "off") return false;
+  if (local === "invalid") return null;
+  if (shared.acknowledged) return true;
+  return local === "on" ? true : null;
 }
 
-function getLocalTelemetryOptIn(cwd) {
+function getLocalTelemetryChoice(cwd) {
   const root = findGitRoot(cwd) || path.resolve(cwd);
   let current = path.resolve(cwd);
-  // Preserve legacy subdirectory opt-outs; a child cannot widen root consent.
   while (current !== root) {
-    const content = readSettingsFile(current);
-    if (fs.existsSync(path.join(current, SETTINGS_RELATIVE))) {
-      if (!content || typeof content !== "object" || Array.isArray(content)) return null;
-      const settings = content.skillmeter;
-      if (settings !== undefined && (
-        !settings || typeof settings !== "object" || Array.isArray(settings) ||
-        (settings.telemetry !== undefined && typeof settings.telemetry !== "boolean")
-      )) return null;
-      if (settings?.telemetry === false) return false;
-    }
+    const choice = readTelemetryChoice(current);
+    if (choice === "off" || choice === "invalid") return choice;
     const parent = path.dirname(current);
-    if (parent === current) return null;
+    if (parent === current) return "invalid";
     current = parent;
   }
-  const choice = readSettingsFile(root)?.skillmeter?.telemetry;
-  return typeof choice === "boolean" ? choice : null;
+  return readTelemetryChoice(root);
 }
 
 function saveTelemetryOptIn(cwd, value) {
@@ -1866,6 +1863,8 @@ module.exports = {
   // Cleanup
   cleanupStaleFiles,
   getTelemetryOptIn,
+  getLocalTelemetryChoice,
+  readSharedGlobalPolicy,
   getRepositoryPolicyDecision,
   saveTelemetryOptIn,
   writeTelemetryConsentFallback,
