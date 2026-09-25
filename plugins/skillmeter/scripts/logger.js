@@ -591,7 +591,10 @@ function transcriptScope(cwd, token, observeOnly = false) {
   if (!observeOnly && (!decision.allowed || !resolveTelemetryGate(getTelemetryOptIn(cwd), true).capture)) return null;
   return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner,
     queueEpoch: route.epoch, sharedStamp: route.sharedDeliveryToken, sharedPolicySeen: route.sharedPolicySeen,
-    consentStamp: owner + decision.repoRoot + (route.epoch || "") + (route.sharedPolicySeen ? route.sharedDeliveryToken : "") };
+    // A changed repository identity must start a separate queue even before
+    // shared policy exists; held chunks must not block the new identity.
+    consentStamp: owner + decision.repoRoot + (route.epoch || "") +
+      (route.sharedPolicySeen || route.previousRepositories?.length ? route.sharedDeliveryToken : "") };
 }
 function scopeStillAllowed(scope, token) {
   const current = transcriptScope(scope.cwd, token);
