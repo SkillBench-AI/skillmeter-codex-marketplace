@@ -13,6 +13,7 @@ const zlib = require("zlib");
 const { sanitizeEventData, redactDeep } = require("./sanitizer");
 const credstore = require("./credstore");
 const transcriptQueue = require("./lib/transcript-delta");
+const { createRepositoryQueue } = require("./lib/repository-queue");
 const {
   getEndpointFromToken,
   getEndpointFromTokenAllowExpired,
@@ -47,6 +48,11 @@ const TRANSCRIPTS_PENDING_DIR = path.join(LOG_DIR, "transcripts", "pending");
 
 const TRANSCRIPT_CHUNKS_DIR = path.join(LOG_DIR, "transcripts", "chunks-v1");
 const TRANSCRIPT_CAPTURES_DIR = path.join(LOG_DIR, "transcripts", "captures-v1");
+
+const repositoryQueue = createRepositoryQueue(LOG_DIR, getOrCreateHashSalt, cwd => {
+  credstore.refreshFromDisk();
+  return resolveTelemetryGate(getTelemetryOptIn(cwd), getRepoScopeDecision(cwd).allowed).capture;
+});
 
 const AGENT_NAME = "codex";
 
@@ -553,15 +559,38 @@ function isPermanentHttpStatus(status) {
 }
 
 // Upload one sealed event log. Resolves to an outcome the queue layer acts on:
-//   "sent"   — 2xx; the file was renamed to `.sent`.
+//   "sent"   — 2xx; acknowledged rows removed, held rows remain queued.
 //   "poison" — permanent server rejection; the payload will never be accepted.
 //   "retry"  — transient failure (5xx / 408 / 429 / network / timeout).
 //   "auth"   — no valid license, or the edge rejected the token (401/402/403);
 //              the batch stays queued and its retry budget is untouched.
+//   "held"   — repository routing unavailable; retain without retry charge.
 //   "skip"   — nothing to do (missing file).
 // Standalone callers can ignore the value; processSealedBatch uses it to decide
 // between salvage, quarantine, and a bounded retry.
-function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) {
+async function withEventLogLock(logFile, action) {
+  if (!logFile || !fs.existsSync(logFile) || getTelemetryGloballyDisabled()) return "skip";
+  const release = transcriptQueue.acquireLock(`${logFile}.lock`);
+  if (!release) return "held";
+  try {
+    return await action();
+  } finally {
+    // Disable may have skipped this live lock. Only this batch needs another
+    // revocation pass; the control command already scanned the rest of the queue.
+    try {
+      for (const file of [logFile, `${logFile}.sent`, path.join(POISON_DIR, path.basename(logFile))]) {
+        repositoryQueue.pruneFile(file, false);
+      }
+    } catch { console.error("[skillmeter] Repository payload cleanup deferred; routing unavailable"); }
+    finally { release(); }
+  }
+}
+
+async function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) {
+  return withEventLogLock(logFile, () => transferAuthorizedEventLog(logFile, backendUrl, timeoutMs));
+}
+
+function transferAuthorizedEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT, filtered) {
   if (!logFile || !fs.existsSync(logFile)) return Promise.resolve("skip");
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Event log transfer skipped (telemetry globally disabled)`);
@@ -586,10 +615,17 @@ function transferEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEOUT) {
   // JWT after a concurrent sign-in.
   const url = backendUrl || getBackendUrlForToken(token);
 
-  const compressed = zlib.gzipSync(fs.readFileSync(logFile));
+  try { filtered = filtered || repositoryQueue.pruneFile(logFile); }
+  catch { console.error("[skillmeter] Event delivery held; repository routing unavailable"); }
+  if (!filtered || filtered.wire === null) return Promise.resolve("held");
+  if (!filtered.wire) return Promise.resolve("skip");
+  const compressed = zlib.gzipSync(filtered.wire);
 
   const markSent = () => {
-    try { fs.renameSync(logFile, `${logFile}.sent`); } catch {}
+    // Keep held rows at the original path. A durable replacement must complete
+    // before reporting success; a failed local acknowledgment remains retryable.
+    if (filtered.held) transcriptQueue.writeDurable(logFile, filtered.held);
+    else fs.renameSync(logFile, `${logFile}.sent`);
   };
 
   console.error(
@@ -641,7 +677,7 @@ function transcriptScope(cwd, token, observeOnly = false) {
   token = token || getLicenseTokenUncached();
   if (!token || (!observeOnly && isJwtExpired(token))) return null;
   const decision = getRepoScopeDecision(cwd);
-  if (!decision.repoRoot || (!observeOnly && (!decision.allowed || !resolveTelemetryGate(getTelemetryOptIn(cwd), true).capture))) return null;
+  if (!decision.repoRoot) return null;
   const salt = getOrCreateHashSalt(), deviceId = getDeviceId();
   if (!salt || !deviceId) return null;
   const claims = decodeJwtPayload(token);
@@ -650,11 +686,19 @@ function transcriptScope(cwd, token, observeOnly = false) {
   // Without a stable principal, token rotation cannot reuse this queue. Never
   // deliver one principal's queued transcript as another user.
   const owner = transcriptQueue.hmac(salt, JSON.stringify([claims.iss, claims.aud, claims.sub, identity || token]));
-  return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner, consentStamp: owner + decision.repoRoot };
+  let queueEpoch;
+  try { queueEpoch = repositoryQueue.epoch(decision.repoRoot); }
+  catch {
+    console.error("[skillmeter] Transcript routing unavailable; capture deferred");
+    return null;
+  }
+  if (!observeOnly && (!decision.allowed || !resolveTelemetryGate(getTelemetryOptIn(cwd), true).capture)) return null;
+  return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner, queueEpoch,
+    consentStamp: owner + decision.repoRoot + (queueEpoch || "") };
 }
 function scopeStillAllowed(scope, token) {
   const current = transcriptScope(scope.cwd, token);
-  return current && ["repoRoot", "org", "deviceId", "owner"].every(k => current[k] === scope[k]);
+  return current && (current.queueEpoch || 0) === (scope.queueEpoch || 0) && ["repoRoot", "org", "deviceId", "owner"].every(k => current[k] === scope[k]);
 }
 // Local settings revisions identify transitions without depending on token
 // rotation. Shared policy storage and cross-client transitions are separate.
@@ -944,7 +988,7 @@ function batchMetaPath(batchPath) {
 function readBatchMeta(batchPath) {
   try {
     const meta = JSON.parse(fs.readFileSync(batchMetaPath(batchPath), "utf8"));
-    return { attempts: Number(meta.attempts) || 0 };
+    return { attempts: Number(meta.attempts) || 0, ...(meta.payload ? { payload: meta.payload } : {}) };
   } catch {
     return { attempts: 0 };
   }
@@ -992,10 +1036,10 @@ function quarantineFile(filePath, reason) {
 // line, keep only the valid JSON records, and rewrite the batch atomically when
 // — and only when — some lines were actually invalid. Returns a summary the
 // caller uses to decide whether a salvage retry is worthwhile.
-function salvageBatch(batchPath) {
+function salvageBatch(batchPath, filtered) {
   let raw;
   try {
-    raw = fs.readFileSync(batchPath, "utf8");
+    raw = filtered ? filtered.ready : fs.readFileSync(batchPath, "utf8");
   } catch {
     return { rewrote: false, kept: 0, dropped: 0 };
   }
@@ -1019,7 +1063,7 @@ function salvageBatch(batchPath) {
   if (valid.length === 0) return { rewrote: false, kept: 0, dropped };
 
   try {
-    atomicWriteFileSync(batchPath, valid.join("\n") + "\n");
+    transcriptQueue.writeDurable(batchPath, valid.join("\n") + "\n" + (filtered?.held || ""));
     return { rewrote: true, kept: valid.length, dropped };
   } catch {
     return { rewrote: false, kept: valid.length, dropped };
@@ -1030,24 +1074,50 @@ function salvageBatch(batchPath) {
 // queue-aware wrapper around transferEventLog used by the drains; it enforces
 // the max-age and max-retry bounds and performs partial-rejection salvage.
 async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
+  return withEventLogLock(batchPath, () => processLockedBatch(batchPath, backendUrl, timeoutMs));
+}
+
+function quarantinePartition(batchPath, filtered, reason) {
+  const dest = path.join(POISON_DIR, path.basename(batchPath));
+  if (!filtered.held && !fs.existsSync(dest)) return quarantineFile(batchPath, reason);
+  // Publish the rejected portion before removing it from the source. A crash
+  // between these writes can repeat rejection, but cannot lose held records.
+  // A later rejected subset must not overwrite an earlier quarantine.
+  fs.mkdirSync(POISON_DIR, { recursive: true });
+  const previous = fs.existsSync(dest) ? fs.readFileSync(dest, "utf8") : "";
+  transcriptQueue.writeDurable(dest, previous + filtered.ready);
+  if (filtered.held) transcriptQueue.writeDurable(batchPath, filtered.held);
+  else fs.unlinkSync(batchPath);
+  console.error(`[skillmeter] Quarantined deliverable portion: ${reason}`);
+}
+
+async function processLockedBatch(batchPath, backendUrl, timeoutMs) {
   if (!fs.existsSync(batchPath)) return "skip";
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Batch processing skipped (telemetry globally disabled)`);
     return "skip";
   }
 
+  const token = getLicenseTokenUncached();
+  if (!token || isJwtExpired(token)) return "auth";
+
   const baseName = path.basename(batchPath);
+  let filtered;
+  try { filtered = repositoryQueue.pruneFile(batchPath); }
+  catch { return "held"; }
+  if (!filtered || filtered.wire === null) return "held";
+  if (!filtered.wire) { clearBatchMeta(batchPath); return "skip"; }
 
   // Max-age give-up: a batch we still can't deliver after BATCH_MAX_AGE_MS is
-  // treated as undeliverable, independent of why each attempt failed.
+  // treated as undeliverable. Held rows are outside this delivery attempt.
   const sealTime = batchSealTimeMs(batchPath);
   if (sealTime != null && Date.now() - sealTime > BATCH_MAX_AGE_MS) {
-    quarantineFile(batchPath, `exceeded max age (${Math.round(BATCH_MAX_AGE_MS / 86400000)}d)`);
+    quarantinePartition(batchPath, filtered, `exceeded max age (${Math.round(BATCH_MAX_AGE_MS / 86400000)}d)`);
     clearBatchMeta(batchPath);
     return "poison";
   }
 
-  const outcome = await transferEventLog(batchPath, backendUrl, timeoutMs);
+  const outcome = await transferAuthorizedEventLog(batchPath, backendUrl, timeoutMs, filtered);
 
   if (outcome === "sent" || outcome === "skip") {
     clearBatchMeta(batchPath);
@@ -1058,30 +1128,34 @@ async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
   // payload was never judged, so the batch keeps its place in the queue and its
   // attempt counter is left untouched. A signed-out week must not quarantine a
   // batch the collector would happily accept.
-  if (outcome === "auth") return "auth";
+  if (outcome === "auth" || outcome === "held") return outcome;
 
   if (outcome === "poison") {
-    const salv = salvageBatch(batchPath);
+    const salv = salvageBatch(batchPath, filtered);
     if (salv.rewrote) {
       console.error(
         `[skillmeter] Salvaged ${baseName}: dropped ${salv.dropped} invalid line(s), retrying ${salv.kept} valid`
       );
-      const retryOutcome = await transferEventLog(batchPath, backendUrl, timeoutMs);
+      // Recheck consent after the first request, before sending the salvage.
+      try { filtered = repositoryQueue.pruneFile(batchPath); } catch { return "held"; }
+      if (!filtered || filtered.wire === null) return "held";
+      if (!filtered.wire) { clearBatchMeta(batchPath); return "skip"; }
+      const retryOutcome = await transferAuthorizedEventLog(batchPath, backendUrl, timeoutMs, filtered);
       if (retryOutcome === "sent") {
         clearBatchMeta(batchPath);
         return "sent";
       }
-      if (retryOutcome === "retry" || retryOutcome === "auth") {
+      if (retryOutcome === "retry" || retryOutcome === "auth" || retryOutcome === "held" || retryOutcome === "skip") {
         // The salvaged batch was never judged on its merits — a transient
         // failure, or the license aged out between the two posts. Keep it.
         return retryOutcome;
       }
-      quarantineFile(batchPath, "still rejected after partial-rejection salvage");
+      quarantinePartition(batchPath, filtered, "still rejected after partial-rejection salvage");
       clearBatchMeta(batchPath);
       return "poison";
     }
-    quarantineFile(
-      batchPath,
+    quarantinePartition(
+      batchPath, filtered,
       salv.dropped > 0 ? "no salvageable lines remain" : "server rejected payload (permanent)"
     );
     clearBatchMeta(batchPath);
@@ -1091,9 +1165,13 @@ async function processSealedBatch(batchPath, backendUrl, timeoutMs) {
   // Transient failure: bump the attempt counter and quarantine once we've
   // burned through the retry budget.
   const meta = readBatchMeta(batchPath);
+  // A repository becoming eligible must not inherit another subset's retries.
+  const payload = crypto.createHash("sha256").update(filtered.ready).digest("hex");
+  if ((meta.payload && meta.payload !== payload) || (!meta.payload && filtered.held)) meta.attempts = 0;
+  meta.payload = payload;
   meta.attempts += 1;
   if (meta.attempts >= MAX_BATCH_RETRIES) {
-    quarantineFile(batchPath, `exceeded ${MAX_BATCH_RETRIES} retries`);
+    quarantinePartition(batchPath, filtered, `exceeded ${MAX_BATCH_RETRIES} retries`);
     clearBatchMeta(batchPath);
     return "poison";
   }
@@ -1123,7 +1201,9 @@ async function drainFailedLogs(backendUrl, timeoutMs) {
 // One bounded recovery attempt per sweep. The durable reset request survives
 // process death, a missing raw source, consent changes and network failures.
 async function drainTranscriptDirectory(dir, send) {
-  await transcriptQueue.drainDirectory(dir, send);
+  transcriptQueue.purgeRevoked(dir, repositoryQueue.revokedScope);
+  try { await transcriptQueue.drainDirectory(dir, send); }
+  finally { transcriptQueue.purgeRevoked(dir, repositoryQueue.revokedScope); }
   const request = path.join(dir, "reset-request.json"), cursorFile = path.join(dir, "cursor.json");
   if (fs.existsSync(request) && fs.existsSync(cursorFile)) {
     const cursor = JSON.parse(fs.readFileSync(cursorFile, "utf8"));
@@ -1483,7 +1563,7 @@ function flushAndTransfer(input) {
   return Promise.resolve();
 }
 
-function logStructured(level, event, sessionId, data, deviceId) {
+function logStructured(level, event, sessionId, data, deviceId, route) {
   if (!deviceId) return;
 
   fs.mkdirSync(LOG_DIR, { recursive: true });
@@ -1496,6 +1576,7 @@ function logStructured(level, event, sessionId, data, deviceId) {
     device_id: deviceId,
     agent: AGENT_NAME,
     data,
+    _queue: route || repositoryQueue.eventRoute(data),
   };
 
   // Atomic single-write append so concurrent hook processes can't splice
@@ -1508,8 +1589,8 @@ function getTranscriptId(transcriptPath) {
   return path.basename(transcriptPath);
 }
 
-const logInfo = (event, sessionId, data, deviceId) =>
-  logStructured("info", event, sessionId, data, deviceId);
+const logInfo = (event, sessionId, data, deviceId, route) =>
+  logStructured("info", event, sessionId, data, deviceId, route);
 
 function readStdin() {
   return new Promise((resolve, reject) => {
@@ -1565,18 +1646,30 @@ function getTelemetryOptIn(cwd) {
 function saveTelemetryOptIn(cwd, value) {
   if (typeof value !== "boolean") throw new Error("Telemetry choice must be boolean.");
   const settingsPath = path.join(findGitRoot(cwd) || cwd, SETTINGS_RELATIVE);
-  let content = {};
-  if (fs.existsSync(settingsPath)) {
-    content = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-    if (!content || typeof content !== "object" || Array.isArray(content) ||
-        (content.skillmeter !== undefined && (!content.skillmeter || typeof content.skillmeter !== "object" || Array.isArray(content.skillmeter)))) {
-      throw new Error("Invalid project settings; repair the file before changing consent.");
+  const repoRoot = findGitRoot(cwd) || path.resolve(cwd);
+  repositoryQueue.register(cwd, repoRoot, !value, () => {
+    let content = {};
+    if (fs.existsSync(settingsPath)) {
+      content = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
+      if (!content || typeof content !== "object" || Array.isArray(content) ||
+          (content.skillmeter !== undefined && (!content.skillmeter || typeof content.skillmeter !== "object" || Array.isArray(content.skillmeter)))) {
+        throw new Error("Invalid project settings; repair the file before changing consent.");
+      }
     }
+    content.skillmeter = { ...content.skillmeter, telemetry: value };
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    return () => transcriptQueue.writeDurable(settingsPath, JSON.stringify(content, null, 2) + "\n");
+  });
+  observeKnownTranscriptConsent(repoRoot);
+  if (!value) {
+    sealEventLog();
+    let complete = repositoryQueue.purgeEvents();
+    for (const dir of transcriptQueue.queueDirectories(TRANSCRIPT_CHUNKS_DIR)) {
+      try { if (!transcriptQueue.purgeRevoked(dir, repositoryQueue.revokedScope)) complete = false; }
+      catch { complete = false; }
+    }
+    if (!complete) console.error("[skillmeter] Some local payload cleanup is deferred; queued data remains subject to delivery checks");
   }
-  content.skillmeter = { ...content.skillmeter, telemetry: value };
-  fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-  fs.writeFileSync(settingsPath, JSON.stringify(content, null, 2) + "\n");
-  observeKnownTranscriptConsent(findGitRoot(cwd) || path.resolve(cwd));
 }
 
 // In-context consent notice: printed to a Codex hook's stderr channel when a
@@ -1668,7 +1761,7 @@ async function runHook(eventName, buildData, options = {}) {
     return exit(0);
   }
 
-  const cwd = input.cwd || process.cwd();
+  const cwd = path.resolve(input.cwd || process.cwd());
   try {
     for (const source of collectTranscriptPaths(input, { discover: false })) {
       observeTranscriptConsent(source, cwd);
@@ -1704,6 +1797,13 @@ async function runHook(eventName, buildData, options = {}) {
     return exit(0);
   }
 
+  let route;
+  try { route = repositoryQueue.register(cwd, repoScopeDecision.repoRoot); }
+  catch {
+    console.error(`[skillmeter] ${eventName}: skipped (repository routing unavailable)`);
+    return exit(0);
+  }
+  if (!resolveTelemetryGate(getTelemetryOptIn(cwd), getRepoScopeDecision(cwd).allowed).capture) return exit(0);
   const ctx = { hashSalt, cwd, sanitizeToolData, getTranscriptId };
   const eventData = buildData ? buildData(input, ctx) : {};
 
@@ -1733,7 +1833,7 @@ async function runHook(eventName, buildData, options = {}) {
     );
   }
 
-  logInfo(eventName, sessionId, data, deviceId);
+  logInfo(eventName, sessionId, data, deviceId, { epoch: route.epoch });
   console.error(
     `[skillmeter] ${eventName}: logged (session=${String(sessionId).slice(0, 8)}…)`
   );

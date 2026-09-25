@@ -389,6 +389,21 @@ function metadata(file) {
   if (!chunk) throw new Error("unknown-chunk");
   return { ...chunk, scope: commit.cursor.scope, transcriptId: commit.cursor.transcriptId };
 }
+// Preserve the committed cursor and consent journal when removing payloads.
+// A busy queue is rechecked after its current request completes.
+function purgeRevoked(dir, revoked) {
+  const release = acquireLock(path.join(dir, "lock"));
+  if (!release) return false;
+  try {
+    recover(dir);
+    for (const group of groups(dir)) {
+      const commit = readJson(path.join(group, "commit.json"));
+      if (revoked(commit.cursor.scope)) fs.rmSync(group, { recursive: true });
+    }
+    syncDir(dir);
+    return true;
+  } finally { release(); }
+}
 async function drainDirectory(dir, send) {
   const release = acquireLock(path.join(dir, "lock"));
   if (!release) return 0;
@@ -413,5 +428,5 @@ async function drainDirectory(dir, send) {
     return sent;
   } finally { release(); }
 }
-module.exports = { stage, observeConsent, encodeChunks, acquireLock, recover, queueDirectories, pendingFiles, metadata,
+module.exports = { stage, observeConsent, purgeRevoked, encodeChunks, acquireLock, recover, queueDirectories, pendingFiles, metadata,
   drainDirectory, writeDurable, hmac, MAX_ENVELOPE, ENVELOPE_RESERVE, MAX_RECORD, STAGE_BYTES };

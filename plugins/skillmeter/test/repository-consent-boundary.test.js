@@ -54,7 +54,7 @@ cp.spawn = () => { require("fs").appendFileSync(process.env.TEST_SPAWNS, "spawn\
     const file = path.join(data, "logs/events.jsonl");
     return fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : [];
   };
-  return { root, repo, data, settings, credentialFile, saveCredentials, run, control, hook, events };
+  return { root, repo, data, settings, credentialFile, saveCredentials, preload, run, control, hook, events };
 }
 
 test("an unselected owned repository creates no events or capture hints", () => {
@@ -75,7 +75,7 @@ test("explicit enable persists across hook processes; disable stops new capture"
   assert.equal(f.events().length, 2);
   f.control("disable");
   f.hook();
-  assert.equal(f.events().length, 2);
+  assert.equal(f.events().length, 0);
 });
 
 test("repository-root choice applies to hooks and controls in subdirectories", () => {
@@ -89,7 +89,7 @@ test("repository-root choice applies to hooks and controls in subdirectories", (
   assert.equal(f.events().length, 2);
   f.control("disable", subdir);
   f.hook(); f.hook(subdir);
-  assert.equal(f.events().length, 2);
+  assert.equal(f.events().length, 0);
 });
 
 test("parent consent does not enable an unselected nested repository", () => {
@@ -214,4 +214,79 @@ for (const value of [{ unrelated: true }, { skillmeter: {} }, { skillmeter: { te
     f.hook(subdir);
     assert.equal(f.events().length, 1);
   });
+}
+
+test("routing lock contention preserves the Stop hook's JSON and reports a retryable control failure", () => {
+  const f = fixture();
+  f.control("enable");
+  const routing = path.join(f.data, "logs/repository-routing");
+  const id = require("node:crypto").createHmac("sha256", "synthetic-salt").update(fs.realpathSync(f.repo)).digest("hex").slice(0, 12);
+  const release = require("../scripts/lib/transcript-delta").acquireLock(path.join(routing, `${id}.json.lock`));
+  assert.ok(release);
+  try {
+    const hook = f.run("stop.js");
+    assert.equal(hook.status, 0, hook.stderr);
+    assert.deepEqual(JSON.parse(hook.stdout), {});
+    assert.match(hook.stderr, /repository routing unavailable/);
+    assert.deepEqual(f.events(), []);
+    const control = f.run("telemetry.js", ["disable"]);
+    assert.equal(control.status, 1);
+    assert.match(control.stderr, /busy.*retry/i);
+    assert.equal(JSON.parse(fs.readFileSync(f.settings)).skillmeter.telemetry, true);
+  } finally { release(); }
+  f.control("disable");
+  assert.equal(JSON.parse(fs.readFileSync(f.settings)).skillmeter.telemetry, false);
+});
+
+
+for (const spelling of ["relative", "trailing slash"]) {
+  test(`hook cwd normalization matches routing keys: ${spelling}`, () => {
+    const f = fixture();
+    f.control("enable");
+    f.hook(f.repo, { cwd: spelling === "relative" ? "." : `${f.repo}/` });
+    const [event] = f.events();
+    const resolved = spelling === "relative" ? fs.realpathSync(f.repo) : f.repo;
+    const expected = require("node:crypto").createHmac("sha256", "synthetic-salt").update(resolved).digest("hex").slice(0, 12);
+    assert.equal(event.data.cwd, expected);
+    const routing = path.join(f.data, "logs/repository-routing");
+    const states = fs.readdirSync(routing).filter(name => name.endsWith(".json")).map(name => JSON.parse(fs.readFileSync(path.join(routing, name))));
+    assert.ok(states.some(state => state.directories?.[event.data.cwd] === resolved));
+  });
+}
+
+for (const script of ["stop.js", "subagent_stop.js"]) {
+  for (const failure of ["busy", "missing-checkout"]) {
+    test(`${script} defers transcript capture if routing fails after the event is sealed: ${failure}`, () => {
+      const f = fixture(); f.control("enable");
+      // Inject at the real final flush boundary, after registration and the
+      // earlier guarded capture request succeeded. No hook logic is mocked.
+      fs.appendFileSync(f.preload, `
+const fs = require("node:fs"), path = require("node:path");
+const rename = fs.renameSync;
+fs.renameSync = function(from, to) {
+  const result = rename.call(this, from, to);
+  if (from === path.join(process.env.PLUGIN_DATA, "logs/events.jsonl")) {
+    ${failure === "busy" ? `
+    const id = require("node:crypto").createHmac("sha256", "synthetic-salt").update(fs.realpathSync(process.cwd())).digest("hex").slice(0, 12);
+    fs.writeFileSync(path.join(process.env.PLUGIN_DATA, "logs/repository-routing", id + ".json.lock"), JSON.stringify({pid:process.pid}));
+    ` : `
+    const realpath = fs.realpathSync;
+    fs.realpathSync = function(file, ...args) {
+      if (file === ${JSON.stringify(f.repo)}) throw Object.assign(new Error("synthetic missing checkout"), {code:"ENOENT"});
+      return realpath.call(this, file, ...args);
+    };
+    `}
+  }
+  return result;
+};
+`);
+      const result = f.run(script);
+      assert.equal(result.status, 0, result.stderr);
+      assert.deepEqual(JSON.parse(result.stdout), {});
+      assert.match(result.stderr, /routing unavailable.*capture deferred/);
+      assert.equal(fs.existsSync(path.join(f.data, "logs/transcripts/captures-v1")), true);
+      assert.deepEqual(fs.readdirSync(path.join(f.data, "logs/transcripts/captures-v1")), []);
+      assert.equal(fs.readdirSync(path.join(f.data, "logs")).filter(n => /^events\.jsonl\.\d+$/.test(n)).length, 1);
+    });
+  }
 }

@@ -77,8 +77,12 @@ function saveRepositoryChoice(value) {
   try {
     saveTelemetryOptIn(cwd, value);
     return true;
-  } catch {
-    process.stderr.write(`SkillMeter: Could not update ${SETTINGS_RELATIVE}; check its JSON and file permissions.\n`);
+  } catch (error) {
+    if (error.message === "repository-routing-busy") {
+      process.stderr.write("SkillMeter: Repository controls are busy; retry this command.\n");
+    } else {
+      process.stderr.write(`SkillMeter: Could not update ${SETTINGS_RELATIVE}; check local routing state, JSON and file permissions.\n`);
+    }
     process.exitCode = 1;
     return false;
   }
@@ -110,7 +114,7 @@ switch (action) {
       process.stderr.write("SkillMeter: Pending uploads will remain queued until global telemetry is enabled\n");
     } else {
       if (!saveRepositoryChoice(false)) break;
-      process.stderr.write(`SkillMeter: New capture disabled for ${projectRoot}; previously queued data is not purged\n`);
+      process.stderr.write(`SkillMeter: New capture disabled for ${projectRoot}; queued repository payloads revoked (in-flight requests may finish)\n`);
     }
     break;
   case "status": {
