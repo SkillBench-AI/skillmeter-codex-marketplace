@@ -88,4 +88,4 @@ function readSharedRepositoryPolicy(scope) {
   };
 }
 
-module.exports = { readSharedGlobalPolicy, readSharedRepositoryPolicy };
+module.exports = { readSharedGlobalPolicy, readSharedRepositoryPolicy, policyPathIsAbsent };
