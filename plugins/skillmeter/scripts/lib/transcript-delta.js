@@ -90,14 +90,18 @@ function prefix(fd, length, salt) {
 // The first complete line of the source, or null while none is complete.
 function firstRecord(fd, size) {
   const buffer = Buffer.alloc(64 * 1024);
-  let pending = Buffer.alloc(0), position = 0;
-  while (position < size && pending.length <= MAX_RECORD) {
+  const parts = [];
+  let length = 0, position = 0;
+  while (position < size && length <= MAX_RECORD) {
     const n = fs.readSync(fd, buffer, 0, Math.min(buffer.length, size - position), position);
     if (!n) break;
     position += n;
-    pending = Buffer.concat([pending, buffer.subarray(0, n)]);
-    const end = pending.indexOf(10);
-    if (end >= 0) return pending.subarray(0, end + 1);
+    const read = buffer.subarray(0, n);
+    const end = read.indexOf(10);
+    const part = Buffer.from(end >= 0 ? read.subarray(0, end + 1) : read);
+    parts.push(part);
+    length += part.length;
+    if (end >= 0) return Buffer.concat(parts, length);
   }
   return null;
 }
