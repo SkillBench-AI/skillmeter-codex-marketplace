@@ -41,7 +41,7 @@ function createSharedPolicyStore({ file, observedFile }) {
   }
   const lockFile = `${file}.lock`;
 
-  function observed(mark = false) {
+  function observed(mark = false, onCreate = () => {}) {
     try {
       if (mark && !observed()) {
         fs.mkdirSync(path.dirname(observedFile), { recursive: true, mode: 0o700 });
@@ -51,6 +51,7 @@ function createSharedPolicyStore({ file, observedFile }) {
           fd = fs.openSync(temp, "wx", 0o600);
           fs.writeFileSync(fd, "1\n"); fs.fsyncSync(fd);
           fs.linkSync(temp, observedFile);
+          onCreate(fs.fstatSync(fd));
         } catch (err) { if (err.code !== "EEXIST") throw err; }
         finally {
           if (fd !== undefined) fs.closeSync(fd);
@@ -133,7 +134,8 @@ function createSharedPolicyStore({ file, observedFile }) {
       mutator(policy);
       policy.revision++;
       validatePolicy(policy);
-      observed(true);
+      let createdMarker;
+      observed(true, stat => { createdMarker = stat; });
       const temp = `${file}.tmp.${process.pid}.${randomUUID()}`;
       let fd;
       try {
@@ -142,6 +144,20 @@ function createSharedPolicyStore({ file, observedFile }) {
         fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined;
         assertOwned();
         fs.renameSync(temp, file);
+      } catch (err) {
+        // A failed first write has not observed a policy. Roll back only this
+        // attempt's marker, under our lock, while the policy is still absent.
+        // Uncertain ownership or cleanup failure deliberately leaves the hold.
+        if (!previous && createdMarker) {
+          try {
+            assertOwned();
+            const current = fs.lstatSync(observedFile);
+            if (current.dev === createdMarker.dev && current.ino === createdMarker.ino && policyPathIsAbsent(file)) {
+              fs.unlinkSync(observedFile);
+            }
+          } catch { /* Preserve the original write error and fail closed. */ }
+        }
+        throw err;
       } finally {
         if (fd !== undefined) fs.closeSync(fd);
         try { fs.unlinkSync(temp); } catch (err) { if (err.code !== "ENOENT") throw err; }
@@ -164,7 +180,7 @@ function createSharedPolicyStore({ file, observedFile }) {
     return mutate(policy => {
       policy.repositories[key] = {
         ...decision(enabled, policy.repositories[key]),
-        ...(options?.acknowledged === true ? { consent_version: 2 } : {}),
+        ...(enabled === true && options?.acknowledged === true ? { consent_version: 2 } : {}),
       };
     }, options);
   }
