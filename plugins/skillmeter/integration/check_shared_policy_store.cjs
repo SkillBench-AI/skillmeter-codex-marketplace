@@ -9,6 +9,7 @@ const path = require("node:path");
 const { spawn, spawnSync } = require("node:child_process");
 const { createSharedPolicyStore } = require("../scripts/lib/shared-policy-store");
 
+const version2 = process.argv.includes("--v2");
 const claudeRoot = process.argv[2] && path.resolve(process.argv[2]);
 if (!claudeRoot) throw new Error("Usage: node check_shared_policy_store.cjs /path/to/pinned/claude-checkout");
 const bootstrap = path.join(claudeRoot, "skillmeter/testing/bootstrap.js");
@@ -67,11 +68,27 @@ function concurrentWriter(setup, action) {
 
 async function run() {
 try {
-  // Claude's legacy choice remains legacy. Merely reading it grants nothing.
+  if (version2) {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const legacy = { schema_version: 1, revision: 1, global: { enabled: true },
+      organizations: { acme: { enabled: true, consent_version: 1 } },
+      repositories: { [repo]: { enabled: true }, [other]: { enabled: false } } };
+    fs.writeFileSync(file, JSON.stringify(legacy));
+    claude(`assert.equal(store.acknowledgementRequired(), true);
+      assert.deepEqual(store.acknowledgeConsentStatement(1), { revision: 2, acknowledged: 2 });`);
+    const confirmed = store.readPolicy();
+    assert.equal(confirmed.organizations.acme.consent_version, 2);
+    assert.equal(confirmed.repositories[repo].consent_version, 2);
+    assert.equal(confirmed.repositories[other].enabled, false);
+    assert.equal(confirmed.repositories[other].consent_version, undefined);
+    claude(`assert.equal(store.acknowledgementRequired(), false);`);
+  }
+  // Verify the pinned writer's version explicitly; never silently promote a
+  // legacy implementation into the version-2 acceptance path.
   claude(`store.setOrganizationConsent('acme', true); store.setRepositoryOverride('${repo}', true);`);
   const legacy = store.readPolicy();
-  assert.equal(legacy.organizations.acme.consent_version, 1);
-  assert.equal(legacy.repositories[repo].consent_version, undefined);
+  assert.equal(legacy.organizations.acme.consent_version, version2 ? 2 : 1);
+  assert.equal(legacy.repositories[repo].consent_version, version2 ? 2 : undefined);
   const acknowledged = store.setRepositoryOverride(repo, true, { expectedRevision: legacy.revision, acknowledged: true });
 
   // An unrelated old-client write must preserve the new nested version field.
@@ -84,7 +101,7 @@ try {
   claude(`store.setRepositoryOverride('${repo}', false, ${preview.revision});`);
   assert.throws(() => store.setRepositoryOverride(repo, true, { expectedRevision: preview.revision, acknowledged: true }), { code: "STALE_POLICY" });
   assert.equal(store.readPolicy().repositories[repo].enabled, false);
-  assert.equal(store.readPolicy().repositories[repo].consent_version, undefined);
+  assert.equal(store.readPolicy().repositories[repo].consent_version, version2 ? 2 : undefined);
 
   // Both clients use the same lock path. Test the real Claude lock timeout.
   fs.writeFileSync(`${file}.lock`, "synthetic-active-writer");
@@ -110,7 +127,7 @@ try {
   } finally {
     writers.forEach(writer => { if (writer.child.exitCode === null) writer.child.kill(); });
   }
-  process.stdout.write("PASS: legacy choices, version preservation, stale OFF protection, shared lock, alternating and concurrent Claude/Codex writes\n");
+  process.stdout.write("PASS: selected writer version, acknowledgement (v2 mode), version preservation, stale OFF protection, shared lock, alternating and concurrent Claude/Codex writes\n");
 } finally {
   fs.rmSync(root, { recursive: true, force: true });
 }
