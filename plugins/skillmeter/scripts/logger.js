@@ -348,11 +348,11 @@ const BATCH_MAX_AGE_MS =
 const ACTIVE_LOG_STALE_MS =
   parseInt(process.env.SKILLMETER_ACTIVE_LOG_STALE_MS || "", 10) || 5 * 60 * 1000;
 
-// Drain-once de-dupe lock: stops final-session hooks (Stop/SubagentStop/
-// SessionStart) from each spawning a redundant detached drain within a short
-// window. The lock is advisory and self-heals once it goes stale.
-const DRAIN_ONCE_LOCK_FILE = path.join(LOG_DIR, ".drain-once.lock");
-const DRAIN_ONCE_LOCK_STALE_MS = 30_000;
+// Final-session hooks request detached delivery. Workers own this lock until
+// completion or process death; completed triggers cannot cause another pass.
+const DRAIN_ONCE_LOCK_FILE = path.join(LOG_DIR, ".drain-once.worker.lock");
+const DRAIN_ONCE_REQUEST_FILE = path.join(LOG_DIR, ".drain-once.request");
+const DRAIN_ONCE_COMPLETED_FILE = path.join(LOG_DIR, ".drain-once.completed");
 
 // Ingest 401/403 forces refresh even if the token has not expired locally.
 // Successful rotation or upload clears the marker.
@@ -660,8 +660,9 @@ function stageTranscriptForUpload(transcriptPath, context = {}) {
       preserveSessionMetadata: true,
       authorizeCommit: () => scopeStillAllowed(scope) && consent.stamp === transcriptConsentStamp(cwd),
       authorizeRecord: record => {
-        if (record.type === "session_meta" && record.payload?.originator === "codex_work_desktop") return false;
-        if (!["session_meta", "turn_context"].includes(record.type) || !record.payload?.cwd) return true;
+        const identity = ["session_meta", "session_continuation"].includes(record.type);
+        if (identity && record.payload?.originator === "codex_work_desktop") return false;
+        if (!(identity || record.type === "turn_context") || !record.payload?.cwd) return true;
         const sourceScope = transcriptScope(record.payload.cwd);
         return sourceScope && sourceScope.repoRoot === scope.repoRoot && sourceScope.owner === scope.owner;
       },
@@ -1171,31 +1172,51 @@ function retryFailedLogs(backendUrl) {
 
 // Detached drain spawn (one-shot)
 
-function shouldSpawnDrainOnce() {
-  try {
-    fs.mkdirSync(LOG_DIR, { recursive: true });
-    const st = fs.statSync(DRAIN_ONCE_LOCK_FILE);
-    if (Date.now() - st.mtimeMs < DRAIN_ONCE_LOCK_STALE_MS) {
-      console.error(`[skillmeter] Drain trigger skipped: recent drain already requested`);
-      return false;
-    }
-  } catch (err) {
-    if (err && err.code !== "ENOENT") {
-      console.error(`[skillmeter] Drain lock check failed: ${err.message}`);
-    }
-  }
-
-  try {
-    fs.writeFileSync(DRAIN_ONCE_LOCK_FILE, `${process.pid} ${Date.now()}\n`);
-    return true;
-  } catch (err) {
-    console.error(`[skillmeter] Drain lock write failed: ${err.message}`);
-    return false;
-  }
+function readDrainMarker(file) {
+  try { return fs.readFileSync(file, "utf8"); }
+  catch (error) { if (error.code === "ENOENT") return null; throw error; }
 }
 
-function clearDrainOnceLock() {
-  try { fs.unlinkSync(DRAIN_ONCE_LOCK_FILE); } catch {}
+function getDrainOnceRequest() {
+  return readDrainMarker(DRAIN_ONCE_REQUEST_FILE);
+}
+
+function shouldSpawnDrainOnce() {
+  const request = getDrainOnceRequest();
+  if (request && request === readDrainMarker(DRAIN_ONCE_COMPLETED_FILE)) return false;
+  try {
+    const owner = JSON.parse(fs.readFileSync(DRAIN_ONCE_LOCK_FILE, "utf8"));
+    if (isProcessAlive(owner.pid)) return false;
+  } catch {}
+  // A child acquires the exclusive lock before reading the queues. Concurrent
+  // spawns are harmless; only the owner can drain or record completion.
+  return true;
+}
+
+function beginDrainOnce(requestedOnly = false) {
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  const release = transcriptQueue.acquireLock(DRAIN_ONCE_LOCK_FILE);
+  if (!release) return null;
+  try {
+    const request = getDrainOnceRequest();
+    if (requestedOnly && request && request === readDrainMarker(DRAIN_ONCE_COMPLETED_FILE)) {
+      release();
+      return null;
+    }
+    return { request, release };
+  } catch (error) { release(); throw error; }
+}
+
+function finishDrainOnce(run) {
+  if (!run?.release) return;
+  const release = run.release;
+  run.release = null;
+  try {
+    // Completion means this trigger was serviced, even if delivery failed.
+    // A failed upload waits for a new hook or the existing retry monitor.
+    if (run.request) transcriptQueue.writeDurable(DRAIN_ONCE_COMPLETED_FILE, run.request);
+  } finally { release(); }
+  if (getDrainOnceRequest() !== run.request) startDetachedDrain();
 }
 
 /**
@@ -1203,11 +1224,19 @@ function clearDrainOnceLock() {
  * Do not freeze a tenant endpoint into the child's environment.
  */
 function spawnDetachedDrain() {
+  // Persist even coalesced triggers. A final hook can arrive after the active
+  // worker has enumerated/staged its queues, with no later hook to wake it.
+  fs.mkdirSync(LOG_DIR, { recursive: true });
+  transcriptQueue.writeDurable(DRAIN_ONCE_REQUEST_FILE, crypto.randomUUID());
+  return startDetachedDrain();
+}
+
+function startDetachedDrain() {
   if (!shouldSpawnDrainOnce()) return false;
 
   const script = path.join(PLUGIN_ROOT, "scripts", "drain_once.js");
   try {
-    const child = spawn(process.execPath, [script], {
+    const child = spawn(process.execPath, [script, "--requested"], {
       detached: true,
       stdio: "ignore",
       env: process.env,
@@ -1216,7 +1245,6 @@ function spawnDetachedDrain() {
     console.error(`[skillmeter] Drain trigger spawned: pid=${child.pid}`);
     return true;
   } catch (err) {
-    clearDrainOnceLock();
     console.error(`[skillmeter] Drain trigger spawn failed: ${err.message}`);
     return false;
   }
@@ -1856,7 +1884,9 @@ module.exports = {
   BATCH_MAX_AGE_MS,
   // Detached drain (one-shot)
   shouldSpawnDrainOnce,
-  clearDrainOnceLock,
+  beginDrainOnce,
+  getDrainOnceRequest,
+  finishDrainOnce,
   spawnDetachedDrain,
   // Retry monitor (long-running singleton)
   isRetryDaemonRunning,

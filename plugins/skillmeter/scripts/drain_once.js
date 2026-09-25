@@ -6,12 +6,15 @@
 
 const {
   drainQueuesOnce,
-  clearDrainOnceLock,
+  beginDrainOnce,
+  finishDrainOnce,
   getDeviceId,
   tryRefreshLicense,
 } = require("./logger.js");
 
 async function main() {
+  const run = beginDrainOnce(process.argv.includes("--requested"));
+  if (!run) return;
   try {
     // Refresh before draining: the session may have outlived its token.
     // Refresh failure leaves uploads queued.
@@ -21,7 +24,7 @@ async function main() {
     } catch {}
     await drainQueuesOnce();
   } finally {
-    clearDrainOnceLock();
+    finishDrainOnce(run);
   }
 }
 
@@ -29,6 +32,5 @@ main().catch((err) => {
   process.stderr.write(
     `[skillmeter-drain-once] ${err && err.message ? err.message : err}\n`
   );
-  clearDrainOnceLock();
   process.exit(1);
 });
