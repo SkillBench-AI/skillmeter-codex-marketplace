@@ -5,7 +5,6 @@
 (Accepted 2026-09-25, [PR #129](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/pull/129)).
 The decisions on migration, invalid policy and queued data restate Juho's
 proposal in [PR #128](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/pull/128).
-**Tracker:** INF-232
 **Related:** `docs/repository-consent.md` (the capture-gate change this
 plugin made first, and the boundary it documents)
 

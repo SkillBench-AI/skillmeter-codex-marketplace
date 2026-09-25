@@ -3,7 +3,6 @@
 **Status:** Adopted by reference, pending the canonical decision. Canonical
 text: [Claude Code plugin ADR 003](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/seungho/inf-174-adr-003-collection-state-visibility/docs/adr/003-collection-state-visibility.md)
 (Proposed, [PR #111](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/pull/111); the link moves to `main` when it lands).
-**Tracker:** INF-174
 
 ## What is the same
 

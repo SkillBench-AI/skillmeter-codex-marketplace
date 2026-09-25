@@ -5,7 +5,6 @@
 (Accepted 2026-09-11; amended 2026-09-11 for path handling, repository
 identity and file-name policy, and 2026-09-23 for colliding object keys,
 policy `3.1.1`).
-**Tracker:** INF-192
 **Related:** `docs/sanitizer-parity.md` (the adapter this plugin keeps over
 the shared rule table)
 

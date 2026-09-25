@@ -3,7 +3,6 @@
 **Status:** Adopted by reference. Canonical text:
 [Claude Code plugin ADR 001](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/main/docs/adr/001-license-token-lifecycle.md)
 (Accepted 2026-09-10, amended 2026-09-16: sign-in moved to the broker).
-**Tracker:** INF-177, INF-232
 
 ## What is the same
 
