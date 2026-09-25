@@ -56,9 +56,9 @@ const repositoryQueue = createRepositoryQueue(LOG_DIR, getOrCreateHashSalt, cwd 
   return resolveTelemetryGate(getTelemetryOptIn(cwd), getRepoScopeDecision(cwd).allowed).capture;
 }, (cwd, knownKey) => {
   const scope = getRepoScopeDecision(cwd);
-  // A deleted checkout must not prevent revocation of already indexed data.
-  // This fallback only reads consent; capture/send still require live scope.
-  if (!scope.repoKey && knownKey) {
+  // Queued records retain their original repository identity even when the
+  // checkout disappears or changes remotes. This never authorizes capture.
+  if (knownKey) {
     return readSharedRepositoryPolicy({ allowed: true, repoKey: knownKey, remoteOrg: knownKey.split("/")[1] });
   }
   return readSharedRepositoryPolicy(scope);

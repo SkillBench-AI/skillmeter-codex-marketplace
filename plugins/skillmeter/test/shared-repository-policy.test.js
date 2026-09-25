@@ -254,3 +254,51 @@ test("restoring an older shared policy cannot release held events from its old a
     assert.deepEqual(fs.readFileSync(file),before);
   `);
 });
+
+
+test("revocation uses the queued repository identity after its remote changes", t => {
+  fixture(t).run(`
+    policy.repositories['github.com/acme/other']={enabled:true}; writePolicy(policy);
+    fs.writeFileSync(source,''); logger.observeTranscriptConsent(source,repo);
+    fs.appendFileSync(source,line('old repository')); const chunk=stage(); assert.ok(chunk);
+    const cursor=path.join(path.dirname(path.dirname(chunk)),'cursor.json'); const before=fs.readFileSync(cursor);
+    fs.writeFileSync(path.join(repo,'.git/config'),'[remote "origin"]\\nurl = https://github.com/acme/other.git\\n');
+    writePolicy({...policy,repositories:{...policy.repositories,'github.com/acme/widgets':{enabled:false}}});
+    await logger.drainQueuesOnce('https://collector.invalid',1000);
+    assert.equal(fs.existsSync(chunk),false);
+    assert.deepEqual(fs.readFileSync(cursor),before);
+  `);
+});
+
+
+test("a later opt-out purges the prior remote's events without purging new repository events", t => {
+  fixture(t).run(`
+    policy.repositories['github.com/acme/other']={enabled:true}; writePolicy(policy);
+    logger.saveTelemetryOptIn(repo,true);
+    const event=name=>logger.logInfo('Stop',name,{cwd:logger.hashHmac(repo,'fixture-salt'),repo_root:logger.hashHmac(repo,'fixture-salt')},'SYNTHETIC');
+    event('old'); const old=logger.sealEventLog();
+    fs.writeFileSync(path.join(repo,'.git/config'),'[remote "origin"]\\nurl = https://github.com/acme/other.git\\n');
+    // Observe the new identity while both repositories are still allowed.
+    logger.saveTelemetryOptIn(repo,true); event('new'); const next=logger.sealEventLog();
+    writePolicy({...policy,repositories:{...policy.repositories,'github.com/acme/widgets':{enabled:false}}});
+    const received=[]; global.fetch=async(_,o)=>{received.push(require('node:zlib').gunzipSync(o.body).toString()); return {ok:true};};
+    await logger.drainQueuesOnce('https://collector.invalid',1000);
+    assert.equal(received.some(body=>body.includes('"session_id":"old"')),false);
+    assert.equal(received.some(body=>body.includes('"session_id":"new"')),true);
+    assert.equal(fs.existsSync(old),false);
+  `);
+});
+
+test("revoking the new remote keeps prior-repository payloads held", t => {
+  fixture(t).run(`
+    policy.repositories['github.com/acme/other']={enabled:true}; writePolicy(policy);
+    logger.saveTelemetryOptIn(repo,true);
+    logger.logInfo('Stop','prior',{cwd:logger.hashHmac(repo,'fixture-salt'),repo_root:logger.hashHmac(repo,'fixture-salt')},'SYNTHETIC');
+    const old=logger.sealEventLog(), before=fs.readFileSync(old);
+    fs.writeFileSync(path.join(repo,'.git/config'),'[remote "origin"]\\nurl = https://github.com/acme/other.git\\n');
+    logger.saveTelemetryOptIn(repo,true);
+    writePolicy({...policy,repositories:{...policy.repositories,'github.com/acme/other':{enabled:false}}});
+    await logger.drainQueuesOnce('https://collector.invalid',1000);
+    assert.deepEqual(fs.readFileSync(old),before);
+  `);
+});
