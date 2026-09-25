@@ -1,5 +1,7 @@
 # Repository capture consent
 
+Consent decisions for every SkillMeter client are recorded in [ADR 004](adr/004-shared-consent.md); this document describes the capture gate this plugin implements today.
+
 Codex follows the explicit repository opt-in rule in Claude's
 [capture policy](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/a50a38e98dc1302cb8a952adac00ee90e0d9f55a/skillmeter/scripts/lib/telemetry-policy.js).
 An allowed GitHub owner makes a repository eligible; it does not enable capture.
