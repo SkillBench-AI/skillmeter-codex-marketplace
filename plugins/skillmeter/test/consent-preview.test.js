@@ -159,3 +159,16 @@ test("preview leaves queued data intact and records only the client observation"
   assert.equal(fs.readFileSync(queue, "utf8"), "synthetic queue\n");
   assert.deepEqual(fs.readdirSync(logs).sort(), ["events.jsonl.123", "shared-policy-observed"]);
 });
+
+
+for (const raw of ['{"skillmeter":{"telemetry":false}}', '{']) {
+  test(`signed-out preview still shows local restrictions: ${raw}`, t => {
+    const f = fixture(t);
+    fs.writeFileSync(path.join(f.state, "credentials.json"), '{"signed_out":true}');
+    fs.writeFileSync(path.join(f.repo, ".codex/settings.local.json"), raw);
+    const result = preview(f);
+    assert.equal(result.repository, null);
+    assert.equal(result.localChoices[0]?.choice, raw === "{" ? "invalid" : "off");
+    assert.ok(codes(result).includes(raw === "{" ? "invalid_local_choice" : "local_opt_out"));
+  });
+}

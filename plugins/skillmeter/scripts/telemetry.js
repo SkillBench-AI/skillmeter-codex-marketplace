@@ -116,7 +116,7 @@ switch (action) {
     let policy = null, policyError = null;
     try { policy = store.readPolicy(); }
     catch (error) { policyError = { code: error.code || "POLICY_UNAVAILABLE", message: error.message }; }
-    const result = buildConsentPreview({ cwd, scope: getRepoScopeDecision(cwd), policy, policyError });
+    const result = buildConsentPreview({ cwd, repoRoot: findGitRoot(cwd), scope: getRepoScopeDecision(cwd), policy, policyError });
     process.stdout.write(process.argv.includes("--json") ? JSON.stringify(result) + "\n" : formatConsentPreview(result));
     break;
   }

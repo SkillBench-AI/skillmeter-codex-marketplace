@@ -18,7 +18,7 @@ function localChoice(directory) {
   }
 }
 
-function buildConsentPreview({ cwd, scope, policy, policyError = null }) {
+function buildConsentPreview({ cwd, scope, policy, policyError = null, repoRoot = scope.repoRoot }) {
   const result = {
     changesApplied: false,
     repository: scope.allowed ? scope.repoKey ?? null : null,
@@ -26,8 +26,8 @@ function buildConsentPreview({ cwd, scope, policy, policyError = null }) {
     notices: [],
   };
   const notice = (code, message) => result.notices.push({ code, message });
-  if (scope.repoRoot) {
-    const root = path.resolve(scope.repoRoot);
+  if (repoRoot) {
+    const root = path.resolve(repoRoot);
     let current = path.resolve(cwd);
     const relative = path.relative(root, current);
     if (relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative)) {
