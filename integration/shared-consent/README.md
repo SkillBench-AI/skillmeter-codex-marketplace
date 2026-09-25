@@ -1,9 +1,9 @@
 # Shared consent native canary
 
-Prepare a local candidate to check Codex's restrictive shared-policy reader
-against Claude's actual policy writer. This does not adopt shared positive grants
-or migration policy. Review the proposed amendment in Claude's
-`docs/adr/001-license-token-lifecycle.md` before validating those behaviors.
+Prepare an isolated Codex candidate against a pinned Claude policy writer.
+Consent behavior follows [ADR 004](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/main/docs/adr/004-shared-consent.md).
+The default rehearsal checks legacy choices and restrictions. A separate mode
+checks acknowledged shared grants when that implementation is in the candidate.
 
 ## Prepare and rehearse
 
@@ -30,6 +30,42 @@ The rehearsal waits for detached workers and pending trigger completion between
 transitions. The serial rehearsal does not establish concurrent-hook delivery
 liveness. Failed rehearsals retire the harness and retain synthetic artifacts for
 inspection instead of deleting the evidence.
+
+## Acknowledged shared-grant rehearsal
+
+Use a composed Codex checkout containing the shared store, `consent-preview`,
+`consent-set`, and the acknowledged capture/delivery gate. These commands export
+that checkout's committed HEAD, so commit the composition before running:
+
+```sh
+node integration/shared-consent/rehearse.cjs /absolute/claude-checkout legacy
+node integration/shared-consent/rehearse.cjs /absolute/claude-checkout acknowledged
+```
+
+The acknowledged mode seeds **synthetic version-2 organization authorization**
+inside the isolated fixture. This is not an organization control or evidence of
+Claude's acknowledgement flow. Repository grants use the actual Codex command,
+with an explicit canonical repository, preview revision and scope acknowledgement.
+Claude's actual writer supplies revocation and global pause/resume. Checks cover
+capture without local ON in A/B/clone/worktree, local OFF restrictions, stale
+confirmation after Claude revocation, re-enablement, paused/invalid transcript
+exclusion and unaffected B delivery with a linked tool pair.
+
+For a coordinated native candidate, `node run.cjs consent LABEL preview` delegates
+to Codex's JSON preview. `consent LABEL on|off` passes explicit confirmation flags
+to `consent-set`; the wrapper never infers acknowledgement or upgrades organization
+consent. For example, after reviewing the preview and organization authorization:
+
+```sh
+node run.cjs consent a on --repository github.com/acme/widgets --revision 7 --acknowledge-machine-scope
+```
+
+Use the actual reviewed revision, not the example number. The native sequence
+below covers **legacy** shared ON. Do not apply its no-local-capture expectation
+to acknowledged grants. A narrow native follow-up can use one bound A task:
+verify capture with acknowledged consent and no local ON, then local OFF exclusion,
+then removal of that synthetic local restriction and fresh capture. Compare every
+turn with the verifier; synthetic rehearsal results cannot replace native dispatch.
 
 ## Native preflight, coordinated with the assistant
 
@@ -78,8 +114,7 @@ Before changing policy/receiver state or measuring settled queues, the assistant
 checks both drain lock formats and any pending request/completion markers. A pending capture hint is not
 proof of delivery. Record any required follow-up hook separately.
 Do not count manual drains/replayed hook subprocesses as native dispatch. Older
-payloads after an ambiguous positive timestamp change stay held; that contract
-still needs engineering agreement. Concurrent/in-flight races and expiry remain
+payloads after an ambiguous positive timestamp change stay held under ADR 004. Concurrent/in-flight races and expiry remain
 separate deterministic acceptance cases unless explicitly reproduced natively.
 
 ## Evidence and cleanup

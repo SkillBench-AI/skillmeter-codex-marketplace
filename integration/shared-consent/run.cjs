@@ -70,6 +70,16 @@ function main() {
     if (rest.length !== 1 || !["enable", "disable", "status"].includes(rest[0])) throw Error("local LABEL enable|disable|status");
     child([path.join(base, "codex/scripts/telemetry.js"), ...rest], cwd); return;
   }
+  if (mode === "consent") {
+    const cwd = workspace(arg), [choice, ...confirmation] = rest;
+    let args;
+    if (choice === "preview" && confirmation.length === 0) args = ["consent-preview", "--json"];
+    else if (["on", "off"].includes(choice)) args = ["consent-set", choice, ...confirmation];
+    else throw Error("consent LABEL preview|on|off [explicit confirmation arguments]");
+    // The candidate validates repository, revision and acknowledgement. Never
+    // infer them here or turn a legacy Claude ON into an acknowledged grant.
+    child([path.join(base, "codex/scripts/telemetry.js"), ...args], cwd); return;
+  }
   if (mode === "shared") {
     const code = `const s=require(${JSON.stringify(path.join(base, "claude/scripts/lib/telemetry-store.js"))});`;
     const enabled = rest.at(-1) === "on";
