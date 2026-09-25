@@ -48,8 +48,31 @@ prove delivery or report generation; legacy snapshots are excluded from the coun
 current directory, shared opt-outs and missing machine-wide acknowledgements.
 Use `--json` for structured output. It does not scan other directories or change
 consent settings, credentials or queued data. It records a local observation
-marker so a later missing shared policy is reported. Migration apply is not yet
-available; the preview does not enable capture or verify delivery.
+marker so a later missing shared policy is reported.
+
+To record an explicit shared repository choice, use the repository key and
+revision shown by a fresh preview:
+
+```sh
+node "$PLUGIN_ROOT/bin/sk-telemetry" consent-set on \
+  --repository github.com/org/repo --revision 12 --acknowledge-machine-scope
+node "$PLUGIN_ROOT/bin/sk-telemetry" consent-set off \
+  --repository github.com/org/repo --revision 13
+```
+
+ON authorizes every supported SkillMeter client and every clone or worktree of
+that repository on this machine. It requires machine-wide organization consent
+already recorded at version 2; this command cannot authorize an organization or
+upgrade its legacy choice. Local OFF or invalid settings must be resolved
+explicitly first. OFF needs no acknowledgement. For an absent policy, use
+`--revision absent`; only OFF can proceed without organization authorization.
+A stale revision or changed repository requires a new preview and confirmation.
+
+Local settings are preserved, including restrictions in other directories.
+This version still requires local opt-in for Codex capture. The command checks
+known local queue revocations without uploading, reports deferred cleanup, and
+preserves privacy cursors. In-flight requests may finish. A saved choice does
+not prove hook execution, delivery or report generation.
 
 ## Collection scope
 
