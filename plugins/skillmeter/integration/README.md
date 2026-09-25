@@ -8,7 +8,8 @@ SIGKILL recovery. No collector or pipeline deployment is required.
 
 The shared-store component follows Claude's schema and lock protocol. It requires
 an expected revision and explicit acknowledgement before writing repository ON.
-It is not yet connected to the telemetry CLI or capture gates.
+Its write methods are not yet connected to consent controls or capture gates.
+The CLI migration preview uses its strict read path.
 
 Run against a pinned Claude plugin checkout:
 

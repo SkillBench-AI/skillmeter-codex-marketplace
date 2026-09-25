@@ -23,6 +23,7 @@ Run project controls from the repository you want to configure:
 | Sign in and limit scope to your organization | `node "$PLUGIN_ROOT/bin/signin" --org your-github-org` |
 | Inspect sign-in claims and expiry (no raw token) | `node "$PLUGIN_ROOT/bin/sk-jwt"` |
 | Check capture policy, authentication and local queues | `node "$PLUGIN_ROOT/bin/sk-telemetry" status` |
+| Preview local/shared consent conflicts | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-preview` |
 | Enable / disable this project | `node "$PLUGIN_ROOT/bin/sk-telemetry" enable` / `disable` |
 | Pause / resume all Codex collection and uploads | `node "$PLUGIN_ROOT/bin/sk-telemetry" disable --global` / `enable --global` |
 | Sign out | `node "$PLUGIN_ROOT/bin/signout"` |
@@ -42,6 +43,13 @@ across repositories. Expired credentials can pause delivery while eligible local
 capture continues. It does not verify hook execution or server acceptance, and
 this version does not track the last successful upload. An empty queue does not
 prove delivery or report generation; legacy snapshots are excluded from the count.
+
+`consent-preview` shows choices at the repository root and along the path to the
+current directory, shared opt-outs and missing machine-wide acknowledgements.
+Use `--json` for structured output. It does not scan other directories or change
+consent settings, credentials or queued data. It records a local observation
+marker so a later missing shared policy is reported. Migration apply is not yet
+available; the preview does not enable capture or verify delivery.
 
 ## Collection scope
 

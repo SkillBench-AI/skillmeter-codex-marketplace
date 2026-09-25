@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Set project consent in .codex/settings.local.json or the shared global pause.
- * Usage: node scripts/telemetry.js <enable|disable|status> [--global].
+ * Usage: node scripts/telemetry.js <enable|disable|status> [--global],
+ * or node scripts/telemetry.js consent-preview [--json].
  */
 
 const {
@@ -29,7 +30,7 @@ const {
 const fs = require("fs");
 const path = require("path");
 const { isJwtExpired } = require("./lib/jwt");
-const { readSharedGlobalPolicy } = require("./lib/shared-telemetry-policy");
+const { readSharedGlobalPolicy, sharedPolicyFile } = require("./lib/shared-telemetry-policy");
 
 const cwd = process.cwd();
 const projectRoot = findGitRoot(cwd) || cwd;
@@ -105,6 +106,20 @@ function saveRepositoryChoice(value) {
 }
 
 switch (action) {
+  case "consent-preview": {
+    refreshFromDisk();
+    const { createSharedPolicyStore } = require("./lib/shared-policy-store");
+    const { buildConsentPreview, formatConsentPreview } = require("./lib/shared-consent-preview");
+    const store = createSharedPolicyStore({
+      file: sharedPolicyFile(), observedFile: path.join(LOG_DIR, "shared-policy-observed"),
+    });
+    let policy = null, policyError = null;
+    try { policy = store.readPolicy(); }
+    catch (error) { policyError = { code: error.code || "POLICY_UNAVAILABLE", message: error.message }; }
+    const result = buildConsentPreview({ cwd, scope: getRepoScopeDecision(cwd), policy, policyError });
+    process.stdout.write(process.argv.includes("--json") ? JSON.stringify(result) + "\n" : formatConsentPreview(result));
+    break;
+  }
   case "enable":
     if (isGlobal) {
       setTelemetryGloballyDisabled(false);
@@ -149,6 +164,6 @@ switch (action) {
     break;
   }
   default:
-    process.stderr.write("Usage: node telemetry.js <enable|disable|status> [--global]\n");
+    process.stderr.write("Usage: node telemetry.js <enable|disable|status> [--global] | consent-preview [--json]\n");
     process.exit(1);
 }

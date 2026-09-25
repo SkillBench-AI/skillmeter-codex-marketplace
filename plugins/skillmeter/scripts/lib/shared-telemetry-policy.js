@@ -23,12 +23,16 @@ function policyPathIsAbsent(file) {
   }
 }
 
+function sharedPolicyFile() {
+  const stateDir = process.env.SKILLMETER_STATE_DIR ||
+    path.join(os.homedir(), process.env.SKILLMETER_ENV === "dev" ? ".skillbench-dev" : ".skillbench");
+  return path.join(stateDir, "telemetry-policy.json");
+}
+
 // Read Claude's canonical global pause without migrating repository choices or
 // writing shared state. Daemons must observe changes made by another client.
 function readSharedGlobalPolicy() {
-  const stateDir = process.env.SKILLMETER_STATE_DIR ||
-    path.join(os.homedir(), process.env.SKILLMETER_ENV === "dev" ? ".skillbench-dev" : ".skillbench");
-  const file = path.join(stateDir, "telemetry-policy.json");
+  const file = sharedPolicyFile();
   let raw;
   try {
     raw = fs.readFileSync(file, "utf8");
@@ -88,4 +92,4 @@ function readSharedRepositoryPolicy(scope) {
   };
 }
 
-module.exports = { readSharedGlobalPolicy, readSharedRepositoryPolicy, policyPathIsAbsent };
+module.exports = { readSharedGlobalPolicy, readSharedRepositoryPolicy, policyPathIsAbsent, sharedPolicyFile };
