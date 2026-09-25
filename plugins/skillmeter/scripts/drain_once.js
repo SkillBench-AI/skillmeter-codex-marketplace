@@ -6,14 +6,15 @@
 
 const {
   drainQueuesOnce,
-  getDrainOnceRequest,
+  beginDrainOnce,
   finishDrainOnce,
   getDeviceId,
   tryRefreshLicense,
 } = require("./logger.js");
 
 async function main() {
-  const request = getDrainOnceRequest();
+  const run = beginDrainOnce(process.argv.includes("--requested"));
+  if (!run) return;
   try {
     // Refresh before draining: the session may have outlived its token.
     // Refresh failure leaves uploads queued.
@@ -23,7 +24,7 @@ async function main() {
     } catch {}
     await drainQueuesOnce();
   } finally {
-    finishDrainOnce(request);
+    finishDrainOnce(run);
   }
 }
 

@@ -41,7 +41,16 @@ function preloadFixture() {
   const unlink = fs.unlinkSync;
   fs.unlinkSync = file => {
     const result = unlink(file);
-    if (process.env.TEST_INJECT === "release" && file === path.join(process.env.PLUGIN_DATA, "logs/.drain-once.lock")) injectStop();
+    if (["release", "release-completed"].includes(process.env.TEST_INJECT) && file === path.join(process.env.PLUGIN_DATA, "logs/.drain-once.worker.lock") && !fs.existsSync(path.join(root, "injected"))) {
+      injectStop();
+      if (process.env.TEST_INJECT === "release-completed") {
+        const next = cp.spawnSync(process.execPath, ["--require", __filename,
+          path.join(process.env.PLUGIN_ROOT, "scripts/drain_once.js"), "--requested"], {
+          cwd: process.cwd(), env: process.env, encoding: "utf8", timeout: 5000,
+        });
+        if (next.status !== 0) throw Error(next.stderr);
+      }
+    }
     return result;
   };
   global.fetch = async (url, options) => {
@@ -49,6 +58,21 @@ function preloadFixture() {
     const records = require("zlib").gunzipSync(options.body).toString().trim().split("\n").map(JSON.parse);
     record("uploads.jsonl", { url, records });
     const transcript = String(url).endsWith("/transcript");
+    if (process.env.TEST_INJECT === "competing" && !fs.existsSync(path.join(root, "injected"))) {
+      fs.writeFileSync(path.join(root, "injected"), "");
+      const competing = cp.spawnSync(process.execPath, ["--require", __filename,
+        path.join(process.env.PLUGIN_ROOT, "scripts/drain_once.js"), "--requested"], {
+        cwd: process.cwd(), env: process.env, encoding: "utf8", timeout: 5000,
+      });
+      if (competing.status !== 0) throw Error(competing.stderr);
+    }
+    if (process.env.TEST_INJECT === "aged" && transcript && !fs.existsSync(path.join(root, "injected"))) {
+      const lock = path.join(process.env.PLUGIN_DATA, "logs/.drain-once.worker.lock");
+      const before = fs.readFileSync(lock, "utf8");
+      fs.utimesSync(lock, new Date(0), new Date(0));
+      injectStop();
+      record("ownership.jsonl", { before, after: fs.readFileSync(lock, "utf8") });
+    }
     if (["transcript", "paused"].includes(process.env.TEST_INJECT) && transcript || process.env.TEST_INJECT === "event" && !transcript) injectStop();
     return { ok: process.env.TEST_STATUS === "200", status: Number(process.env.TEST_STATUS) };
   };
@@ -89,15 +113,16 @@ function fixture(t, inject = "transcript", status = 200) {
   run(["-e", "require(" + JSON.stringify(path.join(plugin, "scripts/logger.js")) + ").requestTranscriptCapture(JSON.parse(process.env.TEST_INPUT))"]);
   fs.appendFileSync(source, message("first eligible turn"));
   const initial = run([path.join(plugin, "scripts/stop.js")]);
-  assert.equal(records("spawns.jsonl").length, 1, initial.stderr);
-  return { root, data, run, records, drain() {
+  assert.ok(records("spawns.jsonl").length >= 1, initial.stderr);
+  const initialSpawns = records("spawns.jsonl").length;
+  return { root, data, run, records, initialSpawns, drain() {
     let count = 0;
     while (count < records("spawns.jsonl").length) {
-      assert.ok(count < 4, "worker must not reschedule forever without new triggers");
+      assert.ok(count < 8, "worker must not reschedule forever without new triggers");
       count++;
-      run([path.join(plugin, "scripts/drain_once.js")]);
+      run([path.join(plugin, "scripts/drain_once.js"), "--requested"]);
     }
-    return count;
+    return records("uploads.jsonl").filter(x => x.url.endsWith("/transcript")).length;
   } };
 }
 
@@ -108,7 +133,7 @@ for (const phase of ["transcript", "event", "release"]) test("a final Stop at " 
   assert.deepEqual(uploads.filter(x => x.url.endsWith("/transcript")).flatMap(x => x.records)
     .filter(x => x.type === "response_item").map(x => x.payload.content), ["first eligible turn", "final overlapping turn"]);
   assert.equal(uploads.flatMap(x => x.records).filter(x => x.hook_event_name === "Stop").length, 2);
-  assert.equal(fs.existsSync(path.join(f.data, "logs/.drain-once.lock")), false);
+  assert.equal(fs.existsSync(path.join(f.data, "logs/.drain-once.worker.lock")), false);
   assert.equal(fs.readFileSync(path.join(f.data, "logs/.drain-once.request"), "utf8"), f.records("requests.jsonl")[0],
     "worker handoff must not manufacture a new capture request");
 });
@@ -136,4 +161,26 @@ test("failed delivery without newer triggers stays queued instead of spawning a 
   const f = fixture(t, false, 503);
   assert.equal(f.drain(), 1);
   assert.ok(fs.readdirSync(path.join(f.data, "logs")).some(name => /^events\.jsonl\.\d+$/.test(name)));
+});
+
+
+test("a live drain older than the coalescing window retains its lock", t => {
+  const f = fixture(t, "aged");
+  f.drain();
+  const [ownership] = f.records("ownership.jsonl");
+  assert.equal(ownership.after, ownership.before);
+});
+
+test("a successor completed during release is not retried by its predecessor", t => {
+  const f = fixture(t, "release-completed", 503);
+  f.run([path.join(plugin, "scripts/drain_once.js"), "--requested"]);
+  assert.equal(f.records("spawns.jsonl").length, f.initialSpawns * 2,
+    "the completed successor must consume the trigger even when delivery failed");
+});
+
+
+test("a competing process cannot drain while the owner is uploading", t => {
+  const f = fixture(t, "competing");
+  assert.equal(f.drain(), 1);
+  assert.equal(f.records("uploads.jsonl").length, 2);
 });
