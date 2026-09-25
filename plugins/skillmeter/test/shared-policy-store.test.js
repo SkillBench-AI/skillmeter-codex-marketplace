@@ -233,3 +233,37 @@ test("concurrent confirmations of the same revision commit exactly one choice", 
   assert.deepEqual((await Promise.all(pending.map(p => p.result))).sort(), ["STALE_POLICY", "ok"]);
   assert.equal(f.store.readPolicy().revision, 5);
 });
+
+
+test("a failed first replacement can be retried without a false observation", t => {
+  const f = fixture(t, null);
+  const rename = t.mock.method(fs, "renameSync", () => { throw Object.assign(new Error("disk"), { code: "EIO" }); });
+  assert.throws(() => f.store.setRepositoryOverride(repo, true, { expectedRevision: null, acknowledged: true }), { code: "EIO" });
+  assert.equal(fs.existsSync(f.file), false);
+  assert.equal(fs.existsSync(f.observedFile), false);
+  rename.mock.restore();
+  assert.equal(f.store.readPolicy(), null);
+  assert.equal(f.store.setRepositoryOverride(repo, true, { expectedRevision: null, acknowledged: true }).revision, 1);
+  assert.equal(fs.readFileSync(f.observedFile, "utf8"), "1\n");
+});
+
+test("OFF never claims enablement acknowledgement, even if the caller supplies it", t => {
+  const f = fixture(t);
+  const result = f.store.setRepositoryOverride(repo, false, { expectedRevision: 4, acknowledged: true });
+  assert.equal(result.repositories[repo].consent_version, undefined);
+});
+
+
+test("failed first write preserves an observation marker replaced by another observer", t => {
+  const f = fixture(t, null);
+  t.mock.method(fs, "renameSync", () => {
+    const replacement = f.observedFile + ".replacement";
+    fs.writeFileSync(replacement, "1\n");
+    fs.unlinkSync(f.observedFile);
+    fs.linkSync(replacement, f.observedFile);
+    throw Object.assign(new Error("disk"), { code: "EIO" });
+  });
+  assert.throws(() => f.store.setGlobalEnabled(false, { expectedRevision: null }), { code: "EIO" });
+  assert.equal(fs.readFileSync(f.observedFile, "utf8"), "1\n");
+  assert.throws(() => f.store.readPolicy(), { code: "POLICY_MISSING" });
+});
