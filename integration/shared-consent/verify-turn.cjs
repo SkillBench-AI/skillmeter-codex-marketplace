@@ -15,6 +15,11 @@ function settled(base) {
   for (const lock of [".drain-once.lock", ".drain-once.worker.lock"]) {
     assert.ok(!fs.existsSync(path.join(base, "data/logs", lock)), "drain-active");
   }
+  const root = path.join(base, "data/logs");
+  const marker = name => { try { return fs.readFileSync(path.join(root, name), "utf8"); } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
+  // A requested worker can be between spawn and lock acquisition.
+  const request = marker(".drain-once.request");
+  if (request) assert.equal(marker(".drain-once.completed"), request, "drain-pending");
 }
 function identity(base, label) {
   const cfg = read(path.join(base, "config.json"));
@@ -127,4 +132,4 @@ if (require.main === module) {
     console.error(JSON.stringify({ status: "blocked", code })); process.exitCode = 1;
   }
 }
-module.exports = { begin, verify };
+module.exports = { begin, verify, settled };

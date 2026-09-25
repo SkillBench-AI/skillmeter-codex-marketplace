@@ -87,3 +87,9 @@ test("process-owned drain lock blocks native verification", t => {
   const f = fixture(t); fs.writeFileSync(path.join(f.base, "data/logs/.drain-once.worker.lock"), "busy");
   assert.throws(() => begin(f.base, "a", "SHARED-TEST", "excluded"), /drain-active/);
 });
+
+test("requested worker must finish before native verification can advance", t => {
+  const f = fixture(t); fs.writeFileSync(path.join(f.base, "data/logs/.drain-once.request"), "new");
+  fs.writeFileSync(path.join(f.base, "data/logs/.drain-once.completed"), "old");
+  assert.throws(() => begin(f.base, "a", "SHARED-TEST", "excluded"), /drain-pending/);
+});

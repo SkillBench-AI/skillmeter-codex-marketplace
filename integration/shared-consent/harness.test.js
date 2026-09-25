@@ -119,3 +119,20 @@ test("expiration and retirement stop callbacks; retirement preserves edited hook
   assert.equal(fs.readFileSync(edited, "utf8"), "user edit");
   assert.equal(fs.existsSync(path.join(f.cfg.workspaces.a, ".codex/hooks.json")), false);
 });
+
+test("guard permits only legacy or requested drain invocations", t => {
+  const f = fixture(t); f.ok(["arm"]);
+  const guard = path.join(f.base, "guard.cjs"), worker = path.join(fs.realpathSync(f.base), "codex/scripts/drain_once.js");
+  fs.writeFileSync(worker, "process.exit(0)");
+  const result = cp.spawnSync(process.execPath, ["-e", `
+    const assert=require('node:assert/strict'), cp=require('node:child_process');
+    const seen=[]; cp.spawn=(command,args)=>{seen.push(args);return {}};
+    require(${JSON.stringify(guard)});
+    cp.spawn(process.execPath,[${JSON.stringify(worker)}]);
+    cp.spawn(process.execPath,[${JSON.stringify(worker)},'--requested']);
+    assert.throws(()=>cp.spawn(process.execPath,[${JSON.stringify(worker)},'--other']),/blocked/);
+    assert.throws(()=>cp.spawn(process.execPath,[${JSON.stringify(worker)},'--requested','extra']),/blocked/);
+    assert.equal(seen.length,2);
+  `], {encoding:'utf8',env:{PATH:process.env.PATH}});
+  assert.equal(result.status,0,result.stderr);
+});

@@ -23,12 +23,11 @@ isolated HOME, policy, credentials and plugin data; and a fake collector returni
 503 initially. No real credentials, native sessions or installed-plugin files
 are copied. It starts disabled and installs no hooks until explicitly armed.
 
-The six automated harness tests use a Claude-store spy to verify delegation and
+The automated harness tests use a Claude-store spy to verify delegation and
 isolation. The rehearsal uses the supplied committed Claude store, synthetic
 hook subprocesses and intercepted delivery. Neither is native evidence.
-The rehearsal waits for the detached drain lock to clear between transitions.
-A hook arriving during an existing drain can need a subsequent drain to service
-its capture hint; the serial rehearsal does not establish concurrent-hook delivery
+The rehearsal waits for detached workers and pending trigger completion between
+transitions. The serial rehearsal does not establish concurrent-hook delivery
 liveness. Failed rehearsals retire the harness and retain synthetic artifacts for
 inspection instead of deleting the evidence.
 
@@ -76,7 +75,7 @@ Claude native-hook acceptance. Repository changes use its expected-revision chec
 
 Commands above are arguments to `node /absolute/new/canary/run.cjs`.
 Before changing policy/receiver state or measuring settled queues, the assistant
-checks that `data/logs/.drain-once.lock` has cleared. A pending capture hint is not
+checks both drain lock formats and any pending request/completion markers. A pending capture hint is not
 proof of delivery. Record any required follow-up hook separately.
 Do not count manual drains/replayed hook subprocesses as native dispatch. Older
 payloads after an ambiguous positive timestamp change stay held; that contract
@@ -156,3 +155,37 @@ fixture explicitly rejects this shape. If desktop UI control is unavailable or
 disallowed, retain manual prompt submission and automate the controls/verifier.
 Never bypass hook trust, use direct hook replay as native evidence, or silently
 substitute CLI execution for desktop validation. Do not run scheduled canaries.
+
+## Overlapping final-hook check
+
+Use a candidate containing the process-owned final-drain repair. After native
+binding, consent and one enabled warm-up turn, wait for delivery to settle:
+
+```sh
+node /absolute/canary/overlap.cjs arm /absolute/canary a
+```
+
+Within 15 minutes, send this one no-tool prompt in the bound desktop task:
+
+> SHARED-OVERLAP. This is a synthetic local telemetry test. Reply OVERLAP-DONE only. Do not use tools or change telemetry settings.
+
+The intercepted receiver holds the next transcript upload until it observes that
+same task's completed Stop callback and a newer durable drain trigger. It checks
+that the original worker retains its lock throughout. The hold respects the
+request's abort signal and stops after 25 seconds; a slow turn fails the check
+rather than extending the production timeout. No further prompt or manual drain
+may be used to complete this test.
+
+After the worker settles, run:
+
+```sh
+node /absolute/canary/overlap.cjs verify /absolute/canary
+```
+
+The verifier requires the held upload, overlapping Stop, unchanged owner,
+completed trigger, exactly one Stop, complete sanitized native turn and no
+repeated transcript sequence or content-record transport IDs. If the first
+upload began only after Stop, the result is inconclusive and cannot pass.
+Receipts are private, under `verification/`; retire after inspection. Use a fresh
+prepared run after failure. This is native dispatch into an intercepted receiver,
+not production collector acceptance.
