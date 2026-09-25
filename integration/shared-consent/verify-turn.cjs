@@ -104,12 +104,19 @@ function verify(base, marker) {
     // Use a fresh isolated child so the pinned sanitizer resolves its expected HOME.
     const cp = require("node:child_process");
     const child = cp.spawnSync(process.execPath, ["-e", 'const fs=require("node:fs");const x=JSON.parse(fs.readFileSync(0,"utf8"));const s=require(process.argv[1]);process.stdout.write(JSON.stringify(x.rows.map(r=>s.sanitizeLine(r,x.salt))));', path.join(base, "codex/scripts/sanitizer.js")],
-      { input: JSON.stringify({ rows: turn, salt }), encoding: "utf8", timeout: 10000, maxBuffer: 16 * 1024 * 1024,
+      { input: JSON.stringify({ rows: [source[0], ...turn], salt }), encoding: "utf8", timeout: 10000, maxBuffer: 16 * 1024 * 1024,
         env: { PATH: process.env.PATH, HOME: path.join(base, "home") } });
     assert.equal(child.status, 0, "sanitizer-failed");
-    const normalized = records.slice(index, index + turn.length).map(r => { const v = { ...r }; delete v.uuid; return v; });
+    const [metadata, ...sanitizedTurn] = JSON.parse(child.stdout);
+    const captured = records.slice(index).filter(r => {
+      if (r.type !== "session_continuation") return true;
+      assert.ok(["id", "cwd", "source", "originator", "parent_thread_id"].every(k =>
+        isDeepStrictEqual(r.payload?.[k], metadata.payload?.[k])), "continuation-identity-mismatch");
+      return false;
+    });
+    const normalized = captured.slice(0, turn.length).map(r => { const v = { ...r }; delete v.uuid; return v; });
     // Match the writer's source-ID preservation before removing transport IDs.
-    const expected = JSON.parse(child.stdout).map(r => {
+    const expected = sanitizedTurn.map(r => {
       const v = { ...r }; if (v.uuid) v._codex_source_uuid = v.uuid; delete v.uuid; return v;
     });
     assert.ok(isDeepStrictEqual(normalized, expected), "sanitized-turn-mismatch");

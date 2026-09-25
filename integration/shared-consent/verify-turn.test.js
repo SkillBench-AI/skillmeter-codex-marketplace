@@ -93,3 +93,13 @@ test("requested worker must finish before native verification can advance", t =>
   fs.writeFileSync(path.join(f.base, "data/logs/.drain-once.completed"), "old");
   assert.throws(() => begin(f.base, "a", "SHARED-TEST", "excluded"), /drain-pending/);
 });
+
+test("transport continuation headers do not interrupt native turn comparison", t => {
+  for (const wrong of [false, true]) {
+    const f=fixture(t); begin(f.base,"a","SHARED-TEST","delivered"); const records=f.turn();
+    records.splice(1,0,sanitizer.sanitizeLine({type:"session_continuation",payload:{id:"synthetic-session",cwd:wrong ? "wrong" : path.join(f.base,"a"),source:"vscode",originator:"Codex Desktop"}},"synthetic-salt"));
+    f.deliver(records);
+    if(wrong) assert.throws(()=>verify(f.base,"SHARED-TEST"),/continuation-identity-mismatch/);
+    else assert.equal(verify(f.base,"SHARED-TEST").status,"passed");
+  }
+});
