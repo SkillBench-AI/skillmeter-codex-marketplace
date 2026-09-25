@@ -13,13 +13,14 @@ function fixture(t) {
   fs.writeFileSync(source, JSON.stringify({ type: "session_meta", payload: { id: "synthetic-session", cwd: path.join(base, "a"), source: "vscode", originator: "Codex Desktop" } }) + "\n");
   fs.writeFileSync(path.join(base, "callbacks.jsonl"), "");
   for (const file of ["sanitizer.js", "lib/sanitize.js", "lib/rules.js", "lib/path-vocabulary.json"]) fs.copyFileSync(path.join(__dirname, "../../plugins/skillmeter/scripts", file), path.join(base, "codex/scripts", file));
-  function turn(role = "user", submit = true, tools = []) {
+  function turn(role = "user", submit = true, tools = [], sourceIds = false) {
     const rows = [{ type: "response_item", payload: { type: role === "user" ? "message" : "function_call_output", role, content: "SHARED-TEST" } },
       ...tools, { type: "response_item", payload: { type: "message", role: "assistant", content: "DONE" } },
       { type: "event_msg", payload: { type: "task_complete" } }];
+    if (sourceIds) rows.forEach((r, i) => { r.uuid = "source-" + i; });
     fs.appendFileSync(source, rows.map(r => JSON.stringify(r) + "\n").join(""));
     for (const hook of submit ? ["user_prompt_submit.js", "stop.js"] : ["stop.js"]) fs.appendFileSync(path.join(base, "callbacks.jsonl"), JSON.stringify({ label: "a", hook, outcome: "candidate-completed" }) + "\n");
-    return rows.map((r, i) => ({ ...sanitizer.sanitizeLine(r, "synthetic-salt"), uuid: "synthetic-" + i }));
+    return rows.map((r, i) => ({ ...sanitizer.sanitizeLine(r, "synthetic-salt"), ...(r.uuid ? { _codex_source_uuid: r.uuid } : {}), uuid: "synthetic-" + i }));
   }
   function deliver(rows) { write("received/one.json", { path: "/logs/codex/transcript", seq: "1", status: 200 }); fs.writeFileSync(path.join(base, "received/one.gz"), zlib.gzipSync(rows.map(r => JSON.stringify(r) + "\n").join(""))); }
   function queue(rows) {
@@ -71,4 +72,18 @@ test("linked tool inputs and results are compared after sanitization", t => {
   const g = fixture(t); begin(g.base, "a", "SHARED-TEST", "queued", 1);
   g.queue(g.turn("user", true, [tools[0], { ...tools[1], payload: { ...tools[1].payload, call_id: "wrong" } }]));
   assert.throws(() => verify(g.base, "SHARED-TEST"), /unlinked-tool-result/);
+});
+
+for (const mode of ["queued", "delivered"]) test(`${mode} preserves source UUIDs while ignoring transport UUIDs`, t => {
+  const f = fixture(t); begin(f.base, "a", "SHARED-TEST", mode);
+  f[mode === "queued" ? "queue" : "deliver"](f.turn("user", true, [], true));
+  assert.equal(verify(f.base, "SHARED-TEST").status, "passed");
+  const g = fixture(t); begin(g.base, "a", "SHARED-TEST", mode);
+  const rows = g.turn("user", true, [], true); rows[1]._codex_source_uuid = "wrong-source";
+  g[mode === "queued" ? "queue" : "deliver"](rows);
+  assert.throws(() => verify(g.base, "SHARED-TEST"), /sanitized-turn-mismatch/);
+});
+test("process-owned drain lock blocks native verification", t => {
+  const f = fixture(t); fs.writeFileSync(path.join(f.base, "data/logs/.drain-once.worker.lock"), "busy");
+  assert.throws(() => begin(f.base, "a", "SHARED-TEST", "excluded"), /drain-active/);
 });

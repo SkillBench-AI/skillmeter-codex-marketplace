@@ -12,7 +12,9 @@ const unpack = p => zlib.gunzipSync(fs.readFileSync(p)).toString().split("\n").f
 const isUserMarker = (r, m) => r.type === "response_item" && r.payload?.type === "message" &&
   r.payload.role === "user" && JSON.stringify(r.payload.content).includes(m);
 function settled(base) {
-  assert.ok(!fs.existsSync(path.join(base, "data/logs/.drain-once.lock")), "drain-active");
+  for (const lock of [".drain-once.lock", ".drain-once.worker.lock"]) {
+    assert.ok(!fs.existsSync(path.join(base, "data/logs", lock)), "drain-active");
+  }
 }
 function identity(base, label) {
   const cfg = read(path.join(base, "config.json"));
@@ -101,7 +103,11 @@ function verify(base, marker) {
         env: { PATH: process.env.PATH, HOME: path.join(base, "home") } });
     assert.equal(child.status, 0, "sanitizer-failed");
     const normalized = records.slice(index, index + turn.length).map(r => { const v = { ...r }; delete v.uuid; return v; });
-    assert.ok(isDeepStrictEqual(normalized, JSON.parse(child.stdout)), "sanitized-turn-mismatch");
+    // Match the writer's source-ID preservation before removing transport IDs.
+    const expected = JSON.parse(child.stdout).map(r => {
+      const v = { ...r }; if (v.uuid) v._codex_source_uuid = v.uuid; delete v.uuid; return v;
+    });
+    assert.ok(isDeepStrictEqual(normalized, expected), "sanitized-turn-mismatch");
   }
   const receipt = { label: s.label, marker, mode: s.mode, status: "passed", heads: s.heads,
     turnRecords: turn.length, linkedToolPairs: s.pairs, at: new Date().toISOString(),
