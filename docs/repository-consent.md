@@ -79,8 +79,8 @@ consent rules. Removing a previously observed shared policy holds data and
 blocks capture until it is readable again. Shared
 ON does not grant repository consent or clear a legacy pause. Existing malformed,
 unreadable or unsupported-version policy pauses capture and delivery without
-rewriting it. This conservative read behavior differs from Claude's permissive
-normalization and needs agreement before claiming full malformed-policy parity.
+rewriting it. This conservative reader blocks invalid state; Claude's referenced reader
+normalizes it instead.
 Use the shared policy controls to resume a shared pause; Codex's status identifies
 that blocker instead of claiming uploads are enabled.
 
@@ -106,11 +106,10 @@ reconstruct the uncertain prefix. Unrelated repository decisions do not affect
 this queue. Requests already in flight can finish. Background drains and blocked
 hooks reconcile revocations, including quarantined and active event data.
 
-Migration precedence and shared positive-grant adoption remain undecided. Codex
-controls still write local choices only. This adapter does not rewrite the shared
-policy or change sign-in; use the shared policy controls for shared choices.
-Malformed-policy behavior and ambiguous historical payload handling need canonical
-ADR agreement before claiming full cross-client parity.
+Codex controls write local choices only. This adapter does not migrate local
+grants, rewrite the shared policy or change sign-in; use the shared policy
+controls for shared choices. The proposed cross-client migration contract is
+[Claude ADR 004](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/pull/129).
 
 ## Queued repository data
 
