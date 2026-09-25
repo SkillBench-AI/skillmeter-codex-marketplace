@@ -660,8 +660,9 @@ function stageTranscriptForUpload(transcriptPath, context = {}) {
       preserveSessionMetadata: true,
       authorizeCommit: () => scopeStillAllowed(scope) && consent.stamp === transcriptConsentStamp(cwd),
       authorizeRecord: record => {
-        if (record.type === "session_meta" && record.payload?.originator === "codex_work_desktop") return false;
-        if (!["session_meta", "turn_context"].includes(record.type) || !record.payload?.cwd) return true;
+        const identity = ["session_meta", "session_continuation"].includes(record.type);
+        if (identity && record.payload?.originator === "codex_work_desktop") return false;
+        if (!(identity || record.type === "turn_context") || !record.payload?.cwd) return true;
         const sourceScope = transcriptScope(record.payload.cwd);
         return sourceScope && sourceScope.repoRoot === scope.repoRoot && sourceScope.owner === scope.owner;
       },

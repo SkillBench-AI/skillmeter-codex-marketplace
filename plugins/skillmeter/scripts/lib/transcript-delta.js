@@ -8,7 +8,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const zlib = require("node:zlib");
 const { sanitizeLine } = require("../sanitizer");
-const { sessionMetadata } = require("./session-metadata");
+const { sessionMetadata, sessionContinuation } = require("./session-metadata");
 
 const MAX_ENVELOPE = 5 * 1024 * 1024; // below the 6 MiB Lambda event ceiling
 const ENVELOPE_RESERVE = 128 * 1024; // headers + JSON event wrapper
@@ -87,20 +87,60 @@ function prefix(fd, length, salt) {
   return hash;
 }
 
-function encodeChunks(lines, maxEnvelope = MAX_ENVELOPE) {
+// The first complete line of the source, or null while none is complete.
+function firstRecord(fd, size) {
+  const buffer = Buffer.alloc(64 * 1024);
+  const parts = [];
+  let length = 0, position = 0;
+  while (position < size && length <= MAX_RECORD) {
+    const n = fs.readSync(fd, buffer, 0, Math.min(buffer.length, size - position), position);
+    if (!n) break;
+    position += n;
+    const read = buffer.subarray(0, n);
+    const end = read.indexOf(10);
+    const part = Buffer.from(end >= 0 ? read.subarray(0, end + 1) : read);
+    parts.push(part);
+    length += part.length;
+    if (end >= 0) return Buffer.concat(parts, length);
+  }
+  return null;
+}
+
+// Routing identity for a batch staged past the file start. A first record that
+// is not a usable session_meta leaves the batch as before: content only.
+function continuationLine(fd, size, salt, id, generation, options) {
+  const raw = firstRecord(fd, size);
+  if (!raw) return null;
+  let projected;
+  try {
+    projected = sessionContinuation(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw).trim()));
+  } catch { return null; }
+  if (!projected) return null;
+  if (options.authorizeRecord && !options.authorizeRecord(projected)) throw new Error("source-scope-changed");
+  const sanitized = sanitizeLine(projected, salt);
+  // One identity line per generation: the collector merges on uuid, so every
+  // batch that lands in the same stored object collapses to a single line.
+  sanitized.uuid = hmac(salt, `${id}\0${generation}\0continuation`);
+  return JSON.stringify(sanitized) + "\n";
+}
+
+function encodeChunks(lines, maxEnvelope = MAX_ENVELOPE, continuation = null, startsSession = false) {
   const limit = Math.min(MAX_ENVELOPE, maxEnvelope);
   if (!Number.isFinite(limit) || limit <= ENVELOPE_RESERVE + 128) throw new Error("invalid-wire-budget");
   const output = [];
-  function encode(group) {
-    const body = zlib.gzipSync(Buffer.from(group.join("")));
+  function encode(group, first) {
+    // Keep routing identity with each wire payload. Splitting a prefixed batch
+    // can otherwise strand its header, or file later chunks without identity.
+    const records = continuation ? [first && startsSession ? lines[0] : continuation, ...group] : group;
+    const body = zlib.gzipSync(Buffer.from(records.join("")));
     if (4 * Math.ceil(body.length / 3) + ENVELOPE_RESERVE <= limit) {
-      output.push({ body, records: group.length }); return;
+      output.push({ body, records: records.length }); return;
     }
-    if (group.length === 1) throw new Error("oversized-single-record");
+    if (group.length <= 1) throw new Error("oversized-single-record");
     const mid = Math.floor(group.length / 2);
-    encode(group.slice(0, mid)); encode(group.slice(mid));
+    encode(group.slice(0, mid), first); encode(group.slice(mid), false);
   }
-  if (lines.length) encode(lines);
+  if (lines.length) encode(continuation && startsSession ? lines.slice(1) : lines, true);
   return output;
 }
 
@@ -249,6 +289,9 @@ function stage(root, source, scope, salt, options = {}) {
     if (reset) { offset = 0; rawPrefix = prefix(fd, 0, salt); }
     const generation = reset ? (cursor?.generation || 0) + 1 : cursor.generation;
     const baseline = reset ? (cursor?.seq || 0) + 1 : cursor.baseline;
+    // Every split wire chunk needs identity, including later chunks in the
+    // initial batch. The first reset chunk keeps the real session_meta.
+    const continuation = preserveMetadata ? continuationLine(fd, stat.size, salt, id, generation, options) : null;
     let pending = Buffer.alloc(0), readPosition = offset, committed = offset;
     let lineCount = reset ? 0 : cursor.lineCount;
     const lines = [];
@@ -294,7 +337,7 @@ function stage(root, source, scope, salt, options = {}) {
       if (lines.length && committed - offset >= (options.stageBytes || STAGE_BYTES)) break;
     }
     if (!lines.length) return { status: "unchanged", files: [], partial: pending.length > 0 };
-    const encoded = encodeChunks(lines, options.maxEnvelope);
+    const encoded = encodeChunks(lines, options.maxEnvelope, continuation, offset === 0);
     let seq = cursor?.seq || 0;
     const chunks = encoded.map(({ body, records }) => ({ file: `${++seq}.gz`, seq, reset: baseline, records, sha256: digest(body) }));
     const next = { version: 1, seq, baseline, generation, offset: committed, lineCount,

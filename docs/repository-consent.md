@@ -1,6 +1,6 @@
 # Repository capture consent
 
-Codex implements [ADR 004's shared consent contract](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/main/docs/adr/004-shared-consent.md).
+Codex implements [ADR 004's shared consent contract](adr/004-shared-consent.md).
 An allowed GitHub owner makes a repository eligible; consent remains separate.
 Both organization and repository ON must carry `consent_version: 2` to authorize
 capture across clients, clones and worktrees without checkout-local opt-in.

@@ -10,10 +10,11 @@ In Codex, ask SkillMeter to sign you in, sign you out, or check whether the
 current repository is in scope. The bundled skills are listed below.
 
 For terminal commands, set `PLUGIN_ROOT` to the **Installed plugin root** printed
-by `codex plugin add`. For a default 0.6.1 installation:
+by `codex plugin add`. Replace the placeholder below with that exact path so the
+commands use the installed version rather than an older cached copy:
 
 ```sh
-export PLUGIN_ROOT="$HOME/.codex/plugins/cache/skillbench/skillmeter/0.6.1"
+export PLUGIN_ROOT="/absolute/path/to/installed/skillmeter"
 ```
 
 Run project controls from the repository you want to configure:
@@ -125,7 +126,7 @@ Collected data can include:
 - Configuration names and counts, plus bounded descriptions and bodies of
   custom project/user skills. This is **not metadata-only collection**.
 
-Policy 3.1.0 redacts recognized secrets, email addresses, VCS author names,
+Policy 3.1.1 redacts recognized secrets, email addresses, VCS author names,
 phone numbers, IP addresses, national identifiers and payment-card numbers with
 typed placeholders. File-path fields retain hierarchy, extensions and approved
 technical vocabulary; other segments are hashed. Directory fields, commands and
@@ -145,7 +146,12 @@ for downstream analysis.
 
 Uploads use durable local queues. Transcript chunks retain their order and
 retry identity across interruption and restart. A send failure does not require
-reinstalling the plugin or deleting its data.
+reinstalling the plugin or deleting its data. Each later wire chunk, including
+chunks split from a large batch, opens with a `session_continuation` record that
+carries only the session id, working directory, originator and lineage, so a
+stored object that holds later chunks of a long session can still be attributed
+to that session. This requires a usable first `session_meta` record and metadata
+preservation; otherwise, later batches remain content-only.
 
 | Symptom | Check |
 | --- | --- |
