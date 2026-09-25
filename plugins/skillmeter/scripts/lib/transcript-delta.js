@@ -124,20 +124,23 @@ function continuationLine(fd, size, salt, id, generation, options) {
   return JSON.stringify(sanitized) + "\n";
 }
 
-function encodeChunks(lines, maxEnvelope = MAX_ENVELOPE) {
+function encodeChunks(lines, maxEnvelope = MAX_ENVELOPE, continuation = null, startsSession = false) {
   const limit = Math.min(MAX_ENVELOPE, maxEnvelope);
   if (!Number.isFinite(limit) || limit <= ENVELOPE_RESERVE + 128) throw new Error("invalid-wire-budget");
   const output = [];
-  function encode(group) {
-    const body = zlib.gzipSync(Buffer.from(group.join("")));
+  function encode(group, first) {
+    // Keep routing identity with each wire payload. Splitting a prefixed batch
+    // can otherwise strand its header, or file later chunks without identity.
+    const records = continuation ? [first && startsSession ? lines[0] : continuation, ...group] : group;
+    const body = zlib.gzipSync(Buffer.from(records.join("")));
     if (4 * Math.ceil(body.length / 3) + ENVELOPE_RESERVE <= limit) {
-      output.push({ body, records: group.length }); return;
+      output.push({ body, records: records.length }); return;
     }
-    if (group.length === 1) throw new Error("oversized-single-record");
+    if (group.length <= 1) throw new Error("oversized-single-record");
     const mid = Math.floor(group.length / 2);
-    encode(group.slice(0, mid)); encode(group.slice(mid));
+    encode(group.slice(0, mid), first); encode(group.slice(mid), false);
   }
-  if (lines.length) encode(lines);
+  if (lines.length) encode(continuation && startsSession ? lines.slice(1) : lines, true);
   return output;
 }
 
@@ -286,9 +289,9 @@ function stage(root, source, scope, salt, options = {}) {
     if (reset) { offset = 0; rawPrefix = prefix(fd, 0, salt); }
     const generation = reset ? (cursor?.generation || 0) + 1 : cursor.generation;
     const baseline = reset ? (cursor?.seq || 0) + 1 : cursor.baseline;
-    // Past the first record, the batch opens with the session's routing
-    // identity so a stored object holding only later chunks stays attributable.
-    const continuation = preserveMetadata && offset > 0 ? continuationLine(fd, stat.size, salt, id, generation, options) : null;
+    // Every split wire chunk needs identity, including later chunks in the
+    // initial batch. The first reset chunk keeps the real session_meta.
+    const continuation = preserveMetadata ? continuationLine(fd, stat.size, salt, id, generation, options) : null;
     let pending = Buffer.alloc(0), readPosition = offset, committed = offset;
     let lineCount = reset ? 0 : cursor.lineCount;
     const lines = [];
@@ -334,8 +337,7 @@ function stage(root, source, scope, salt, options = {}) {
       if (lines.length && committed - offset >= (options.stageBytes || STAGE_BYTES)) break;
     }
     if (!lines.length) return { status: "unchanged", files: [], partial: pending.length > 0 };
-    if (continuation) lines.unshift(continuation);
-    const encoded = encodeChunks(lines, options.maxEnvelope);
+    const encoded = encodeChunks(lines, options.maxEnvelope, continuation, offset === 0);
     let seq = cursor?.seq || 0;
     const chunks = encoded.map(({ body, records }) => ({ file: `${++seq}.gz`, seq, reset: baseline, records, sha256: digest(body) }));
     const next = { version: 1, seq, baseline, generation, offset: committed, lineCount,

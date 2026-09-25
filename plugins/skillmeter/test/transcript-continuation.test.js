@@ -106,3 +106,44 @@ test("the continuation is authorized like the first record", t => {
   fs.appendFileSync(f.source, line("second"));
   assert.throws(() => f.stage({ authorizeRecord: r => r.type !== "session_continuation" }), /source-scope-changed/);
 });
+
+function noisyLine(day) {
+  const crypto = require("node:crypto");
+  const content = Array.from({length: 50}, (_, i) => crypto.createHash("sha256").update(`synthetic-${day}-${i}`).digest("hex")).join(" ");
+  return JSON.stringify({type: "response_item", timestamp: `2026-09-${day}T00:00:00Z`,
+    payload: {type: "message", role: "user", content}}) + "\n";
+}
+
+for (const laterBatch of [false, true]) {
+  test(`split ${laterBatch ? "continuation" : "initial"} batch repeats identity in every wire chunk`, t => {
+    const f = fixture(t);
+    f.start(meta);
+    if (laterBatch) {
+      fs.appendFileSync(f.source, line("first"));
+      f.stage();
+    }
+    fs.appendFileSync(f.source, noisyLine("03") + noisyLine("07"));
+    const result = f.stage({maxEnvelope: queue.ENVELOPE_RESERVE + 3000});
+    const chunks = result.files.map(file => f.records([file]));
+    assert.equal(chunks.length, 2);
+    for (const [i, rows] of chunks.entries()) {
+      assert.equal(rows[0].type, !laterBatch && i === 0 ? "session_meta" : "session_continuation");
+      assert.equal(rows.length, 2, "header stays with its content; no header-only split chunk");
+      assert.equal(rows[1].type, "response_item");
+      assert.equal(rows[0].payload.id, "thread-1");
+      if (rows[0].type === "session_continuation") assert.equal(rows[0].timestamp, undefined);
+      const bytes = fs.readFileSync(result.files[i]);
+      assert.ok(4 * Math.ceil(bytes.length / 3) + queue.ENVELOPE_RESERVE <= queue.ENVELOPE_RESERVE + 3000);
+    }
+    if (laterBatch) assert.equal(chunks[0][0].uuid, chunks[1][0].uuid);
+  });
+}
+
+test("a wire budget that cannot fit identity plus one record does not advance capture", t => {
+  const f = fixture(t);
+  f.start(meta);
+  fs.appendFileSync(f.source, noisyLine("03"));
+  assert.throws(() => f.stage({maxEnvelope: queue.ENVELOPE_RESERVE + 2300}), /oversized-single-record/);
+  const rows = f.records(f.stage({maxEnvelope: queue.ENVELOPE_RESERVE + 3000}).files);
+  assert.deepEqual(rows.map(r => r.type), ["session_meta", "response_item"]);
+});
