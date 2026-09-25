@@ -33,7 +33,7 @@ async function rehearse(claudeRepo, mode = "legacy") {
   }
   function eventRows() {
     const dir = path.join(base, "data/logs");
-    return fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => /^events\.jsonl/.test(f)).flatMap(f =>
+    return fs.existsSync(dir) ? fs.readdirSync(dir).filter(f => /^events\.jsonl(?:\.\d+)?$/.test(f)).flatMap(f =>
       fs.readFileSync(path.join(dir, f), "utf8").trim().split("\n").filter(Boolean).map(JSON.parse)) : [];
   }
   function eventSnapshot() {
@@ -55,6 +55,15 @@ async function rehearse(claudeRepo, mode = "legacy") {
     fs.appendFileSync(path.join(base, label + ".jsonl"), JSON.stringify({ type: "response_item",
       payload: { type: "message", role: "user", content: marker } }) + "\n");
   }
+  function assertLocalOffExcluded() {
+    const walk = dir => !fs.existsSync(dir) ? [] : fs.readdirSync(dir, { withFileTypes: true }).flatMap(entry =>
+      entry.isDirectory() ? walk(path.join(dir, entry.name)) : [path.join(dir, entry.name)]);
+    for (const file of ["data/logs/transcripts", "attempts", "received"].flatMap(dir => walk(path.join(base, dir)))) {
+      if (!file.endsWith(".gz")) continue;
+      const body = require("node:zlib").gunzipSync(fs.readFileSync(file)).toString();
+      assert.equal(body.includes("SHARED-LOCAL-OFF-EXCLUDED-"), false, "local OFF transcript entered queue or transport");
+    }
+  }
   let succeeded = false;
   try {
     run("arm"); run("shared", "org", "on"); run("shared", "repo", "a", "on"); run("shared", "repo", "b", "on");
@@ -75,8 +84,11 @@ async function rehearse(claudeRepo, mode = "legacy") {
         const local = path.join(base, label, ".codex/settings.local.json");
         assert.equal(fs.existsSync(local), false);
         fs.writeFileSync(local, JSON.stringify({ skillmeter: { telemetry: false } }));
-        await hook(label, "pre_tool_use");
+        await hook(label, "pre_tool_use"); // Establish the source before writing the excluded interval.
+        append(label, `SHARED-LOCAL-OFF-EXCLUDED-${label.toUpperCase()}`);
+        await hook(label, "stop");
         assert.equal(eventRows().some(r => r.session_id === "synthetic-" + label), false, "local OFF restricts a shared grant");
+        assertLocalOffExcluded();
         fs.unlinkSync(local); // Synthetic restriction removed; no local ON is written.
         await hook(label, "pre_tool_use");
         assert.equal(eventRows().filter(r => r.session_id === "synthetic-" + label).length, 1,
@@ -89,6 +101,12 @@ async function rehearse(claudeRepo, mode = "legacy") {
       }
     }
     assert.equal(eventRows().length, 4);
+    if (acknowledged) {
+      // Stage observed sources after restrictions are removed, before shared
+      // revocation could hide a leaked prefix by purging it.
+      await hook("b", "stop");
+      assertLocalOffExcluded();
+    }
     const before = eventSnapshot();
     run("shared", "global", "off"); append("b", "SHARED-PAUSED-EXCLUDED"); await hook("b", "pre_tool_use");
     assert.deepEqual(eventSnapshot(), before);
@@ -98,10 +116,12 @@ async function rehearse(claudeRepo, mode = "legacy") {
     assert.deepEqual(fs.readFileSync(policyFile), Buffer.from("{broken"));
     assert.deepEqual(eventSnapshot(), before);
     fs.writeFileSync(policyFile, policy);
+    const bBeforeRevocation = eventRows().filter(r => r.session_id === "synthetic-b");
+    assert.ok(bBeforeRevocation.length > 0);
     // An actual Claude legacy writer revokes Codex's acknowledged choice too.
     run("shared", "repo", "clone", "off");
     for (const label of ["a", "clone", "worktree"]) await hook(label, "pre_tool_use");
-    assert.deepEqual(eventRows().map(r => r.session_id), ["synthetic-b"]);
+    assert.deepEqual(eventRows(), bBeforeRevocation);
     await hook("b", "pre_tool_use"); // Observe restored permission before appending permitted source bytes.
     const records = [
       { type: "response_item", payload: { type: "message", role: "user", content: "SHARED-B-PERMITTED" } },
@@ -139,6 +159,7 @@ async function rehearse(claudeRepo, mode = "legacy") {
       assert.equal(fs.existsSync(path.join(base, "a/.codex/settings.local.json")), false);
     }
     assert.deepEqual(rows.filter(r => r.payload?.call_id === "synthetic-call").map(r => r.payload.type).sort(), ["function_call", "function_call_output"]);
+    assertLocalOffExcluded();
     succeeded = true;
     return { evidence: "synthetic-subprocess-only", mode, heads: prepared.heads,
       organizationAuthorization: acknowledged ? "synthetic version-2 fixture; not Claude acknowledgement acceptance" : "legacy Claude writer",
