@@ -16,7 +16,8 @@ const cp = require("node:child_process"), spawn = cp.spawn;
 for (const name of ["exec", "execSync", "execFile", "execFileSync", "spawnSync", "fork"]) cp[name] = block;
 cp.spawn = (command, args, options) => {
   if (!active()) return block();
-  if (command === process.execPath && args?.length === 1 && args[0] === path.join(base, "codex/scripts/drain_once.js"))
+  if (command === process.execPath && args?.[0] === path.join(base, "codex/scripts/drain_once.js") &&
+      (args.length === 1 || (args.length === 2 && args[1] === "--requested")))
     return spawn(command, args, { ...options, env: process.env });
   return block();
 };

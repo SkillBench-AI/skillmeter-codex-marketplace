@@ -21,9 +21,14 @@ async function rehearse(claudeRepo) {
     await settled();
   }
   async function settled() {
-    // Stop creates the worker lock before spawning the detached process.
+    // The worker acquires its own lock after spawn. Absence of the lock alone
+    // can mean it has not started yet; wait for the requested handoff receipt.
     for (let attempt = 0; attempt < 200; attempt++) {
-      if (!fs.existsSync(path.join(base, "data/logs/.drain-once.lock"))) return;
+      const logs = path.join(base, "data/logs");
+      const marker = name => { try { return fs.readFileSync(path.join(logs, name), "utf8"); } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
+      const request = marker(".drain-once.request");
+      if (!fs.existsSync(path.join(logs, ".drain-once.worker.lock")) &&
+          (!request || request === marker(".drain-once.completed"))) return;
       await new Promise(r => setTimeout(r, 25));
     }
     assert.fail("Detached worker did not finish");
@@ -84,9 +89,14 @@ async function rehearse(claudeRepo) {
       "global pause retention", "malformed policy hold", "clone/worktree shared revocation", "unaffected B delivery", "linked transcript tool pair", "private routing stripped"] };
   } finally {
     // A failed retirement must not replace the rehearsal's own error.
-    try { run("retire"); await settled(); } catch (e) { console.error("Retire failed", e); succeeded = false; }
+    let retirementError;
+    try { try { await settled(); } finally { run("retire"); } }
+    catch (e) { console.error("Retire failed", e); retirementError = e; }
+    const completed = succeeded;
+    if (retirementError) succeeded = false;
     if (succeeded) fs.rmSync(root, { recursive: true, force: true });
     else console.error(`Synthetic failure artifacts retained at ${root}`);
+    if (completed && retirementError) throw retirementError;
   }
 }
 if (require.main === module) {

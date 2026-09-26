@@ -26,10 +26,10 @@ are copied. It starts disabled and installs no hooks until explicitly armed.
 The six automated harness tests use a Claude-store spy to verify delegation and
 isolation. The rehearsal uses the supplied committed Claude store, synthetic
 hook subprocesses and intercepted delivery. Neither is native evidence.
-The rehearsal waits for the detached drain lock to clear between transitions.
-A hook arriving during an existing drain can need a subsequent drain to service
-its capture hint; the serial rehearsal does not establish concurrent-hook delivery
-liveness. Failed rehearsals retire the harness and retain synthetic artifacts for
+The rehearsal waits for the detached drain's request/completion markers to match
+and its lock to clear between transitions. The guard accepts the worker's
+`--requested` handoff argument. The serial rehearsal does not establish
+concurrent-hook delivery liveness. Failed rehearsals retire the harness and retain synthetic artifacts for
 inspection instead of deleting the evidence.
 
 ## Native preflight, coordinated with the assistant
@@ -76,8 +76,10 @@ Claude native-hook acceptance. Repository changes use its expected-revision chec
 
 Commands above are arguments to `node /absolute/new/canary/run.cjs`.
 Before changing policy/receiver state or measuring settled queues, the assistant
-checks that `data/logs/.drain-once.lock` has cleared. A pending capture hint is not
-proof of delivery. Record any required follow-up hook separately.
+checks that `data/logs/.drain-once.request` matches `.drain-once.completed` and
+`.drain-once.worker.lock` has cleared. Lock absence alone can mean the worker has not
+started. A pending capture hint is not proof of delivery. Record any required
+follow-up hook separately.
 Do not count manual drains/replayed hook subprocesses as native dispatch. Older
 payloads after an ambiguous positive timestamp change stay held; that contract
 still needs engineering agreement. Concurrent/in-flight races and expiry remain
@@ -98,7 +100,7 @@ Publish only reviewed counts, digests, source labels and outcome codes. An
 intercepted 200 is not collector acceptance or dashboard evidence.
 
 Run `node run.cjs retire` to disable callbacks and remove only unchanged generated
-hook files. Verify the detached drain lock has cleared before archiving evidence.
+hook files. Verify the detached drain worker lock has cleared before archiving evidence.
 The wrapper and allowed worker both stop at expiration/disabled checks; a request
 already in progress can finish. Controls after expiry require a newly prepared run.
 
