@@ -48,8 +48,9 @@ re-keyed inside the emulator to exercise date-gap recovery, so this is not a
 report-week membership test. Full runs require a compatible continuation reader.
 
 CI runs the runner's stdlib boundary tests. The full cross-repository command is
-ready for an integration job with approved checkout access; this PR does not add
-cross-repository credentials, a required status check or a production schedule.
+intended for an integration job with approved checkout access. Configure that
+access and required-check policy separately; the command does not deploy or
+schedule production work.
 
 ```sh
 python3 -B -m unittest discover -s plugins/skillmeter/integration -p 'test_candidate_contract.py' -v
