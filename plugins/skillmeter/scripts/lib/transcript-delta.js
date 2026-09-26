@@ -390,7 +390,8 @@ function stage(root, source, scope, salt, options = {}) {
     // Error code only. Never persist source text or arbitrary exception payloads.
     const code = ["oversized-single-record", "malformed-complete-record", "invalid-wire-budget",
       "source-changed-during-stage", "source-truncated-during-read", "invalid-cursor", "incomplete-transaction", "source-scope-changed", "source-owner-changed", "consent-source-rewritten", "consent-changed-during-stage", "invalid-session-metadata", "unsupported-session-source", "unsupported-session-originator"].includes(e.message) ? e.message : "stage-failed";
-    recordFailure(dir, "capture", code, { capturedBytes, observedBytes });
+    // A failed diagnostics write must not replace the capture error.
+    try { recordFailure(dir, "capture", code, { capturedBytes, observedBytes }); } catch {}
     throw e;
   } finally { if (fd !== undefined) fs.closeSync(fd); release(); }
 }

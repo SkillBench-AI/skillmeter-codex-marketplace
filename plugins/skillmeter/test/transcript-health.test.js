@@ -88,3 +88,19 @@ test("wrong-shaped status is unknown rather than a healthy observation", t => {
     assert.deepEqual(health.inspect(f.dir).failures.map(f => f.code), ["status-unreadable"]);
   }
 });
+
+test("a failing diagnostics write does not mask the capture error", t => {
+  const f = fixture(t);
+  fs.writeFileSync(f.source, f.line(crypto.randomBytes(4000).toString("base64")));
+  const update = health.update;
+  health.update = (dir, phase, code, ...rest) => {
+    if (code) throw new Error("synthetic status write failure");
+    return update(dir, phase, code, ...rest);
+  };
+  try {
+    assert.throws(f.stage, /oversized-single-record/);
+  } finally {
+    health.update = update;
+  }
+  assert.equal(health.inspect(f.dir).capture.activeFailure, null, "nothing was recorded, and nothing else was thrown");
+});
