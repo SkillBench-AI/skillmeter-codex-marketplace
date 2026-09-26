@@ -7,11 +7,16 @@ const { settled } = require("./verify-turn.cjs");
 
 // A hook in these tests can spawn the real detached drain worker. Removing the
 // canary while that worker still writes its queue fails with ENOTEMPTY, so
-// cleanup waits for the drain to settle and retries the removal.
-async function remove(root, base) {
-  for (let attempt = 0; attempt < 200; attempt++) {
-    try { settled(base); break; } catch (error) { if (error.code !== "ERR_ASSERTION") throw error; }
-    await new Promise(resolve => setTimeout(resolve, 25));
+// cleanup waits for the drain to settle and retries the removal. The bound
+// exceeds the worker's 30-second upload timeout. A canary that never settles
+// is retained and cleanup fails, so the pending state can be inspected.
+async function remove(root, base, { attempts = 1600, delay = 25 } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try { settled(base); break; } catch (error) {
+      if (error.code !== "ERR_ASSERTION") throw error;
+      if (attempt >= attempts) assert.fail(`unsettled canary retained at ${root} (${error.message})`);
+    }
+    await new Promise(resolve => setTimeout(resolve, delay));
   }
   fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
@@ -158,4 +163,27 @@ test("guard permits the requested drain handshake but rejects other worker argum
       assert.throws(()=>cp.spawn(process.execPath,args),/blocked/);
   `], { encoding: "utf8", env: { PATH: process.env.PATH } });
   assert.equal(r.status, 0, r.stderr);
+});
+
+test("cleanup retains a canary with a pending request or live drain lock and removes a settled one", async () => {
+  const canary = () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "shared harness-")), base = path.join(root, "canary");
+    const logs = path.join(base, "data/logs"); fs.mkdirSync(logs, { recursive: true });
+    return { root, base, logs };
+  };
+  const unsettled = {
+    "pending request": logs => fs.writeFileSync(path.join(logs, ".drain-once.request"), "1"),
+    "live drain lock": logs => fs.writeFileSync(path.join(logs, ".drain-once.lock"), ""),
+    "live worker lock": logs => fs.writeFileSync(path.join(logs, ".drain-once.worker.lock"), ""),
+  };
+  for (const [name, arrange] of Object.entries(unsettled)) {
+    const c = canary(); arrange(c.logs);
+    await assert.rejects(remove(c.root, c.base, { attempts: 3, delay: 1 }), { code: "ERR_ASSERTION" }, name);
+    assert.ok(fs.existsSync(c.logs), name + " retained");
+    fs.rmSync(c.root, { recursive: true, force: true });
+  }
+  const c = canary();
+  fs.writeFileSync(path.join(c.logs, ".drain-once.request"), "2"); fs.writeFileSync(path.join(c.logs, ".drain-once.completed"), "2");
+  await remove(c.root, c.base, { attempts: 3, delay: 1 });
+  assert.equal(fs.existsSync(c.root), false, "settled canary removed");
 });
