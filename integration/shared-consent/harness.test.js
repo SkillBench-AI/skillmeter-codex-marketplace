@@ -165,6 +165,38 @@ test("guard permits the requested drain handshake but rejects other worker argum
   assert.equal(r.status, 0, r.stderr);
 });
 
+test("candidate consent controls remain isolated and pass explicit confirmation arguments", t => {
+  const f = fixture(t);
+  assert.notEqual(f.run(["consent", "a", "preview"]).status, 0);
+  f.ok(["arm"]);
+  const spyFile = path.join(f.base, "data/consent-spy.json");
+  fs.writeFileSync(path.join(f.base, "codex/scripts/telemetry.js"), `
+    require('node:fs').writeFileSync(${JSON.stringify(spyFile)}, JSON.stringify({
+      args:process.argv.slice(2),cwd:process.cwd(),home:process.env.HOME,state:process.env.SKILLMETER_STATE_DIR
+    }));
+  `);
+  f.ok(["consent", "clone", "preview"]);
+  let spy = JSON.parse(fs.readFileSync(spyFile));
+  assert.deepEqual(spy.args, ["consent-preview", "--json"]);
+  assert.equal(spy.cwd, fs.realpathSync(f.cfg.workspaces.clone));
+  assert.equal(spy.home, fs.realpathSync(path.join(f.base, "home")));
+  assert.equal(spy.state, fs.realpathSync(path.join(f.base, "home/.skillbench")));
+  const confirmation = ["--repository", "github.com/acme/widgets", "--revision", "7", "--acknowledge-machine-scope"];
+  f.ok(["consent", "worktree", "on", ...confirmation]);
+  spy = JSON.parse(fs.readFileSync(spyFile));
+  assert.deepEqual(spy.args, ["consent-set", "on", ...confirmation]);
+  assert.equal(spy.cwd, fs.realpathSync(f.cfg.workspaces.worktree));
+  f.ok(["consent", "a", "off", "--repository", "github.com/acme/widgets", "--revision", "8"]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(spyFile)).args,
+    ["consent-set", "off", "--repository", "github.com/acme/widgets", "--revision", "8"]);
+  assert.notEqual(f.run(["consent", "a", "signin"]).status, 0);
+  assert.notEqual(f.run(["consent", "unknown", "preview"]).status, 0);
+  assert.notEqual(f.run(["consent", "a", "preview", "ignored"]).status, 0);
+  f.ok(["retire"]);
+  assert.notEqual(f.run(["consent", "a", "on", ...confirmation]).status, 0);
+  assert.equal(fs.existsSync(path.join(f.root, "unrelated-home")), false);
+});
+
 test("cleanup retains a canary with a pending request or live drain lock and removes a settled one", async () => {
   const canary = () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), "shared harness-")), base = path.join(root, "canary");
