@@ -39,12 +39,22 @@ Prepare and review the user-facing notes before pushing the tag. The workflow
 publishes automatically; replace its generated title and body with the approved
 notes afterward. Follow the latest published release's tone and command layout:
 
+Release notes are public. They say what changed for the user; the PRs hold the
+rest.
+
 - Title: `SkillMeter X.Y.Z`
-- `### What changed`: concrete user-facing changes.
+- `### What changed`: the user-visible outcome, one sentence per bullet, at
+  most three bullets. Describe what the user can do or will notice. No command
+  flags, file or module names, policy or schema versions, retry counts,
+  algorithms or ADR references. A change users cannot notice stays in its PR.
 - `### After updating`: numbered steps with command blocks; distinguish Git
-  marketplaces from local checkouts where needed.
-- `### Known limitations`: brief, relevant limitations.
-- End with `Details: #PR`.
+  marketplaces from local checkouts where needed. Do not add sentences about
+  what is not needed.
+- `### Known limitations`: only what this release adds or changes, each as what
+  the user will see and, where there is one, what to do. Otherwise
+  `Unchanged from X.Y.Z.`, naming the release that lists them.
+- End with `Details: #PR, #PR`: PR numbers only. ADRs and privacy documents are
+  reachable from the PRs.
 
 Keep internal coordination and rollout history in Linear. Public notes should
 contain only information users need to update and use the plugin.
