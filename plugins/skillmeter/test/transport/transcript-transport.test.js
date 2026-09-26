@@ -16,8 +16,8 @@ const jwt = (sub = "synthetic-user", exp = 4102444800, extra = {}) => "e30." + B
 const credentials = { device_id: "SYNTHETIC-DEVICE", hash_salt: "fixture-salt", license_jwt: jwt(), allowed_github_orgs: ["synthetic"] };
 const save = patch => fs.writeFileSync(store, JSON.stringify({ ...credentials, ...patch }));
 save({});
-const logger = require("../scripts/logger");
-const queue = require("../scripts/lib/transcript-delta");
+const logger = require("../../scripts/logger");
+const queue = require("../../scripts/lib/transcript-delta");
 const realFetch = global.fetch;
 const source = path.join(root, "synthetic.jsonl");
 const line = message => JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content: message } }) + "\n";
@@ -94,7 +94,7 @@ for (const event of ["session_end", "interrupt"]) test(`${event} saves a hint un
   const preload = path.join(root, "preload.cjs"), marker = path.join(root, "spawned");
   fs.writeFileSync(preload, `const fs=require('node:fs'); const read=fs.readFileSync; fs.readFileSync=function(p,...args){if(p===${JSON.stringify(source)})throw Error('hook read raw transcript');return read.call(this,p,...args)}; require('node:child_process').spawn=()=>{fs.writeFileSync(${JSON.stringify(marker)},'spawned');return {pid:123,unref(){}}};global.fetch=()=>{throw Error('hook network')};`);
   const start = Date.now();
-  const result = spawnSync(process.execPath, ["--require", preload, path.join(__dirname, "../scripts", event + ".js")], {
+  const result = spawnSync(process.execPath, ["--require", preload, path.join(__dirname, "../../scripts", event + ".js")], {
     cwd: repo, env: process.env, input: JSON.stringify({ session_id: "synthetic", transcript_path: source, cwd: repo, reason: "other", turn_id: "synthetic-turn" }), encoding: "utf8", timeout: 3000,
   });
   assert.equal(result.status, 0, result.stderr); assert.deepEqual(JSON.parse(result.stdout), {});
@@ -115,7 +115,7 @@ test("cleanup and dry-run inventory preserve old transcript copies", () => {
   for (const file of [pending, poison]) { fs.mkdirSync(path.dirname(file), {recursive:true}); fs.writeFileSync(file, line("old synthetic")); fs.utimesSync(file, new Date(0), new Date(0)); }
   const before = [pending, poison].map(f => fs.readFileSync(f));
   logger.cleanupStaleFiles();
-  const result = require("../scripts/transcript_inventory").inventory(process.env.PLUGIN_DATA);
+  const result = require("../../scripts/transcript_inventory").inventory(process.env.PLUGIN_DATA);
   const { sessions, ...summary } = result;
   assert.deepEqual(summary, {dryRun:true,legacyPending:1,legacyPoisonUnknownReason:1,chunkDiagnostics:{},downstream:"unknown"});
   assert.ok(sessions.every(s => s.failures.length === 0));
@@ -380,7 +380,7 @@ test(`first discovery excludes history and preserves ${originator} source identi
   assert.equal(records[0].payload.originator, originator);
   assert.equal(records[0].payload.source, sessionSource);
   assert.doesNotMatch(JSON.stringify(records), /PRIVATE-OLD/);
-  assert.deepEqual(records.slice(1).map(r => r.payload), [call,result].map(r => require("../scripts/sanitizer").sanitizeLine(r, credentials.hash_salt).payload));
+  assert.deepEqual(records.slice(1).map(r => r.payload), [call,result].map(r => require("../../scripts/sanitizer").sanitizeLine(r, credentials.hash_salt).payload));
   assert.deepEqual(records.slice(1).map(r => r.payload.call_id), ["pair-1","pair-1"]);
 });
 
@@ -389,7 +389,7 @@ test("a disabled native hook observes offsets without logging content or launchi
   fs.appendFileSync(source, line("DISABLED-HOOK-CONTENT"));
   const preload = path.join(root,"blocked-hook.cjs"), marker = path.join(root,"blocked-spawn");
   fs.writeFileSync(preload, `require("child_process").spawn=()=>{require("fs").writeFileSync(${JSON.stringify(marker)},"spawned");throw Error("disabled worker")};global.fetch=()=>{throw Error("network")};`);
-  const run = spawnSync(process.execPath,["--require",preload,path.join(__dirname,"../scripts/stop.js")],{
+  const run = spawnSync(process.execPath,["--require",preload,path.join(__dirname,"../../scripts/stop.js")],{
     cwd:repo,env:process.env,encoding:"utf8",timeout:3000,
     input:JSON.stringify({cwd:repo,session_id:"disabled",transcript_path:source,last_assistant_message:"DISABLED-HOOK-CONTENT"}),
   });
@@ -415,7 +415,7 @@ test("enable advances an unselected source before any upload hint exists", () =>
 });
 
 test("same-principal signout/signin excludes the signed-out span without intervening hooks", async () => {
-  const storeApi = require("../scripts/credstore");
+  const storeApi = require("../../scripts/credstore");
   const file = stage();
   global.fetch = async () => ({ok:true}); await upload(file);
   storeApi.signOut();
@@ -438,7 +438,7 @@ test("same-principal signout/signin excludes the signed-out span without interve
 });
 
 test("ordinary credential refresh does not close an authorized transcript interval", () => {
-  const storeApi=require("../scripts/credstore");
+  const storeApi=require("../../scripts/credstore");
   stage();const before=storeApi.recoverySnapshot();
   fs.appendFileSync(source,line("captured across refresh"));
   storeApi.commitRefresh(jwt("synthetic-user",4102444800,{jti:"refresh"}),before);
