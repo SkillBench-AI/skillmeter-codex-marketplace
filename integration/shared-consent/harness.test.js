@@ -88,6 +88,17 @@ test("shared controls call the supplied Claude store with canonical identity and
   f.ok(["shared", "org", "on"]); assert.deepEqual(spy(), ["org", "acme", true]);
 });
 
+test("missing transcript paths are unselected callbacks, not hook errors", t => {
+  const f = fixture(t); f.ok(["arm"]); f.policy(); const h = f.bind("a");
+  f.ok(["local", "a", "enable"]);
+  for (const field of ["transcript_path", "agent_transcript_path"]) {
+    assert.equal(f.ok(["hook", "pre_tool_use.js"], { ...h, [field]: path.join(f.base, "missing.jsonl") }).stdout.trim(), "{}");
+  }
+  const outcomes = fs.readFileSync(path.join(f.base, "callbacks.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  assert.deepEqual(outcomes.map(row => row.outcome), ["unselected", "unselected"]);
+  assert.equal(fs.existsSync(path.join(f.base, "data/logs/events.jsonl")), false);
+});
+
 test("guard blocks outbound networking/processes and intercepts only the fake collector", t => {
   const f = fixture(t); f.ok(["arm"]);
   const r = cp.spawnSync(process.execPath, ["--require", path.join(f.base, "guard.cjs"), "-e", `
@@ -120,21 +131,20 @@ test("expiration and retirement stop callbacks; retirement preserves edited hook
   assert.equal(fs.existsSync(path.join(f.cfg.workspaces.a, ".codex/hooks.json")), false);
 });
 
-test("guard permits only legacy or requested drain invocations", t => {
+test("guard permits the requested drain handshake but rejects other worker arguments", t => {
   const f = fixture(t); f.ok(["arm"]);
-  const guard = path.join(f.base, "guard.cjs"), worker = path.join(fs.realpathSync(f.base), "codex/scripts/drain_once.js");
-  fs.writeFileSync(worker, "process.exit(0)");
-  const result = cp.spawnSync(process.execPath, ["-e", `
-    const assert=require('node:assert/strict'), cp=require('node:child_process');
-    const seen=[]; cp.spawn=(command,args)=>{seen.push(args);return {}};
-    require(${JSON.stringify(guard)});
-    cp.spawn(process.execPath,[${JSON.stringify(worker)}]);
-    cp.spawn(process.execPath,[${JSON.stringify(worker)},'--requested']);
-    assert.throws(()=>cp.spawn(process.execPath,[${JSON.stringify(worker)},'--other']),/blocked/);
-    assert.throws(()=>cp.spawn(process.execPath,[${JSON.stringify(worker)},'--requested','extra']),/blocked/);
-    assert.equal(seen.length,2);
-  `], {encoding:'utf8',env:{PATH:process.env.PATH}});
-  assert.equal(result.status,0,result.stderr);
+  const r = cp.spawnSync(process.execPath, ["-e", `
+    const assert=require('node:assert/strict'),cp=require('node:child_process');
+    const calls=[]; cp.spawn=(...args)=>{calls.push(args);return {pid:1};};
+    require(${JSON.stringify(path.join(f.base, "guard.cjs"))});
+    const worker=${JSON.stringify(path.join(fs.realpathSync(f.base), "codex/scripts/drain_once.js"))};
+    cp.spawn(process.execPath,[worker]);
+    cp.spawn(process.execPath,[worker,'--requested']);
+    assert.equal(calls.length,2);
+    for(const args of [[worker,'--other'],[worker,'--requested','extra'],['other.js','--requested']])
+      assert.throws(()=>cp.spawn(process.execPath,args),/blocked/);
+  `], { encoding: "utf8", env: { PATH: process.env.PATH } });
+  assert.equal(r.status, 0, r.stderr);
 });
 
 
