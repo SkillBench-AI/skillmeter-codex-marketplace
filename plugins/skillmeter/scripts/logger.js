@@ -1137,21 +1137,21 @@ async function drainPendingTranscripts(backendUrl, timeoutMs) {
   return count;
 }
 
-/**
- * Drain both durable queues once. Returns the number of queued items found
- * (pre-drain), which callers use to decide whether work remains.
- */
+// Local reconciliation only: no transmission or credential changes.
 function reconcileSharedRevocations() {
+  let complete = true;
   try {
     if (repositoryQueue.hasRevoked(LOG_FILE)) sealEventLog();
-    repositoryQueue.purgeEvents();
-  } catch { console.error("[skillmeter] Shared event revocation deferred; routing unavailable"); }
+    if (!repositoryQueue.purgeEvents()) complete = false;
+  } catch { complete = false; console.error("[skillmeter] Shared event revocation deferred; routing unavailable"); }
   for (const dir of transcriptQueue.queueDirectories(TRANSCRIPT_CHUNKS_DIR)) {
-    try { transcriptQueue.purgeRevoked(dir, repositoryQueue.revokedScope); }
-    catch { console.error("[skillmeter] Shared transcript revocation deferred; routing unavailable"); }
+    try { if (!transcriptQueue.purgeRevoked(dir, repositoryQueue.revokedScope)) complete = false; }
+    catch { complete = false; console.error("[skillmeter] Shared transcript revocation deferred; routing unavailable"); }
   }
+  return complete;
 }
 
+/** Drain both queues once; return the pre-drain count of queued items. */
 async function drainQueuesOnce(backendUrl, timeoutMs) {
   cleanupStaleFiles();
   reconcileSharedRevocations();
@@ -1868,6 +1868,8 @@ module.exports = {
   collectTranscriptPaths,
   stageTranscriptForUpload,
   observeTranscriptConsent,
+  observeKnownTranscriptConsent,
+  reconcileSharedRevocations,
   requestTranscriptCapture,
   stageRequestedTranscripts,
   TRANSCRIPT_CHUNKS_DIR,

@@ -103,7 +103,8 @@ test("missing repository identity cannot produce a migration target", t => {
 test("human output distinguishes the preview from applied migration", t => {
   const f = fixture(t); const result = f.cli(["consent-preview"]);
   assert.match(result.stdout, /No consent settings changed/);
-  assert.match(result.stdout, /Migration apply is not available/);
+  assert.match(result.stdout, /Local settings remain in effect/);
+  assert.match(result.stdout, /Shared revision: absent/);
   assert.doesNotMatch(result.stdout, /capture enabled|uploads enabled|migration complete/i);
 });
 

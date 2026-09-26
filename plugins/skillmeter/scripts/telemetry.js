@@ -2,7 +2,7 @@
 /**
  * Set project consent in .codex/settings.local.json or the shared global pause.
  * Usage: node scripts/telemetry.js <enable|disable|status> [--global],
- * or node scripts/telemetry.js consent-preview [--json].
+ * or node scripts/telemetry.js consent-preview [--json]; consent-set --help prints choice arguments.
  */
 
 const {
@@ -141,6 +141,34 @@ switch (action) {
     process.stdout.write(process.argv.includes("--json") ? JSON.stringify(result) + "\n" : formatConsentPreview(result));
     break;
   }
+  case "consent-set": {
+    refreshFromDisk();
+    const { createSharedPolicyStore } = require("./lib/shared-policy-store");
+    const { applyRepositoryConsent, parseConsentChoiceArgs, CONSENT_SET_USAGE } = require("./lib/shared-consent-apply");
+    try {
+      const options = parseConsentChoiceArgs(process.argv.slice(3));
+      if (options.help) { process.stdout.write(`${CONSENT_SET_USAGE}\n`); break; }
+      const store = createSharedPolicyStore({ file: sharedPolicyFile(), observedFile: path.join(LOG_DIR, "shared-policy-observed") });
+      const { reconcileSharedRevocations, observeKnownTranscriptConsent } = require("./logger.js");
+      let cleaned = false;
+      const policy = applyRepositoryConsent({ cwd, scope: getRepoScopeDecision(cwd), store, ...options,
+        onCommitted: () => {
+          // Observe the saved choice before releasing the shared writer lock.
+          // Cleanup failures cannot roll back consent or authorize an upload.
+          try { cleaned = reconcileSharedRevocations(); observeKnownTranscriptConsent(); }
+          catch { cleaned = false; }
+        },
+      });
+      process.stdout.write(`Shared repository choice saved: ${options.enabled ? "ON" : "OFF"} (revision ${policy.revision}).\n`);
+      process.stdout.write(cleaned ? "Known local queue revocations checked.\n" : "Some local queue cleanup is deferred; delivery still rechecks consent.\n");
+      process.stdout.write("Local settings are unchanged. Capture still requires local opt-in; authentication, shared pause and other restrictions still apply.\n");
+      process.stdout.write("This does not verify hook execution, delivery or report generation.\n");
+    } catch (error) {
+      process.stderr.write(`SkillMeter: ${error.code || "CONSENT_UPDATE_FAILED"}: ${error.message}\n`);
+      process.exitCode = 1;
+    }
+    break;
+  }
   case "enable":
     if (isGlobal) {
       setTelemetryGloballyDisabled(false);
@@ -186,6 +214,6 @@ switch (action) {
     break;
   }
   default:
-    process.stderr.write("Usage: node telemetry.js <enable|disable|status> [--global] | consent-preview [--json]\n");
+    process.stderr.write("Usage: node telemetry.js <enable|disable|status> [--global] | consent-preview [--json] | consent-set <on|off> --repository <key> --revision <number|absent> [--acknowledge-machine-scope]\n");
     process.exit(1);
 }

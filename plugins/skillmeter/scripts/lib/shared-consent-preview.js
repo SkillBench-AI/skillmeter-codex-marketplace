@@ -75,9 +75,11 @@ function formatConsentPreview(result) {
   return [
     "Shared consent migration preview. No consent settings changed.",
     `Repository: ${result.repository ?? "unavailable"}`,
+    "Shared ON authorizes every supported SkillMeter client and every clone or worktree of this repository on this machine.",
+    `Shared revision: ${Object.hasOwn(result, "sharedRevision") ? result.sharedRevision ?? "absent" : "unavailable"}`,
     ...result.localChoices.map(choice => `Local choice (${choice.path}): ${choice.choice}`),
     ...result.notices.map(notice => notice.message),
-    "Migration apply is not available. This preview does not verify capture or delivery.",
+    "Use consent-set for an explicit shared repository choice. Local settings remain in effect; this preview does not verify capture or delivery.",
   ].join("\n") + "\n";
 }
 
