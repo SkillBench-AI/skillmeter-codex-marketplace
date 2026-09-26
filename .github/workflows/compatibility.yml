@@ -1,0 +1,136 @@
+name: Cross-repository compatibility
+
+# Private dependency code never runs in a pull_request or pull_request_target job.
+# Call this from a reviewed release gate, or dispatch after this workflow lands.
+on:
+  workflow_dispatch:
+    inputs:
+      claude_sha:
+        description: Reviewed Claude plugin commit (full SHA)
+        required: true
+        type: string
+      collector_sha:
+        description: Reviewed collector commit (full SHA)
+        required: true
+        type: string
+      pipeline_sha:
+        description: Reviewed pipeline commit (full SHA)
+        required: true
+        type: string
+  workflow_call:
+    inputs:
+      claude_sha:
+        required: true
+        type: string
+      collector_sha:
+        required: true
+        type: string
+      pipeline_sha:
+        required: true
+        type: string
+    secrets:
+      COMPATIBILITY_READ_TOKEN:
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  compatibility:
+    name: Pinned producer / collector / reader
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Require exact revisions and checkout access
+        env:
+          CLAUDE_SHA: ${{ inputs.claude_sha }}
+          COLLECTOR_SHA: ${{ inputs.collector_sha }}
+          PIPELINE_SHA: ${{ inputs.pipeline_sha }}
+          READ_TOKEN: ${{ secrets.COMPATIBILITY_READ_TOKEN }}
+        run: |
+          python - <<'PYCODE'
+          import os, re
+          for key in ('CLAUDE_SHA', 'COLLECTOR_SHA', 'PIPELINE_SHA'):
+              if not re.fullmatch(r'[0-9a-f]{40}', os.environ[key]):
+                  raise SystemExit('A full lowercase commit SHA is required: ' + key)
+          if not os.environ.get('READ_TOKEN'):
+              raise SystemExit('Configure COMPATIBILITY_READ_TOKEN with contents:read for the two dependency repositories.')
+          PYCODE
+      - uses: actions/checkout@v4
+        with:
+          path: producer
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: SkillBench-AI/skillmeter-claude-code-collector
+          ref: ${{ inputs.collector_sha }}
+          path: collector
+          token: ${{ secrets.COMPATIBILITY_READ_TOKEN }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: SkillBench-AI/skillbench-pipelines
+          ref: ${{ inputs.pipeline_sha }}
+          path: pipeline
+          token: ${{ secrets.COMPATIBILITY_READ_TOKEN }}
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          repository: SkillBench-AI/skillmeter-claude-code-marketplace
+          ref: ${{ inputs.claude_sha }}
+          path: claude
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.14'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.5'
+          cache-dependency-path: collector/go.sum
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: '0.11.26'
+          enable-cache: false
+      - name: Install locked Python dependencies
+        working-directory: pipeline
+        run: uv sync --frozen --all-packages --all-groups
+      - name: Prepare Go dependencies
+        working-directory: collector
+        run: go mod download
+      - name: Run released-state and authorization tests
+        working-directory: producer
+        run: npm run check
+      - name: Check mixed-client authorization
+        id: mixed
+        continue-on-error: true
+        working-directory: producer
+        run: node plugins/skillmeter/integration/check_mixed_auth.cjs ../claude > "$RUNNER_TEMP/mixed-auth.json"
+      - name: Pin and run the cross-repository contract
+        id: contract
+        continue-on-error: true
+        working-directory: producer
+        run: |
+          python -B plugins/skillmeter/integration/candidate_contract.py pin --collector ../collector --pipeline ../pipeline --manifest "$RUNNER_TEMP/candidate.json"
+          python -B plugins/skillmeter/integration/candidate_contract.py run --collector ../collector --pipeline ../pipeline --manifest "$RUNNER_TEMP/candidate.json" --out "$RUNNER_TEMP/candidate-result.json" --python "$GITHUB_WORKSPACE/pipeline/.venv/bin/python" --go "$(command -v go)"
+      - name: Retain content-free evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: compatibility-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/mixed-auth.json
+            ${{ runner.temp }}/candidate.json
+            ${{ runner.temp }}/candidate-result.json
+          if-no-files-found: warn
+          retention-days: 14
+      - name: Require both contracts
+        if: always()
+        env:
+          MIXED_OUTCOME: ${{ steps.mixed.outcome }}
+          CONTRACT_OUTCOME: ${{ steps.contract.outcome }}
+        run: test "$MIXED_OUTCOME" = success && test "$CONTRACT_OUTCOME" = success
