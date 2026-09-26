@@ -30,7 +30,7 @@ function makeHome(creds) {
 function run(tool, args, home, extraEnv = {}) {
   return spawnSync(process.execPath, [path.join(BIN_DIR, tool), ...args], {
     encoding: "utf8",
-    env: { ...process.env, HOME: home, USERPROFILE: home, ...extraEnv },
+    env: { ...process.env, HOME: home, USERPROFILE: home, PLUGIN_DATA: path.join(home, "plugin-data"), ...extraEnv },
   });
 }
 
