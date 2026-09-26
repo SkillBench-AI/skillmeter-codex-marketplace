@@ -19,6 +19,21 @@ function error(code, message) {
   return Object.assign(new Error(message), { code });
 }
 
+// Temp files are uniquely named and never read back. Their cleanup is best
+// effort: a failure here must not replace the outcome of the write it follows,
+// which has already committed or already failed with its own error.
+function discard(temp) {
+  try { fs.unlinkSync(temp); } catch {}
+}
+
+// A renamed or linked directory entry is only durable once its directory is
+// synced. Without this, a revoking write could reappear as the old grant after
+// a crash, and a lost marker would read as first use instead of POLICY_MISSING.
+function syncDir(dir) {
+  const fd = fs.openSync(dir, "r");
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+
 function validatePolicy(policy) {
   if (!object(policy) || policy.schema_version !== 1 || !integer(policy.revision) ||
       Object.keys(policy).some(key => !FIELDS.includes(key)) || !record(policy.global) ||
@@ -41,6 +56,11 @@ function createSharedPolicyStore({ file, observedFile }) {
   }
   const lockFile = `${file}.lock`;
 
+  function validMarker() {
+    try { return fs.lstatSync(observedFile).isFile() && fs.readFileSync(observedFile, "utf8") === "1\n"; }
+    catch { return false; }
+  }
+
   function observed(mark = false, onCreate = () => {}) {
     try {
       if (mark && !observed()) {
@@ -51,17 +71,25 @@ function createSharedPolicyStore({ file, observedFile }) {
           fd = fs.openSync(temp, "wx", 0o600);
           fs.writeFileSync(fd, "1\n"); fs.fsyncSync(fd);
           fs.linkSync(temp, observedFile);
+          // Report the new marker before syncing, so a failed sync can still be
+          // rolled back by a first write that owns it.
           onCreate(fs.fstatSync(fd));
+          syncDir(path.dirname(observedFile));
         } catch (err) { if (err.code !== "EEXIST") throw err; }
         finally {
           if (fd !== undefined) fs.closeSync(fd);
-          try { fs.unlinkSync(temp); } catch (err) { if (err.code !== "ENOENT") throw err; }
+          discard(temp);
         }
       }
       if (!fs.lstatSync(observedFile).isFile() || fs.readFileSync(observedFile, "utf8") !== "1\n") throw new Error("invalid marker");
       return true;
     } catch (err) {
-      if (!mark && err.code === "ENOENT" && policyPathIsAbsent(observedFile)) return false;
+      if (!mark && err.code === "ENOENT") {
+        if (policyPathIsAbsent(observedFile)) return false;
+        // Another process may have published the marker between the two
+        // lookups; a valid marker is an observation, not a broken path.
+        if (validMarker()) return true;
+      }
       throw error("POLICY_OBSERVATION_FAILED", "Cannot persist or read shared-policy observation; check client data permissions.");
     }
   }
@@ -136,15 +164,18 @@ function createSharedPolicyStore({ file, observedFile }) {
       policy.revision++;
       validatePolicy(policy);
       let createdMarker;
-      observed(true, stat => { createdMarker = stat; });
       const temp = `${file}.tmp.${process.pid}.${randomUUID()}`;
       let fd;
       try {
+        // Inside the rollback scope: a marker published by this attempt is
+        // removed if the attempt fails before the policy exists.
+        observed(true, stat => { createdMarker = stat; });
         fd = fs.openSync(temp, "wx", 0o600);
         fs.writeFileSync(fd, JSON.stringify(policy, null, 2) + "\n");
         fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined;
         assertOwned();
         fs.renameSync(temp, file);
+        syncDir(path.dirname(file));
         // Keep cooperating writers out until the client has observed revocation.
         try { onCommitted?.(policy); }
         catch { throw error("POLICY_COMMITTED_OBSERVER_FAILED", "Shared policy was saved, but local reconciliation failed; inspect consent-preview and retry queue cleanup."); }
@@ -164,7 +195,7 @@ function createSharedPolicyStore({ file, observedFile }) {
         throw err;
       } finally {
         if (fd !== undefined) fs.closeSync(fd);
-        try { fs.unlinkSync(temp); } catch (err) { if (err.code !== "ENOENT") throw err; }
+        discard(temp);
       }
       return policy;
     });

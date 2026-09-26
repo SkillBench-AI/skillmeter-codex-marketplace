@@ -267,3 +267,73 @@ test("failed first write preserves an observation marker replaced by another obs
   assert.equal(fs.readFileSync(f.observedFile, "utf8"), "1\n");
   assert.throws(() => f.store.readPolicy(), { code: "POLICY_MISSING" });
 });
+
+function failTempCleanup(t) {
+  const unlink = fs.unlinkSync;
+  t.mock.method(fs, "unlinkSync", (target, ...rest) => {
+    if (/\.tmp(?:\.|$)/.test(String(target))) throw Object.assign(new Error("synthetic cleanup failure"), { code: "EACCES" });
+    return unlink(target, ...rest);
+  });
+}
+
+test("a failed marker temp cleanup does not block observation", t => {
+  const f = fixture(t); failTempCleanup(t);
+  assert.equal(f.store.readPolicy().revision, 4);
+  assert.equal(fs.readFileSync(f.observedFile, "utf8"), "1\n");
+});
+
+test("a failed temp cleanup neither hides a committed write nor replaces the original error", t => {
+  const f = fixture(t); failTempCleanup(t);
+  assert.equal(f.store.setGlobalEnabled(false, { expectedRevision: 4 }).revision, 5);
+  assert.equal(JSON.parse(fs.readFileSync(f.file, "utf8")).global.enabled, false);
+  assert.equal(fs.existsSync(`${f.file}.lock`), false);
+  t.mock.method(fs, "renameSync", () => { throw Object.assign(new Error("disk"), { code: "EIO" }); });
+  assert.throws(() => f.store.setGlobalEnabled(true, { expectedRevision: 5 }), { code: "EIO" });
+  assert.equal(JSON.parse(fs.readFileSync(f.file, "utf8")).revision, 5);
+  assert.equal(fs.existsSync(`${f.file}.lock`), false);
+});
+
+test("publishing the policy and the observation marker syncs their parent directories", t => {
+  const f = fixture(t, null);
+  const open = fs.openSync, synced = [];
+  t.mock.method(fs, "openSync", (target, flags, ...rest) => {
+    try { if (flags === "r" && fs.statSync(target).isDirectory()) synced.push(path.resolve(String(target))); } catch {}
+    return open(target, flags, ...rest);
+  });
+  assert.equal(f.store.setRepositoryOverride(repo, false, { expectedRevision: null }).revision, 1);
+  assert.ok(synced.includes(path.resolve(path.dirname(f.file))), "policy directory synced");
+  assert.ok(synced.includes(path.resolve(path.dirname(f.observedFile))), "marker directory synced");
+});
+
+test("a first write whose marker directory sync fails leaves no marker and can be retried", t => {
+  const f = fixture(t, null);
+  const open = fs.openSync, markerDir = path.resolve(path.dirname(f.observedFile));
+  const failing = t.mock.method(fs, "openSync", (target, flags, ...rest) => {
+    if (flags === "r" && path.resolve(String(target)) === markerDir) throw Object.assign(new Error("synthetic sync failure"), { code: "EIO" });
+    return open(target, flags, ...rest);
+  });
+  assert.throws(() => f.store.setRepositoryOverride(repo, false, { expectedRevision: null }), { code: "POLICY_OBSERVATION_FAILED" });
+  assert.equal(fs.existsSync(f.observedFile), false);
+  assert.equal(fs.existsSync(f.file), false);
+  failing.mock.restore();
+  assert.equal(f.store.readPolicy(), null);
+  assert.equal(f.store.setRepositoryOverride(repo, false, { expectedRevision: null }).revision, 1);
+});
+
+test("a marker published by another process between lookups counts as observed", t => {
+  const f = fixture(t);
+  fs.mkdirSync(path.dirname(f.observedFile), { recursive: true });
+  const lstat = fs.lstatSync;
+  let raced = false;
+  t.mock.method(fs, "lstatSync", (target, ...rest) => {
+    if (!raced && path.resolve(String(target)) === path.resolve(f.observedFile)) {
+      raced = true;
+      const missing = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      fs.writeFileSync(f.observedFile, "1\n"); // the other writer wins the race
+      throw missing;
+    }
+    return lstat(target, ...rest);
+  });
+  assert.equal(f.store.readPolicy().revision, 4);
+  assert.ok(raced);
+});

@@ -120,6 +120,9 @@ try {
   ];
   try {
     const outcomes = Promise.all(writers.map(writer => writer.result));
+    // Awaited below. If a writer exits before "ready", that await never runs,
+    // so the rejection here must not surface as an unhandled one.
+    outcomes.catch(() => {});
     await Promise.all(writers.map(writer => writer.ready));
     writers.forEach(writer => writer.child.send("write"));
     assert.deepEqual((await outcomes).sort(), ["STALE_POLICY", "ok"]);
