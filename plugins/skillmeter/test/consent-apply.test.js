@@ -95,6 +95,17 @@ test("CLI shared OFF revokes known payloads while paused without changing creden
   assert.doesNotMatch(result.stdout,/delivered|report generated/i);
 });
 
+test("CLI consent-set --help prints the choice arguments and exits successfully", t => {
+  const f=fixture(t);
+  const result=f.run(`
+    process.argv=['node','telemetry.js','consent-set','--help'];
+    require(${JSON.stringify(path.resolve(__dirname, "../scripts/telemetry.js"))});
+    assert.equal(process.exitCode,undefined);
+    assert.equal(fs.existsSync(policyFile),false);
+  `);
+  assert.match(result.stdout,/^Usage: consent-set <on\|off> --repository/m);
+});
+
 for (const args of [[], ['on'], ['on','--repository','github.com/acme/widgets','--revision','1'], ['off','--repository','github.com/acme/widgets','--revision','1','--typo']]) {
   test(`CLI rejects incomplete or unknown choice arguments: ${args.join(' ')}`, t => {
     const f=fixture(t);
