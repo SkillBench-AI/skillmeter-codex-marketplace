@@ -17,7 +17,7 @@ for (const scenario of contract.requiredCases.mixedAuth) {
   try {
     const processCase = scenario.startsWith("concurrent-") || scenario.startsWith("delayed-") || scenario.startsWith("aged-live-") || ["dead-owner-reaper-race", "aliased-dead-owner-reapers"].includes(scenario) ||
       ["interrupted-credential-writer", "surviving-codex-process"].includes(scenario);
-    const script = processCase ? "auth-process-transition.cjs" : "auth-transition.cjs";
+    const script = scenario.startsWith("broker-") ? "broker-transition.cjs" : processCase ? "auth-process-transition.cjs" : "auth-transition.cjs";
     const producers = scenario === "surviving-codex-process" ? contract.upgradePaths.map(release => {
       const checkout = path.join(root, release.version);
       fs.mkdirSync(checkout);

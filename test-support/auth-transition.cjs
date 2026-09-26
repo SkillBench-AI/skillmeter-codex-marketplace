@@ -20,7 +20,7 @@ fs.mkdirSync(path.dirname(state), { recursive: true });
 fs.writeFileSync(state, JSON.stringify({ device_id: "fixture-device", hash_salt: "fixture-salt", future_field: { keep: true } }));
 const old = require(path.join(previousRoot, "scripts/credstore"));
 const current = require(path.join(candidateRoot, "scripts/credstore"));
-const jwt = exp => "e30." + Buffer.from(JSON.stringify({ sub: "fixture-tenant", broker_sub: "fixture-user", exp, aud: "https://fixture.invalid", org: {login:"fixture"} })).toString("base64url") + ".fixture";
+const jwt = exp => "e30." + Buffer.from(JSON.stringify({ sub: "fixture-tenant", broker_sub: "fixture-user", exp, aud: "https://fixture.invalid", orgs:["fixture"], org: {login:"fixture-tenant"} })).toString("base64url") + ".fixture";
 const token = jwt(4102444800), fresh = jwt(4102444900);
 if (client === "claude") { current.markEngaged(); current.commitSignin({jwt:token, orgs:["fixture"]}); }
 old.markEngaged(); assert.equal(old.commitSignin({ jwt: token, orgs: ["fixture"] }), true);

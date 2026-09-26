@@ -393,6 +393,11 @@ function getAllowedGitHubOrgs() {
   const store = loadStore();
   const orgs = store.allowed_github_orgs;
   if (!Array.isArray(orgs)) return [];
+  const { hasBrokerIdentity, getBrokerLicenseOrgs } = require("./lib/jwt");
+  if (hasBrokerIdentity(store.license_jwt)) {
+    const licensed = getBrokerLicenseOrgs(store.license_jwt);
+    return normalizeOrgs(orgs).filter(org => licensed.includes(org));
+  }
   return orgs;
 }
 

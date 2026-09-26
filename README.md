@@ -35,8 +35,10 @@ Then review the collection notice and explicitly enable telemetry for the
 repository you want to capture using the [project controls](plugins/skillmeter/README.md#sign-in-and-controls).
 
 Already signed in with a shared GitHub-based SkillMeter credential? You can
-reuse it. Compatibility with Claude's latest broker sign-in remains follow-up
-work. See [sign-in and collection controls](plugins/skillmeter/README.md).
+reuse it. Shared broker credentials can refresh without switching to the GitHub
+CLI identity. Existing Codex organization scope is narrowed to the broker
+license's organizations. A fresh broker sign-in alone does not establish Codex
+scope; full broker onboarding compatibility remains follow-up work. See [sign-in and collection controls](plugins/skillmeter/README.md).
 
 ## Update
 

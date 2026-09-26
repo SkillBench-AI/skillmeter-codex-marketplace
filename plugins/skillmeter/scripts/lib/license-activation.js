@@ -5,6 +5,7 @@
 
 const { execSync } = require("child_process");
 const credstore = require("../credstore");
+const { hasBrokerIdentity } = require("./jwt");
 const { fetchUserGitHubOrgs } = require("./github-api");
 const { getSkillmeterStringSetting } = require("./settings");
 const { resolveOrgScope, narrowOrgsToScope } = require("./org-scope");
@@ -143,6 +144,12 @@ async function trySilentGhActivate(deviceId, options = {}) {
   }
   const expected = options.expected || credstore.recoverySnapshot();
   if (expected.deviceId !== deviceId || !credstore.isRecoveryCurrent(expected)) return null;
+  // The broker and gh CLI can represent different people and tenants. Recovery
+  // must retain the broker credential on every failure, including transient ones.
+  if (hasBrokerIdentity(expected.token)) {
+    console.error("[skillmeter] GitHub activation skipped: shared broker credential requires broker sign-in recovery");
+    return null;
+  }
 
   let ghToken;
   try {

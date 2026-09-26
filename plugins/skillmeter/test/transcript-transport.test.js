@@ -241,7 +241,7 @@ test("chunk routing and authorization use one current credential snapshot", asyn
 
 for (const changedPrincipal of [false, true]) test(`broker credential rotation ${changedPrincipal ? "blocks a different user" : "preserves the same user's queue"}`, async () => {
   const brokerToken = (user, jti) => jwt("tenant-uuid", 4102444800, {
-    github_id: undefined, broker_sub: user, jti,
+    github_id: undefined, broker_sub: user, jti, orgs: ["synthetic"],
   });
   save({ license_jwt: brokerToken("broker-user-a", "old") });
   fs.rmSync(logger.TRANSCRIPT_CHUNKS_DIR, {recursive:true,force:true});

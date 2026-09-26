@@ -101,3 +101,12 @@ establish native host reload behavior or unrestricted mixed-version locking.
 Unknown, malformed or unverifiable ownership holds credential writes, even if
 the lock is old. PID reuse and repeated cleanup crashes may require recovery
 with all writers stopped. Do not delete a live lock to resolve contention.
+
+Broker cases use Claude's real credential writer without supplying a synthetic
+Codex organization list. Failed broker refresh preserves the credential and
+cannot fall back to GitHub activation, following Claude ADR 001's broker
+amendment. Successful refresh narrows existing Codex scope to the new license.
+Missing, empty or malformed plural organization claims hold that scope;
+`org.login` is a broker tenant slug and cannot authorize a GitHub repository. A fresh
+broker sign-in without an existing Codex scope remains held; these tests do not
+claim full broker onboarding support or authorize collection.
