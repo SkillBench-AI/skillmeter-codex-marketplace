@@ -14,6 +14,7 @@ for (const name of ["node:http", "node:https", "node:net", "node:tls"]) {
   const mod = require(name);
   for (const key of ["request", "get", "connect", "createConnection"]) if (mod[key]) mod[key] = () => { throw Error("fixture-network-denied"); };
 }
+global.fetch = () => { throw Error("fixture-network-denied"); };
 const state = path.join(root, ".skillbench/credentials.json");
 fs.mkdirSync(path.dirname(state), { recursive: true });
 fs.writeFileSync(state, JSON.stringify({ device_id: "fixture-device", hash_salt: "fixture-salt", future_field: { keep: true } }));

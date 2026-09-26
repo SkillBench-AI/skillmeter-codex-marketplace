@@ -17,5 +17,8 @@ for (const scenario of ["signed-in","signed-out","expired","global-pause","repos
     results.push({scenario,status:result.status===0?"pass":"fail"});
   } finally { fs.rmSync(root,{recursive:true,force:true}); }
 }
+for (const [name,cwd] of [["codex",path.resolve(candidate,"../..")],["claude",claude]]) {
+  if (execFileSync("git",["status","--porcelain","--untracked-files=all"],{cwd,encoding:"utf8"}).trim() || execFileSync("git",["rev-parse","HEAD"],{cwd,encoding:"utf8"}).trim() !== revisions[name]) throw Error("candidate-changed-during-test");
+}
 process.stdout.write(JSON.stringify({version:1,kind:"mixed-client-authorization-gate",revisions,results,limitations:["Synthetic sequential writers, no native hooks or concurrent credential races.","No installed state, real credentials or network."]},null,2)+"\n");
 process.exitCode = results.every(r=>r.status==="pass")?0:1;
