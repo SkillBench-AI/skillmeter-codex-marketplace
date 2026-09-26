@@ -121,7 +121,9 @@ test("shared policy location follows canonical default, development and explicit
     delete process.env.SKILLMETER_STATE_DIR; delete process.env.SKILLMETER_ENV;
     assert.equal(logger.getTelemetryGloballyDisabled(),true);
     process.env.SKILLMETER_ENV='dev';
-    assert.equal(logger.getTelemetryGloballyDisabled(),false);
+    // Reusing client data after observing a policy cannot restore first-use
+    // permission just by selecting an empty state directory.
+    assert.equal(logger.getTelemetryGloballyDisabled(),true);
     const dev=path.join(process.env.HOME,'.skillbench-dev'); fs.mkdirSync(dev);
     fs.writeFileSync(path.join(dev,'telemetry-policy.json'),JSON.stringify({...policy,global:{enabled:false}}));
     assert.equal(logger.getTelemetryGloballyDisabled(),true);

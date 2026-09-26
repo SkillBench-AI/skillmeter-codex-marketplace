@@ -134,7 +134,8 @@ function createSharedPolicyStore({ file, observedFile }) {
     }
   }
 
-  function mutate(mutator, options) {
+  function mutate(mutator, options, onCommitted) {
+    if (onCommitted !== undefined && typeof onCommitted !== "function") throw new TypeError("Commit observer must be a function.");
     const expected = options?.expectedRevision;
     if (expected !== null && !integer(expected)) {
       throw error("EXPECTED_REVISION_REQUIRED", "Read the policy first and supply its revision (null only for first use).");
@@ -161,6 +162,9 @@ function createSharedPolicyStore({ file, observedFile }) {
         assertOwned();
         fs.renameSync(temp, file);
         syncDir(path.dirname(file));
+        // Keep cooperating writers out until the client has observed revocation.
+        try { onCommitted?.(policy); }
+        catch { throw error("POLICY_COMMITTED_OBSERVER_FAILED", "Shared policy was saved, but local reconciliation failed; inspect consent-preview and retry queue cleanup."); }
       } catch (err) {
         // A failed first write has not observed a policy. Roll back only this
         // attempt's marker, under our lock, while the policy is still absent.
@@ -199,7 +203,7 @@ function createSharedPolicyStore({ file, observedFile }) {
         ...decision(enabled, policy.repositories[key]),
         ...(enabled === true && options?.acknowledged === true ? { consent_version: 2 } : {}),
       };
-    }, options);
+    }, options, options?.onCommitted);
   }
 
   function setGlobalEnabled(enabled, options) {

@@ -25,6 +25,7 @@ Run project controls from the repository you want to configure:
 | Sign in and limit scope to your organization | `node "$PLUGIN_ROOT/bin/signin" --org your-github-org` |
 | Inspect sign-in claims and expiry (no raw token) | `node "$PLUGIN_ROOT/bin/sk-jwt"` |
 | Check capture policy, authentication and local queues | `node "$PLUGIN_ROOT/bin/sk-telemetry" status` |
+| Preview local/shared consent conflicts | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-preview` |
 | Enable / disable this project | `node "$PLUGIN_ROOT/bin/sk-telemetry" enable` / `disable` |
 | Pause / resume all Codex collection and uploads | `node "$PLUGIN_ROOT/bin/sk-telemetry" disable --global` / `enable --global` |
 | Sign out | `node "$PLUGIN_ROOT/bin/signout"` |
@@ -46,6 +47,38 @@ capture continues. It does not verify hook execution or server acceptance, and
 this version does not track the last successful upload. An empty queue does not
 prove delivery or report generation; legacy snapshots are excluded from the count.
 
+`consent-preview` shows choices at the repository root and along the path to the
+current directory, shared opt-outs and missing machine-wide acknowledgements.
+Use `--json` for structured output. It does not scan other directories or change
+consent settings, credentials or queued data. It records a local observation
+marker so a later missing shared policy is reported.
+
+To record an explicit shared repository choice, use the repository key and
+revision shown by a fresh preview:
+
+```sh
+node "$PLUGIN_ROOT/bin/sk-telemetry" consent-set on \
+  --repository github.com/org/repo --revision 12 --acknowledge-machine-scope
+node "$PLUGIN_ROOT/bin/sk-telemetry" consent-set off \
+  --repository github.com/org/repo --revision 13
+```
+
+ON authorizes every supported SkillMeter client and every clone or worktree of
+that repository on this machine. It requires machine-wide organization consent
+already recorded at version 2; this command cannot authorize an organization or
+upgrade its legacy choice. Local OFF or invalid settings must be resolved
+explicitly first. OFF needs no acknowledgement. For an absent policy, use
+`--revision absent`; only OFF can proceed without organization authorization.
+A stale revision or changed repository requires a new preview and confirmation.
+
+Local settings are preserved, including restrictions in other directories.
+Version-2 ON for both the organization and repository authorizes Codex capture
+without a checkout-local ON. Legacy choices retain the local opt-in requirement.
+The command checks
+known local queue revocations without uploading, reports deferred cleanup, and
+preserves privacy cursors. In-flight requests may finish. A saved choice does
+not prove hook execution, delivery or report generation.
+
 ## Collection scope
 
 ChatGPT Work transcript delivery is not supported. A transcript containing
@@ -60,31 +93,31 @@ A recognized GitHub repository and an allowed remote owner are required:
 - Enabling a project cannot bring an out-of-scope repository into scope.
 - The global pause overrides project choices. There is no OS consent pop-up.
 
-Project controls read and write `<git-root>/.codex/settings.local.json`, including
-when run from a subdirectory. Existing root choices remain effective. Missing,
-malformed or non-boolean choices stay off. To opt in:
-
-```json
-{ "skillmeter": { "telemetry": true } }
-```
+Legacy `enable` / `disable` controls read and write
+`<git-root>/.codex/settings.local.json`, including from subdirectories.
+Local OFF and malformed settings remain restrictive. A shared grant requires
+version-2 ON for both organization and repository, and covers all clones and
+worktrees with the same canonical GitHub identity. Until acknowledged, shared
+legacy ON still requires a local boolean `true`; an absent, never-observed
+shared policy also retains that legacy behavior.
 
 For additional narrowing, set `SKILLMETER_REPO_SCOPE_ORGS` to comma-separated
 owners, or use `skillmeter.repoScopeOrgs` in the same settings file. These filters
-can only restrict the allowed identities. An unset choice does not authorize
-capture. Nested repositories require their own choice. Legacy subdirectory
-opt-outs remain restrictive; subdirectory opt-ins cannot enable the whole repo.
+can only restrict allowed identities. Nested repositories use their own
+identity. A subdirectory OFF restricts that directory; a subdirectory ON cannot
+authorize the repository.
 
-This follows Claude's explicit repository opt-in rule. Codex still stores the
-choice per checkout, so clones and linked worktrees require separate choices.
-It does not yet use Claude's shared organization/repository policy store.
-Repository disable stops new capture and removes that repository's queued,
-unsent event and transcript payloads; privacy cursors are kept, so re-enabling
-does not restore removed data, and requests already in flight complete. Global
-pause stops capture and transmission while retaining queues. Observed disabled
-transcript intervals are excluded from later staging and baseline recovery. The
-first observation excludes existing content, so native startup timing matters
-for capture completeness. Shared policy remains required for full consent
-parity. See the [alignment boundary](../../docs/repository-consent.md).
+Explicit repository OFF revokes known queued payloads while preserving privacy
+cursors and other repositories' data. Global pause holds queues. Missing shared
+choices hold rather than revoke. A missing previously observed policy, invalid
+policy or failed observation marker blocks capture and delivery without repair.
+Legacy unattributed queues retain their existing behavior.
+
+Observed disabled intervals and the initial transcript prefix are excluded from
+staging and baseline recovery. Consent changes can also exclude uncertain
+intervals, so native startup timing still matters. Authentication, organization
+controls, native validation and release acceptance remain separate from this
+consent integration. See the [consent contract](../../docs/repository-consent.md).
 
 ## Data and privacy
 

@@ -140,7 +140,7 @@ for (const [name, options] of [
 ]) {
   test(`${name} repository choice does not report capture eligibility`, () => {
     const text = status(options);
-    assert.match(text, /Capture policy: disabled; repository choice required/);
+    assert.match(text, name === "missing" ? /Capture policy: disabled; repository choice required/ : /Capture policy: paused; invalid local consent settings/);
     assert.match(text, /Delivery authentication: license locally valid/);
     assert.doesNotMatch(text, /Capture policy: eligible/);
   });

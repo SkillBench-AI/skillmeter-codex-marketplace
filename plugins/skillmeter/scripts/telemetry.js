@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 /**
  * Set project consent in .codex/settings.local.json or the shared global pause.
- * Usage: node scripts/telemetry.js <enable|disable|status> [--global].
+ * Usage: node scripts/telemetry.js <enable|disable|status> [--global],
+ * or node scripts/telemetry.js consent-preview [--json]; consent-set --help prints choice arguments.
  */
 
 const {
   getTelemetryOptIn,
+  getLocalTelemetryChoice,
+  readSharedGlobalPolicy,
   getTelemetryGloballyDisabled,
   saveTelemetryOptIn,
   setTelemetryGloballyDisabled,
@@ -30,7 +33,7 @@ const fs = require("fs");
 const path = require("path");
 const { isJwtExpired } = require("./lib/jwt");
 const { inventory } = require("./transcript_inventory");
-const { readSharedGlobalPolicy } = require("./lib/shared-telemetry-policy");
+const { sharedPolicyFile } = require("./lib/shared-telemetry-policy");
 
 const cwd = process.cwd();
 const projectRoot = findGitRoot(cwd) || cwd;
@@ -49,6 +52,8 @@ function authenticationLine() {
 
 function sharedPauseLine() {
   const policy = readSharedGlobalPolicy();
+  if (policy.reason === "missing") return "paused; previously observed shared policy is missing; restore it before capture or delivery";
+  if (policy.errorCode === "POLICY_OBSERVATION_FAILED") return "paused; shared policy observation unavailable; check client data permissions";
   if (policy.reason === "invalid") return "shared policy invalid or unreadable; capture and delivery paused; repair the policy file";
   if (policy.disabled) return "shared policy paused; resume global telemetry through the shared policy controls";
   return null;
@@ -67,7 +72,11 @@ function capturePolicyLine() {
   const gate = resolveTelemetryGate(getTelemetryOptIn(cwd), scope.allowed);
   if (gate.mode === "opted_out") return "disabled for this project";
   if (!scope.allowed) return `excluded (${scope.classification})`;
+  if (getLocalTelemetryChoice(cwd) === "invalid") return "paused; invalid local consent settings; repair them before capture";
+  if (!gate.capture && sharedRepository.reason === "enabled" && !sharedRepository.acknowledged) return "disabled; machine-wide acknowledgement required or legacy local opt-in";
   if (!gate.capture) return "disabled; repository choice required";
+  if (sharedRepository.acknowledged) return "eligible through acknowledged shared consent; hook execution not verified";
+  if (sharedRepository.reason === "enabled") return "eligible through legacy local opt-in; shared scope acknowledgement pending; hook execution not verified";
   return "eligible for this repository; hook execution not verified";
 }
 
@@ -126,6 +135,48 @@ function saveRepositoryChoice(value) {
 }
 
 switch (action) {
+  case "consent-preview": {
+    refreshFromDisk();
+    const { createSharedPolicyStore } = require("./lib/shared-policy-store");
+    const { buildConsentPreview, formatConsentPreview } = require("./lib/shared-consent-preview");
+    const store = createSharedPolicyStore({
+      file: sharedPolicyFile(), observedFile: path.join(LOG_DIR, "shared-policy-observed"),
+    });
+    let policy = null, policyError = null;
+    try { policy = store.readPolicy(); }
+    catch (error) { policyError = { code: error.code || "POLICY_UNAVAILABLE", message: error.message }; }
+    const result = buildConsentPreview({ cwd, repoRoot: findGitRoot(cwd), scope: getRepoScopeDecision(cwd), policy, policyError });
+    process.stdout.write(process.argv.includes("--json") ? JSON.stringify(result) + "\n" : formatConsentPreview(result));
+    break;
+  }
+  case "consent-set": {
+    refreshFromDisk();
+    const { createSharedPolicyStore } = require("./lib/shared-policy-store");
+    const { applyRepositoryConsent, parseConsentChoiceArgs, CONSENT_SET_USAGE } = require("./lib/shared-consent-apply");
+    try {
+      const options = parseConsentChoiceArgs(process.argv.slice(3));
+      if (options.help) { process.stdout.write(`${CONSENT_SET_USAGE}\n`); break; }
+      const store = createSharedPolicyStore({ file: sharedPolicyFile(), observedFile: path.join(LOG_DIR, "shared-policy-observed") });
+      const { reconcileSharedRevocations, observeKnownTranscriptConsent } = require("./logger.js");
+      let cleaned = false;
+      const policy = applyRepositoryConsent({ cwd, scope: getRepoScopeDecision(cwd), store, ...options,
+        onCommitted: () => {
+          // Observe the saved choice before releasing the shared writer lock.
+          // Cleanup failures cannot roll back consent or authorize an upload.
+          try { cleaned = reconcileSharedRevocations(); observeKnownTranscriptConsent(); }
+          catch { cleaned = false; }
+        },
+      });
+      process.stdout.write(`Shared repository choice saved: ${options.enabled ? "ON" : "OFF"} (revision ${policy.revision}).\n`);
+      process.stdout.write(cleaned ? "Known local queue revocations checked.\n" : "Some local queue cleanup is deferred; delivery still rechecks consent.\n");
+      process.stdout.write("Local restrictions are unchanged. Acknowledged shared consent can authorize capture; authentication, shared pause and other restrictions still apply.\n");
+      process.stdout.write("This does not verify hook execution, delivery or report generation.\n");
+    } catch (error) {
+      process.stderr.write(`SkillMeter: ${error.code || "CONSENT_UPDATE_FAILED"}: ${error.message}\n`);
+      process.exitCode = 1;
+    }
+    break;
+  }
   case "enable":
     if (isGlobal) {
       setTelemetryGloballyDisabled(false);
@@ -171,6 +222,6 @@ switch (action) {
     break;
   }
   default:
-    process.stderr.write("Usage: node telemetry.js <enable|disable|status> [--global]\n");
+    process.stderr.write("Usage: node telemetry.js <enable|disable|status> [--global] | consent-preview [--json] | consent-set <on|off> --repository <key> --revision <number|absent> [--acknowledge-machine-scope]\n");
     process.exit(1);
 }

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Forward project or global collection controls to scripts/telemetry.js.
- * Usage: node bin/sk-telemetry <enable|disable|status> [--global].
+ * Usage: node bin/sk-telemetry <enable|disable|status> [--global],
+ * or node bin/sk-telemetry consent-preview [--json]; consent-set --help prints choice arguments.
  */
 const path = require("path");
 
