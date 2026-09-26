@@ -6,7 +6,7 @@ const os = require("node:os");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const zlib = require("node:zlib");
-const queue = require("../scripts/lib/transcript-delta");
+const queue = require("../../scripts/lib/transcript-delta");
 const scope = { owner: "synthetic", deviceId: "synthetic", cwd: "/synthetic", org: "synthetic", consentStamp: "synthetic-stamp" };
 const salt = "synthetic-salt";
 const line = r => JSON.stringify(r) + "\n";

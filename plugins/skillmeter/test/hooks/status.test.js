@@ -8,7 +8,7 @@ const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const roots = [];
 after(() => roots.forEach(root => fs.rmSync(root, { recursive: true, force: true })));
-const plugin = path.resolve(__dirname, "..");
+const plugin = path.resolve(__dirname, "../..");
 
 function status({ seconds = 3600, credentials = {}, choice = true, malformedChoice = false, queue = false, rejected = false, transcript = false, corrupt = false, blockedCapture = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-"));

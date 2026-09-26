@@ -85,7 +85,7 @@ that blocker instead of claiming uploads are enabled.
 Run the shared boundary tests:
 
 ```sh
-node --test plugins/skillmeter/test/shared-global-policy.test.js plugins/skillmeter/test/shared-repository-policy.test.js
+node --test plugins/skillmeter/test/consent/shared-global-policy.test.js plugins/skillmeter/test/consent/shared-repository-policy.test.js
 ```
 
 The former standalone audit, `node --test compatibility/shared-policy.cjs`, now
