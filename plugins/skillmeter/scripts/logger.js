@@ -325,7 +325,7 @@ const EVENT_TIMEOUT =
   parseInt(process.env.SKILLMETER_TIMEOUT || "10", 10) * 1000;
 const TRANSCRIPT_TIMEOUT = 30_000;
 
-// Retention for sent event logs, poison batches and orphaned event sidecars.
+// Retention for sealed/sent event logs, poison batches and orphaned sidecars.
 // Transcript chunks and legacy snapshots are excluded from automatic cleanup.
 const CLEANUP_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -1153,6 +1153,7 @@ function reconcileSharedRevocations() {
 
 /** Drain both queues once; return the pre-drain count of queued items. */
 async function drainQueuesOnce(backendUrl, timeoutMs) {
+  cleanupStaleFiles();
   reconcileSharedRevocations();
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Queue drain skipped (telemetry globally disabled)`);
@@ -1336,7 +1337,7 @@ function spawnRetryDaemon() {
 // Cleanup + final-session sealing
 
 /**
- * Delete old sent event logs, poison batches and orphaned event files.
+ * Delete old sealed/sent event logs, poison batches and orphaned event files.
  * Keep transcript chunks and legacy snapshots available for selected recovery.
  */
 function cleanupStaleFiles() {
@@ -1346,6 +1347,20 @@ function cleanupStaleFiles() {
   if (fs.existsSync(LOG_DIR)) {
     try {
       for (const f of fs.readdirSync(LOG_DIR)) {
+        if (/^events\.jsonl\.\d+$/.test(f)) {
+          const batch = path.join(LOG_DIR, f);
+          // Partitioning a mixed batch rewrites its mtime. Its seal timestamp
+          // remains fixed, so a hold cannot extend retention on every retry.
+          if (now - batchSealTimeMs(batch) <= CLEANUP_MAX_AGE_MS) continue;
+          const release = transcriptQueue.acquireLock(`${batch}.lock`);
+          if (!release) continue;
+          try {
+            if (fs.existsSync(batch)) fs.unlinkSync(batch);
+            clearBatchMeta(batch);
+            console.error("[skillmeter] Expired sealed event batch after 30-day retention");
+          } finally { release(); }
+          continue;
+        }
         // Uploaded batches, plus orphaned attempt-meta sidecars whose batch has
         // already been sent or quarantined (so they never leak).
         if (/^events\.jsonl\.\d+\.sent$/.test(f)) {
