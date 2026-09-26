@@ -265,3 +265,26 @@ test('an OFF with another choice missing retains the counter high-water mark', t
     assert.equal(calls,0);
   `);
 });
+
+for (const scope of ['org','repo']) {
+  test(`${scope} counter history survives a remote switch and policy rollback`, t => {
+    fixture(t).run(setup + `
+      initial.repositories['github.com/acme/other']={enabled:true,revocations:0};
+      if ('${scope}'==='org') initial.organizations.acme.revocations=5;
+      else initial.repositories['github.com/acme/widgets'].revocations=5;
+      writePolicy(initial);capture();
+      const setRemote = name => fs.writeFileSync(path.join(repo,'.git/config'),'[remote "origin"]\\nurl = https://github.com/acme/'+name+'.git\\n');
+      setRemote('other');
+      if ('${scope}'==='org') {
+        initial.organizations.acme.revocations=4;writePolicy(initial);
+      } else {
+        assert.equal(logger.getTelemetryOptIn(repo),true);
+        setRemote('widgets');initial.repositories['github.com/acme/widgets'].revocations=4;writePolicy(initial);
+      }
+      assert.equal(logger.getTelemetryOptIn(repo),null,'remote switch cannot lower an observed counter');
+      if ('${scope}'==='org') initial.organizations.acme.revocations=5;
+      else initial.repositories['github.com/acme/widgets'].revocations=5;
+      writePolicy(initial);assert.equal(logger.getTelemetryOptIn(repo),true);
+    `);
+  });
+}

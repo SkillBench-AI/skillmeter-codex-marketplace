@@ -74,9 +74,17 @@ function createRepositoryQueue(root, salt, allowed, sharedPolicy = () => null) {
         if (effective.key) state.sharedRepoKey = effective.key;
         state.sharedDeliveryToken = crypto.randomUUID();
         if (validCounters(counters)) {
-          const previous = !changedRepository && state.revocationsSeen;
-          // Never forget a higher observation when only one dimension advances.
-          state.revocationsSeen = { org: Math.max(previous?.org ?? 0, counters.org), repo: Math.max(previous?.repo ?? 0, counters.repo) };
+          // Repository counters belong to an exact identity; organization
+          // counters also apply when a checkout switches within that org.
+          const remembered = { ...counters };
+          for (const entry of state.previousRepositories || []) {
+            if (!validCounters(entry.revocationsSeen)) continue;
+            if (entry.key.split("/")[1] === effective.key?.split("/")[1]) {
+              remembered.org = Math.max(remembered.org, entry.revocationsSeen.org);
+            }
+            if (entry.key === effective.key) remembered.repo = Math.max(remembered.repo, entry.revocationsSeen.repo);
+          }
+          state.revocationsSeen = remembered;
         } else if (changedRepository) delete state.revocationsSeen;
         changed = true;
       }

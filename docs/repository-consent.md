@@ -108,6 +108,8 @@ rewriting the policy. Global pause does not increment a revocation counter.
 Queue generations retain the counters observed at capture in the private routing
 index. If one counter rises while another falls, revoke the old generation and
 retain both highest observations; capture stays held until both catch up. Remote
+changes retain remembered organization counters and, when revisiting a repository,
+its repository counter. Remote
 identity and scope acknowledgement changes still create separate generations.
 Explicit OFF remains a revocation even for writers that omit counters. Payload
 removal preserves cursors, so revoked content cannot return in a reset.
