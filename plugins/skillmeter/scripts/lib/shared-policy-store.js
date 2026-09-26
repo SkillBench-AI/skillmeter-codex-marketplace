@@ -175,10 +175,19 @@ function createSharedPolicyStore({ file, observedFile }) {
         fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined;
         assertOwned();
         fs.renameSync(temp, file);
-        syncDir(path.dirname(file));
+        // The rename already published the choice. A failed directory sync must
+        // not skip local reconciliation of it, so report it only afterwards.
+        let directorySyncError;
+        try { syncDir(path.dirname(file)); }
+        catch (err) { directorySyncError = err; }
         // Keep cooperating writers out until the client has observed revocation.
         try { onCommitted?.(policy); }
         catch { throw error("POLICY_COMMITTED_OBSERVER_FAILED", "Shared policy was saved, but local reconciliation failed; inspect consent-preview and retry queue cleanup."); }
+        if (directorySyncError) {
+          throw Object.assign(error("POLICY_COMMITTED_DURABILITY_UNCERTAIN",
+            "Shared policy was saved and local cleanup ran, but the save may not survive a crash; inspect consent-preview before retrying."),
+          { cause: directorySyncError });
+        }
       } catch (err) {
         // A failed first write has not observed a policy. Roll back only this
         // attempt's marker, under our lock, while the policy is still absent.

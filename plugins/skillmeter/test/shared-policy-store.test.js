@@ -337,3 +337,19 @@ test("a marker published by another process between lookups counts as observed",
   assert.equal(f.store.readPolicy().revision, 4);
   assert.ok(raced);
 });
+
+test("a failed policy directory sync still reconciles under the lock and reports uncertain durability", t => {
+  const f = fixture(t);
+  const open = fs.openSync, policyDir = path.resolve(path.dirname(f.file));
+  t.mock.method(fs, "openSync", (target, flags, ...rest) => {
+    if (flags === "r" && path.resolve(String(target)) === policyDir) throw Object.assign(new Error("synthetic sync failure"), { code: "EIO" });
+    return open(target, flags, ...rest);
+  });
+  const observed = [];
+  assert.throws(() => f.store.setRepositoryOverride(repo, false, { expectedRevision: 4, onCommitted: policy => {
+    observed.push({ revision: policy.revision, locked: fs.existsSync(`${f.file}.lock`) });
+  } }), error => error.code === "POLICY_COMMITTED_DURABILITY_UNCERTAIN" && error.cause?.code === "EIO");
+  assert.deepEqual(observed, [{ revision: 5, locked: true }], "reconciliation ran once, under the writer lock");
+  assert.equal(JSON.parse(fs.readFileSync(f.file, "utf8")).revision, 5);
+  assert.equal(fs.existsSync(`${f.file}.lock`), false);
+});
