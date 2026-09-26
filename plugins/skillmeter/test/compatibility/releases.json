@@ -1,0 +1,6 @@
+[
+  {"version":"0.6.0","revision":"667611c650e506504754870c5b1fa1d0d5bb2567","consentJournal":false},
+  {"version":"0.6.1","revision":"e077eea9a9236da68d62d862b8cdae703cfb53be","consentJournal":false},
+  {"version":"0.7.0","revision":"b55789231216cbec87944dcd9997907a0de2e886","consentJournal":true},
+  {"version":"0.8.0","revision":"1e27038b92106921e37c0a9a33050f89710acd53","consentJournal":true}
+]

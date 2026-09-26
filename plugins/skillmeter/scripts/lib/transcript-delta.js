@@ -148,13 +148,27 @@ function encodeChunks(lines, maxEnvelope = MAX_ENVELOPE, continuation = null, st
 function groups(dir) {
   return fs.readdirSync(dir).filter(n => /^batch-\d+-[a-f0-9-]+$/.test(n)).sort().map(n => path.join(dir, n));
 }
+function validateCursor(cursor) {
+  if (!cursor || !Number.isSafeInteger(cursor.seq) || cursor.seq < 1) throw new Error("invalid-cursor");
+  if (cursor.version !== 1 || (cursor.metadataVersion !== undefined && cursor.metadataVersion !== 1)) {
+    throw new Error("unsupported-cursor-format");
+  }
+}
+function assertQueueFormats(dir) {
+  // Check every durable candidate before recovery publishes a cursor or reaps
+  // staging files. A newer writer may have crashed before cursor.json existed.
+  const file = path.join(dir, "cursor.json");
+  if (fs.existsSync(file)) validateCursor(readJson(file));
+  for (const group of groups(dir)) validateCursor(readJson(path.join(group, "commit.json")).cursor);
+  const migration = path.join(dir, "legacy-migration.json");
+  if (fs.existsSync(migration)) validateCursor(readJson(migration).cursor);
+}
 function recover(dir) {
+  assertQueueFormats(dir);
   legacyMigration.recoverMigration(dir, { writeDurable });
   const file = path.join(dir, "cursor.json");
   let cursor = fs.existsSync(file) ? readJson(file) : null;
-  if (cursor && (cursor.version !== 1 || !Number.isSafeInteger(cursor.seq) || cursor.seq < 1)) {
-    throw new Error("invalid-cursor");
-  }
+  if (cursor) validateCursor(cursor);
   // Both callers hold the queue lock. Unpublished staging directories cannot
   // belong to a live writer and are not referenced by a committed cursor.
   let reaped = false;
@@ -203,6 +217,7 @@ function observeConsent(root, source, scope, salt, enabled, stamp, rebase = fals
   const release = acquireLock(path.join(dir, "lock"));
   if (!release) return null;
   try {
+    assertQueueFormats(dir);
     legacyMigration.recoverMigration(dir, { writeDurable });
     const stat = fs.statSync(source), fileId = `${stat.dev}:${stat.ino}`;
     const file = path.join(dir, "consent.json");
@@ -376,7 +391,7 @@ function stage(root, source, scope, salt, options = {}) {
   } catch (e) {
     // Error code only. Never persist source text or arbitrary exception payloads.
     const code = ["oversized-single-record", "malformed-complete-record", "invalid-wire-budget",
-      "source-changed-during-stage", "source-truncated-during-read", "invalid-cursor", "incomplete-transaction", "source-scope-changed", "source-owner-changed", "consent-source-rewritten", "consent-changed-during-stage", "invalid-session-metadata", "unsupported-session-source", "unsupported-session-originator", "legacy-reset-recovery-required"].includes(e.message) ? e.message : "stage-failed";
+      "source-changed-during-stage", "source-truncated-during-read", "invalid-cursor", "unsupported-cursor-format", "incomplete-transaction", "source-scope-changed", "source-owner-changed", "consent-source-rewritten", "consent-changed-during-stage", "invalid-session-metadata", "unsupported-session-source", "unsupported-session-originator", "legacy-reset-recovery-required"].includes(e.message) ? e.message : "stage-failed";
     writeDurable(path.join(dir, "diagnostic.json"), JSON.stringify({ code, at: new Date().toISOString() }));
     throw e;
   } finally { if (fd !== undefined) fs.closeSync(fd); release(); }
@@ -441,7 +456,7 @@ async function drainDirectory(dir, send) {
     return sent;
   } finally { release(); }
 }
-const migrationIO = { hmac, prefix, writeDurable, acquireLock, recover, pendingFiles };
+const migrationIO = { hmac, prefix, writeDurable, acquireLock, recover, pendingFiles, assertQueueFormats };
 const prepareLegacyMigration = (root, source, scope, salt) => legacyMigration.prepare(root, source, scope, salt, migrationIO);
 const applyLegacyMigration = (root, source, scope, salt, options) => legacyMigration.apply(root, source, scope, salt, options, migrationIO);
 module.exports = { prepareLegacyMigration, applyLegacyMigration, stage, observeConsent, purgeRevoked, encodeChunks, acquireLock, recover, queueDirectories, pendingFiles, metadata,
