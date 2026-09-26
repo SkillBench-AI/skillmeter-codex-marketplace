@@ -84,9 +84,15 @@ async function rehearse(claudeRepo) {
     return { evidence: "synthetic-subprocess-only", heads: prepared.heads, checks: ["local opt-in retained", "canonical Claude controls",
       "global pause retention", "malformed policy hold", "clone/worktree shared revocation", "unaffected B delivery", "linked transcript tool pair", "private routing stripped"] };
   } finally {
-    run("retire"); await settled();
+    // A failed retirement must not replace the rehearsal's own error.
+    let retirementError;
+    try { try { await settled(); } finally { run("retire"); } }
+    catch (e) { console.error("Retire failed", e); retirementError = e; }
+    const completed = succeeded;
+    if (retirementError) succeeded = false;
     if (succeeded) fs.rmSync(root, { recursive: true, force: true });
     else console.error(`Synthetic failure artifacts retained at ${root}`);
+    if (completed && retirementError) throw retirementError;
   }
 }
 if (require.main === module) {

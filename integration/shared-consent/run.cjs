@@ -93,7 +93,8 @@ function main() {
   const bindingFile = path.join(base, "bindings", label + ".json");
   const binding = fs.existsSync(bindingFile) ? JSON.parse(fs.readFileSync(bindingFile)) : null;
   const sources = [h.transcript_path, h.agent_transcript_path].filter(Boolean);
-  if (!binding || binding.id !== h.session_id || sources.some(p => fs.realpathSync(p) !== binding.source)) {
+  const real = p => { try { return fs.realpathSync(p); } catch { return null; } };
+  if (!binding || binding.id !== h.session_id || sources.some(p => real(p) !== binding.source)) {
     audit({ label, hook: arg, outcome: "unselected", sessionHash: crypto.createHash("sha256").update(h.session_id).digest("hex") });
     console.log("{}"); return;
   }

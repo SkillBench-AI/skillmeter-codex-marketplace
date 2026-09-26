@@ -97,7 +97,7 @@ Publish only reviewed counts, digests, source labels and outcome codes. An
 intercepted 200 is not collector acceptance or dashboard evidence.
 
 Run `node run.cjs retire` to disable callbacks and remove only unchanged generated
-hook files. Verify the detached drain lock has cleared before archiving evidence.
+hook files. Verify the detached drain worker lock has cleared before archiving evidence.
 The wrapper and allowed worker both stop at expiration/disabled checks; a request
 already in progress can finish. Controls after expiry require a newly prepared run.
 
