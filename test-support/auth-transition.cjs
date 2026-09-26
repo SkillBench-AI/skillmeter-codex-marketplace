@@ -23,6 +23,11 @@ const jwt = exp => "e30." + Buffer.from(JSON.stringify({ sub: "fixture-tenant", 
 const token = jwt(4102444800), fresh = jwt(4102444900);
 if (client === "claude") { current.markEngaged(); current.commitSignin({jwt:token, orgs:["fixture"]}); }
 old.markEngaged(); assert.equal(old.commitSignin({ jwt: token, orgs: ["fixture"] }), true);
+if (client === "claude") {
+  const policy = require(path.join(previousRoot,"scripts/lib/telemetry-store"));
+  policy.setOrganizationConsent("fixture", true);
+  policy.setRepositoryOverride("github.com/fixture/repo", true);
+}
 const repo = path.join(root, "repo");
 fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
 fs.writeFileSync(path.join(repo, ".git/config"), '[remote "origin"]\nurl = https://github.com/fixture/repo.git\n');
