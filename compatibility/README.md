@@ -80,3 +80,12 @@ population, server combinations and recovery path. Support-window and maintainer
 assignments remain explicit product/engineering decisions. Extend immutable
 release fixtures and negative tests with every newly claimed path. Review
 simultaneous writers and partial client updates before claiming those combinations.
+
+Mixed authorization checks also run isolated Node processes sharing synthetic
+credentials. IPC barriers hold refresh responses across sign-out/sign-in and
+force lock contention in both client directions. The gate checks identity
+creation, recovery after a writer dies between temp-file fsync and rename, and a surviving process
+from each pinned Codex release interacting with the candidate Claude client.
+Queue and policy fixtures must remain byte-identical in these auth-only cases.
+These cases do not establish native host reload behavior or safe stale-lock
+age takeover, and cannot protect against a client that ignores the lock.

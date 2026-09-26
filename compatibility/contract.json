@@ -58,7 +58,15 @@
       "repository-off",
       "interrupted-refresh",
       "signout-signin-refresh",
-      "auth-rejection"
+      "auth-rejection",
+      "concurrent-identity",
+      "concurrent-writers",
+      "interrupted-credential-writer",
+      "delayed-claude-refresh-signout",
+      "delayed-claude-refresh-cycle",
+      "delayed-claude-rejection-cycle",
+      "delayed-codex-refresh-cycle",
+      "surviving-codex-process"
     ]
   },
   "backendStages": [
