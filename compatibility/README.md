@@ -87,5 +87,17 @@ force lock contention in both client directions. The gate checks identity
 creation, recovery after a writer dies between temp-file fsync and rename, and a surviving process
 from each pinned Codex release interacting with the candidate Claude client.
 Queue and policy fixtures must remain byte-identical in these auth-only cases.
-These cases do not establish native host reload behavior or safe stale-lock
-age takeover, and cannot protect against a client that ignores the lock.
+Four additional cases age live credential writers and releasers, pause a dead
+owner's cleanup, kill that cleanup process, and repeat through directory aliases.
+Live owners retain their locks; confirmed-dead owners can be reclaimed without
+letting an obsolete cleanup remove a replacement lock.
+
+The guarantee requires both plugins to use the dead-owner-only protocol, on
+one host with a local filesystem. Older processes must exit after both plugins
+are updated; released clients with age-based takeover can still break exclusion.
+The surviving-release cases prove only the named auth transitions. They do not
+establish native host reload behavior or unrestricted mixed-version locking.
+
+Unknown, malformed or unverifiable ownership holds credential writes, even if
+the lock is old. PID reuse and repeated cleanup crashes may require recovery
+with all writers stopped. Do not delete a live lock to resolve contention.

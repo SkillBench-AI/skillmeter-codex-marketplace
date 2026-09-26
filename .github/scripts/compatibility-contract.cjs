@@ -6,7 +6,7 @@ const DEFAULT_CONTRACT = path.resolve(__dirname, "../../compatibility/contract.j
 const REQUIRED = {
   releasedQueue: ["acknowledged", "pending"],
   releasedAuth: ["signed-in", "signed-out", "expired", "global-pause", "scope-withdrawn", "repository-off", "interrupted-refresh", "signout-signin-refresh", "auth-rejection"],
-  mixedAuth: ["signed-in", "signed-out", "expired", "global-pause", "repository-off", "interrupted-refresh", "signout-signin-refresh", "auth-rejection", "concurrent-identity", "concurrent-writers", "interrupted-credential-writer", "delayed-claude-refresh-signout", "delayed-claude-refresh-cycle", "delayed-claude-rejection-cycle", "delayed-codex-refresh-cycle", "surviving-codex-process"],
+  mixedAuth: ["signed-in", "signed-out", "expired", "global-pause", "repository-off", "interrupted-refresh", "signout-signin-refresh", "auth-rejection", "concurrent-identity", "concurrent-writers", "interrupted-credential-writer", "delayed-claude-refresh-signout", "delayed-claude-refresh-cycle", "delayed-claude-rejection-cycle", "delayed-codex-refresh-cycle", "surviving-codex-process", "aged-live-writer", "aged-live-release", "dead-owner-reaper-race", "aliased-dead-owner-reapers"],
 };
 const BACKEND_STAGES = ["candidate", "build", "transport-recovery", "stored-records", "normalization", "scripted-analysis", "ingest-schema", "evidence", "candidate-recheck"];
 const revision = value => typeof value === "string" && /^[a-f0-9]{40}$/.test(value);

@@ -15,7 +15,7 @@ const results = [];
 for (const scenario of contract.requiredCases.mixedAuth) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(),"mixed-auth-"));
   try {
-    const processCase = scenario.startsWith("concurrent-") || scenario.startsWith("delayed-") ||
+    const processCase = scenario.startsWith("concurrent-") || scenario.startsWith("delayed-") || scenario.startsWith("aged-live-") || ["dead-owner-reaper-race", "aliased-dead-owner-reapers"].includes(scenario) ||
       ["interrupted-credential-writer", "surviving-codex-process"].includes(scenario);
     const script = processCase ? "auth-process-transition.cjs" : "auth-transition.cjs";
     const producers = scenario === "surviving-codex-process" ? contract.upgradePaths.map(release => {
@@ -36,5 +36,5 @@ for (const scenario of contract.requiredCases.mixedAuth) {
 for (const [name,cwd] of [["codex",path.resolve(candidate,"../..")],["claude",claude]]) {
   if (execFileSync("git",["status","--porcelain","--untracked-files=all"],{cwd,encoding:"utf8"}).trim() || execFileSync("git",["rev-parse","HEAD"],{cwd,encoding:"utf8"}).trim() !== revisions[name]) throw Error("candidate-changed-during-test");
 }
-process.stdout.write(JSON.stringify({version:1,kind:"mixed-client-authorization-gate",revisions,results,startedAt,finishedAt:new Date().toISOString(),contractSha256:digest(contract),limitations:["Synthetic interleavings and separate credential-writing processes; no native host lifecycle or stale-lock age takeover proof.","No installed state, real credentials or network."]},null,2)+"\n");
+process.stdout.write(JSON.stringify({version:1,kind:"mixed-client-authorization-gate",revisions,results,startedAt,finishedAt:new Date().toISOString(),contractSha256:digest(contract),limitations:["Synthetic interleavings and separate credential-writing processes; no native host lifecycle proof; lock safety requires both clients using the updated protocol.","No installed state, real credentials or network."]},null,2)+"\n");
 process.exitCode = results.every(r=>r.status==="pass")?0:1;

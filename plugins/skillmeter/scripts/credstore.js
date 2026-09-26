@@ -72,8 +72,8 @@ function mutateStoreOnce(fn) {
     const store = readStore();
     const result = fn(store);
     if (result === false) return false;
-    // Retry if takeover or a changed snapshot is already visible. Takeover
-    // after this check can still race with writeStore's rename.
+    // Detect external replacement. Updated cooperating writers cannot evict
+    // this live owner; a noncooperating writer is outside the lock protocol.
     if (!release.stillHeld() || readRaw() !== baseline) return PREEMPTED;
     writeStore(store);
     _cache = store;
@@ -81,9 +81,8 @@ function mutateStoreOnce(fn) {
   } finally { release(); }
 }
 
-// Codex writers use this lock and retry detected preemption against fresh state.
-// Other clients must coordinate writes too; the current protocol still has
-// check-to-write and check-to-unlink races during stale takeover.
+// Writers use a dead-owner-only lock and retry visible external changes.
+// Older clients that reclaim live locks by age must be stopped before use.
 function mutateStore(fn) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     const outcome = mutateStoreOnce(fn);
