@@ -1,7 +1,7 @@
 "use strict";
 // Synthetic contract fixtures promoted into the default regression suite.
 const { test } = require("node:test");
-const { fixture } = require("../../../test-support/shared-policy.cjs");
+const { fixture } = require("../../../../test-support/shared-policy.cjs");
 
 for (const scope of ["organizations", "repositories"]) {
   const key = scope === "organizations" ? "acme" : "github.com/acme/widgets";

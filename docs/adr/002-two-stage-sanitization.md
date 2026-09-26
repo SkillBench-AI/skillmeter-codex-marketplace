@@ -4,13 +4,13 @@
 [Claude Code plugin ADR 002](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/main/docs/adr/002-two-stage-sanitization.md)
 (Accepted 2026-09-11; amended 2026-09-11 for path handling, repository
 identity and file-name policy, and 2026-09-23 for colliding object keys,
-policy `3.1.1`).
+policy `3.1.2`).
 **Related:** `docs/sanitizer-parity.md` (the adapter this plugin keeps over
 the shared rule table)
 
 ## What is the same
 
-Stage 1 runs on the device before anything is queued: policy `3.1.1` in
+Stage 1 runs on the device before anything is queued: policy `3.1.2` in
 both clients, the same 24 secret detectors, the same typed placeholders, the same path hashing with the shared
 per-device salt, and the shared fixture corpus in CI
 (`test/sanitizer-parity.test.js`). Every record carries the `_sanitization`

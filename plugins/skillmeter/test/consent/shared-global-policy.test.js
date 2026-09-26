@@ -2,7 +2,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const { fixture } = require("../../../test-support/shared-policy.cjs");
+const { fixture } = require("../../../../test-support/shared-policy.cjs");
 
 test("shared global OFF blocks capture and both queues without consuming queued bytes", t => {
   fixture(t).run(`
