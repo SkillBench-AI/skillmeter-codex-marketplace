@@ -40,19 +40,23 @@ publishes automatically; replace its generated title and body with the approved
 notes afterward. Follow the latest published release's tone and command layout:
 
 Release notes are public. They say what changed for the user; the PRs hold the
-rest.
+rest. Use [0.8.0](https://github.com/SkillBench-AI/skillmeter-codex-marketplace/releases/tag/v0.8.0)
+as the model for length and tone.
 
 - Title: `SkillMeter X.Y.Z`
-- `### What changed`: the user-visible outcome, one sentence per bullet, at
-  most three bullets. Describe what the user can do or will notice. No command
-  flags, file or module names, policy or schema versions, retry counts,
-  algorithms or ADR references. A change users cannot notice stays in its PR.
+- `### What changed`: at most four bullets, one change each. Each bullet is one
+  short sentence, about 15 words or fewer, in the present tense, saying what
+  the user can now do or will notice. No semicolons, no second clause after a
+  colon, no "and" joining two changes. No command flags, file or module names,
+  policy or schema versions, retry counts, algorithms or ADR references. A
+  change users cannot notice stays in its PR.
 - `### After updating`: numbered steps with command blocks; distinguish Git
   marketplaces from local checkouts where needed. Do not add sentences about
   what is not needed.
-- `### Known limitations`: only what this release adds or changes, each as what
-  the user will see and, where there is one, what to do. Otherwise
-  `Unchanged from X.Y.Z.`, naming the release that lists them.
+- `### Known limitations`: at most three items that this release adds or
+  changes, under the same sentence rule, each saying what the user will see.
+  End with `Otherwise unchanged from X.Y.Z.`, or use only
+  `Unchanged from X.Y.Z.` when nothing changed.
 - End with `Details: #PR, #PR`: PR numbers only. ADRs and privacy documents are
   reachable from the PRs.
 
