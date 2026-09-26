@@ -9,6 +9,23 @@ const workspace = label => { if (!Object.hasOwn(cfg.workspaces, label)) throw Er
 function audit(value) {
   fs.appendFileSync(path.join(base, "callbacks.jsonl"), JSON.stringify({ at: new Date().toISOString(), ...value }) + "\n", { mode: 0o600 });
 }
+// Process ancestry (command names only) of this hook invocation. Review
+// material for spotting a replayed hook; Codex hooks carry no signed proof of
+// dispatch, so this is recorded, not attested.
+function dispatch() {
+  const ancestry = [];
+  try {
+    let pid = process.ppid;
+    for (let depth = 0; depth < 8 && pid > 1; depth++) {
+      const line = cp.execFileSync("ps", ["-o", "ppid=,comm=", "-p", String(pid)], { encoding: "utf8", timeout: 2000 }).trim();
+      if (!line) break;
+      const [parent, ...comm] = line.split(/\s+/);
+      ancestry.push(path.basename(comm.join(" ")));
+      pid = Number(parent);
+    }
+  } catch { ancestry.push("unavailable"); }
+  return { ancestry, tty: Boolean(process.stdin.isTTY) };
+}
 function environment() {
   return { PATH: process.env.PATH, LANG: "en_US.UTF-8", TMPDIR: process.env.TMPDIR || "/tmp",
     HOME: path.join(base, "home"), USERPROFILE: path.join(base, "home"), CODEX_HOME: path.join(base, "home/.codex"),
@@ -101,7 +118,7 @@ function main() {
   // Pin the selected source even on callbacks that omit transcript_path.
   h.transcript_path = binding.source;
   child([path.join(base, "codex/scripts", arg)], workspace(label), JSON.stringify(h));
-  audit({ label, hook: arg, outcome: "candidate-completed" });
+  audit({ label, hook: arg, outcome: "candidate-completed", dispatch: dispatch() });
 }
 try { main(); } catch (err) {
   // No input or transcript content in diagnostics.
