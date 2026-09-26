@@ -167,15 +167,13 @@ test("writers read current state after waiting for the shared lock", async () =>
   assert.equal(readStore().telemetry_disabled, true);
 });
 
-// The age backstop can reap a holder that was paused long enough, so a writer
-// must re-check ownership before it persists rather than assume the lock it
-// took is the lock it still has.
-test("a holder can tell that its lock was reaped", () => {
+// Retain detection of external/noncooperating replacement as defense in depth.
+test("a holder can tell that its lock was externally removed", () => {
   const lock = `${credentialPath}.lock.fence`;
   const release = acquireLock(lock);
   assert.equal(release.stillHeld(), true);
 
-  fs.unlinkSync(lock); // the age backstop reaps us while we are paused
+  fs.unlinkSync(lock); // simulate external interference
   assert.equal(release.stillHeld(), false);
 
   const replacement = acquireLock(lock); // someone else takes over
@@ -209,8 +207,8 @@ test("a mutation preempted mid-flight retries on the newer state instead of clob
   const outcome = credstore.mutateStore(store => {
     calls += 1;
     if (calls === 1) {
-      // Simulate being paused past the staleness ceiling: our lock is reaped
-      // and a replacement writer commits a newer credential.
+      // Simulate a noncooperating writer removing our lock and committing
+      // newer credentials. Updated writers never do this to a live owner.
       fs.unlinkSync(`${credentialPath}.lock`);
       writeStore({ ...readStore(), license_jwt: tokenB });
     }
@@ -223,32 +221,22 @@ test("a mutation preempted mid-flight retries on the newer state instead of clob
   assert.equal(readStore().license_jwt, tokenB, "the other writer's change survived");
 });
 
-// A pid does not identify a process incarnation: after a crash inside the
-// critical section the OS can hand that number to an unrelated long-lived
-// process. Without the age backstop the lock would then look held for as long
-// as that process runs, and every credential write would fail permanently.
-test("a stale lock naming a live unrelated process is still reaped", () => {
+// PID reuse cannot safely be distinguished from a paused writer by file age.
+// Unverifiable ownership holds; never restore progress by stealing a live lock.
+test("an aged lock naming a live process is held", () => {
   const lock = `${credentialPath}.lock.pid-reuse`;
-  // process.pid is unquestionably alive and has nothing to do with this lock.
   fs.writeFileSync(lock, JSON.stringify({ pid: process.pid }));
-  const old = Date.now() - 120_000;
-  fs.utimesSync(lock, old / 1000, old / 1000);
-
-  const release = acquireLock(lock);
-  assert.equal(typeof release, "function", "the stale owner was reaped");
-  release();
-  assert.equal(fs.existsSync(lock), false);
+  fs.utimesSync(lock, new Date(0), new Date(0));
+  assert.equal(acquireLock(lock), null);
+  fs.unlinkSync(lock);
 });
 
-test("an unparseable owner file is reaped once stale instead of wedging forever", () => {
+test("an aged unparseable owner is held", () => {
   const lock = `${credentialPath}.lock.garbage`;
   fs.writeFileSync(lock, "not json");
-  const old = Date.now() - 120_000;
-  fs.utimesSync(lock, old / 1000, old / 1000);
-
-  const release = acquireLock(lock);
-  assert.equal(typeof release, "function");
-  release();
+  fs.utimesSync(lock, new Date(0), new Date(0));
+  assert.equal(acquireLock(lock), null);
+  fs.unlinkSync(lock);
 });
 
 test("a fresh lock naming a live process is still respected", () => {

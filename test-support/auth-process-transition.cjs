@@ -18,8 +18,8 @@ fs.writeFileSync(queue, '{"fixture":"pending"}\n');
 fs.writeFileSync(policy, '{"fixture":"consent-must-not-change"}\n');
 const preserved = [queue, policy].map(file => fs.readFileSync(file));
 const children = [];
-function worker(plugin, client) {
-  const child = fork(path.join(__dirname, "auth-process-worker.cjs"), [root, plugin, client], {
+function worker(plugin, client, workerRoot = root) {
+  const child = fork(path.join(__dirname, "auth-process-worker.cjs"), [workerRoot, plugin, client], {
     env: { PATH: process.env.PATH, TMPDIR: os.tmpdir() }, stdio: ["ignore", "ignore", "ignore", "ipc"],
   });
   const messages = [], waiters = [];
@@ -56,6 +56,7 @@ function worker(plugin, client) {
       child.send({ id, op, ...args });
       return pending.then(m => m.value);
     },
+    resume: event => fs.writeFileSync(path.join(root, `resume-${event}-${child.pid}`), "resume"),
     response: args => child.send({ op: "response", ...args }),
     stop: () => new Promise(resolve => {
       if (exited) return resolve();
@@ -66,7 +67,12 @@ function worker(plugin, client) {
   return api;
 }
 async function main() {
-  const a = worker(claude, "claude"), b = worker(codex, "codex");
+  let codexHome = root;
+  if (scenario === "aliased-dead-owner-reapers") {
+    codexHome = path.join(root, "directory-alias");
+    fs.symlinkSync(root, codexHome, "dir");
+  }
+  const a = worker(claude, "claude"), b = worker(codex, "codex", codexHome);
   await Promise.all([a.event("ready"), b.event("ready")]);
   if (scenario === "concurrent-identity") {
     fs.writeFileSync(file, JSON.stringify({ future_field: seed.future_field }));
@@ -89,6 +95,43 @@ async function main() {
       await pending;
       assert.equal(JSON.parse(fs.readFileSync(file)).license_jwt, fresh);
     }
+  } else if (["aged-live-writer", "aged-live-release"].includes(scenario)) {
+    for (const [owner, contender] of [[a, b], [b, a]]) {
+      const before = fs.readFileSync(file);
+      const write = scenario === "aged-live-writer";
+      const event = write ? "write-ready" : "unlink-ready";
+      const pending = owner.send(write ? "pause-before-rename" : "pause-before-release", { token: fresh })
+        .catch(error => { throw error; });
+      // Handle failure immediately, including assertion failure cleanup below.
+      pending.catch(() => {});
+      await owner.event(event);
+      fs.utimesSync(`${file}.lock`, new Date(0), new Date(0));
+      const blocked = await contender.send("set-token", { token: expired }).then(() => "wrote", error => error.message);
+      assert.equal(blocked, "credential-store-busy", "an aged live critical section cannot be stolen");
+      assert.deepEqual(fs.readFileSync(file), before);
+      owner.resume(event);
+      await pending;
+      assert.equal(fs.existsSync(`${file}.lock`), false);
+      await contender.send("set-token", { token: expired });
+      assert.equal(JSON.parse(fs.readFileSync(file)).license_jwt, expired);
+    }
+  } else if (["dead-owner-reaper-race", "aliased-dead-owner-reapers"].includes(scenario)) {
+    const holder = worker(claude, "claude");
+    await holder.event("ready"); await holder.send("lock"); await holder.stop();
+    const before = fs.readFileSync(file);
+    const pending = b.send("pause-before-reap", { token: fresh }).catch(error => error.message);
+    await b.event("unlink-ready");
+    // Even an aged reaper must exclude another remover until it exits.
+    for (const name of fs.readdirSync(path.dirname(file))) {
+      if (name.includes("lock")) fs.utimesSync(path.join(path.dirname(file), name), new Date(0), new Date(0));
+    }
+    const blocked = await a.send("set-token", { token: fresh }).then(() => "wrote", error => error.message);
+    assert.equal(blocked, "credential-store-busy");
+    assert.deepEqual(fs.readFileSync(file), before);
+    await b.stop(); assert.equal(await pending, "worker-exited");
+    await a.send("set-token", { token: fresh });
+    assert.equal(JSON.parse(fs.readFileSync(file)).license_jwt, fresh);
+    assert.equal(fs.readdirSync(path.dirname(file)).some(name => name.endsWith(".lock")), false);
   } else if (scenario === "interrupted-credential-writer") {
     const before = fs.readFileSync(file);
     const interrupted = a.send("pause-before-rename", { token: fresh }).catch(error => error.message);
