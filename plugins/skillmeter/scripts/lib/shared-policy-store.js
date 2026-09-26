@@ -26,6 +26,14 @@ function discard(temp) {
   try { fs.unlinkSync(temp); } catch {}
 }
 
+// A renamed or linked directory entry is only durable once its directory is
+// synced. Without this, a revoking write could reappear as the old grant after
+// a crash, and a lost marker would read as first use instead of POLICY_MISSING.
+function syncDir(dir) {
+  const fd = fs.openSync(dir, "r");
+  try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+}
+
 function validatePolicy(policy) {
   if (!object(policy) || policy.schema_version !== 1 || !integer(policy.revision) ||
       Object.keys(policy).some(key => !FIELDS.includes(key)) || !record(policy.global) ||
@@ -58,6 +66,7 @@ function createSharedPolicyStore({ file, observedFile }) {
           fd = fs.openSync(temp, "wx", 0o600);
           fs.writeFileSync(fd, "1\n"); fs.fsyncSync(fd);
           fs.linkSync(temp, observedFile);
+          syncDir(path.dirname(observedFile));
           onCreate(fs.fstatSync(fd));
         } catch (err) { if (err.code !== "EEXIST") throw err; }
         finally {
@@ -151,6 +160,7 @@ function createSharedPolicyStore({ file, observedFile }) {
         fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined;
         assertOwned();
         fs.renameSync(temp, file);
+        syncDir(path.dirname(file));
       } catch (err) {
         // A failed first write has not observed a policy. Roll back only this
         // attempt's marker, under our lock, while the policy is still absent.

@@ -292,3 +292,15 @@ test("a failed temp cleanup neither hides a committed write nor replaces the ori
   assert.equal(JSON.parse(fs.readFileSync(f.file, "utf8")).revision, 5);
   assert.equal(fs.existsSync(`${f.file}.lock`), false);
 });
+
+test("publishing the policy and the observation marker syncs their parent directories", t => {
+  const f = fixture(t, null);
+  const open = fs.openSync, synced = [];
+  t.mock.method(fs, "openSync", (target, flags, ...rest) => {
+    try { if (flags === "r" && fs.statSync(target).isDirectory()) synced.push(path.resolve(String(target))); } catch {}
+    return open(target, flags, ...rest);
+  });
+  assert.equal(f.store.setRepositoryOverride(repo, false, { expectedRevision: null }).revision, 1);
+  assert.ok(synced.includes(path.resolve(path.dirname(f.file))), "policy directory synced");
+  assert.ok(synced.includes(path.resolve(path.dirname(f.observedFile))), "marker directory synced");
+});
