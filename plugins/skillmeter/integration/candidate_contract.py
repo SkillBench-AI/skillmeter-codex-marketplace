@@ -190,6 +190,7 @@ def valid_evidence(result):
         and result.get("independentRecordOracle") is True
         and result.get("independentCanonicalOracle") is True
         and result.get("storageFrameValidated") is True
+        and result.get("legacyMigrationVerified") is True
         and report.get("schemaValidated") is True
         and integrity.get("status") == "pass"
         and integrity.get("issues") == []

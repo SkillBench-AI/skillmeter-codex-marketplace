@@ -211,6 +211,7 @@ class StageTests(unittest.TestCase):
             "independentRecordOracle": True,
             "independentCanonicalOracle": True,
             "storageFrameValidated": True,
+            "legacyMigrationVerified": True,
             "records": 2,
             "recordIntegrity": {
                 "status": "pass",
@@ -226,6 +227,8 @@ class StageTests(unittest.TestCase):
             lambda r: r["recordIntegrity"].update(observedRecords=1),
             lambda r: r.update(records=0),
             lambda r: r.pop("storageFrameValidated"),
+            lambda r: r.pop("legacyMigrationVerified"),
+            lambda r: r.update(legacyMigrationVerified=1),
         ]:
             bad = copy.deepcopy(result)
             change(bad)

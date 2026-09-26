@@ -741,6 +741,21 @@ function observeKnownTranscriptConsent(repoRoot) {
     } catch { console.error("[skillmeter] Consent boundary deferred for an unavailable source journal"); }
   }
 }
+// Administrative, local-only entrypoint. No replay or network side effect.
+// The plan binds the current identity and source; ranges require external evidence.
+function migrateLegacyTranscript(source, cwd, approval) {
+  const scope = transcriptScope(cwd);
+  if (!scope || getTelemetryGloballyDisabled()) throw new Error("legacy-authorization-required");
+  const salt = getOrCreateHashSalt();
+  const stamp = transcriptConsentStamp(cwd);
+  if (!approval) return { ...transcriptQueue.prepareLegacyMigration(TRANSCRIPT_CHUNKS_DIR, source, scope, salt), consentRevision: stamp };
+  if (approval.plan?.consentRevision !== stamp) throw new Error("legacy-authorization-changed");
+  const { consentRevision, ...plan } = approval.plan;
+  return transcriptQueue.applyLegacyMigration(TRANSCRIPT_CHUNKS_DIR, source, scope, salt, {
+    ...approval, plan, stamp,
+    authorizeCommit: () => !getTelemetryGloballyDisabled() && scopeStillAllowed(scope) && transcriptConsentStamp(cwd) === stamp,
+  });
+}
 function stageTranscriptForUpload(transcriptPath, context = {}) {
   const cwd = context.cwd || process.cwd();
   if (!transcriptPath || !fs.existsSync(transcriptPath)) return null;
@@ -1913,6 +1928,7 @@ module.exports = {
   collectTranscriptPaths,
   stageTranscriptForUpload,
   observeTranscriptConsent,
+  migrateLegacyTranscript,
   requestTranscriptCapture,
   stageRequestedTranscripts,
   TRANSCRIPT_CHUNKS_DIR,
