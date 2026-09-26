@@ -98,3 +98,11 @@ test("pending legacy data can drain unchanged before explicit migration",async t
   f.apply(f.prepare());
   assert.deepEqual(content(f.stage().files),["eligible backlog"]);
 });
+
+test("a legacy transaction published before a crash is held even without cursor.json",async t=>{
+  const f=await fixture(t,true);
+  fs.unlinkSync(path.join(f.dir,"cursor.json"));
+  assert.throws(f.observe,/legacy-consent-migration-required/);
+  assert.equal(fs.existsSync(path.join(f.dir,"consent.json")),false);
+  assert.equal(q.pendingFiles(f.dir).length,1);
+});

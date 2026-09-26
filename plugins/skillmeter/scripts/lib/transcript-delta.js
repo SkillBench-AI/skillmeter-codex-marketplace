@@ -207,7 +207,7 @@ function observeConsent(root, source, scope, salt, enabled, stamp, rebase = fals
     const stat = fs.statSync(source), fileId = `${stat.dev}:${stat.ino}`;
     const file = path.join(dir, "consent.json");
     let state = fs.existsSync(file) ? readJson(file) : null;
-    if (!state && fs.existsSync(path.join(dir, "cursor.json"))) {
+    if (!state && recover(dir)) {
       writeDurable(path.join(dir, "diagnostic.json"), JSON.stringify({ code: "legacy-consent-migration-required", at: new Date().toISOString() }));
       throw new Error("legacy-consent-migration-required");
     }
