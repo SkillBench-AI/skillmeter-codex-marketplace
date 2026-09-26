@@ -353,3 +353,32 @@ test("a failed policy directory sync still reconciles under the lock and reports
   assert.equal(JSON.parse(fs.readFileSync(f.file, "utf8")).revision, 5);
   assert.equal(fs.existsSync(`${f.file}.lock`), false);
 });
+
+function onPlatform(t, platform) {
+  const original = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { ...original, value: platform });
+  t.after(() => Object.defineProperty(process, "platform", original));
+}
+
+test("a synced write reports confirmed durability", t => {
+  const f = fixture(t);
+  assert.equal(f.store.setRepositoryOverride(repo, false, { expectedRevision: 4 }).durability, "synced");
+});
+
+test("on Windows, directory sync is not attempted and durability is reported as unconfirmed", t => {
+  const f = fixture(t, null);
+  onPlatform(t, "win32");
+  const open = fs.openSync, directoryOpens = [];
+  t.mock.method(fs, "openSync", (target, flags, ...rest) => {
+    try { if (flags === "r" && fs.statSync(target).isDirectory()) directoryOpens.push(String(target)); } catch {}
+    return open(target, flags, ...rest);
+  });
+  let committed = 0;
+  const saved = f.store.setRepositoryOverride(repo, false, { expectedRevision: null, onCommitted: () => { committed++; } });
+  assert.equal(saved.revision, 1);
+  assert.equal(saved.durability, "unconfirmed");
+  assert.equal(committed, 1);
+  assert.deepEqual(directoryOpens, []);
+  assert.equal(fs.readFileSync(f.observedFile, "utf8"), "1\n", "the marker is still published");
+  assert.equal(f.store.readPolicy().revision, 1);
+});

@@ -169,6 +169,9 @@ switch (action) {
       });
       process.stdout.write(`Shared repository choice saved: ${options.enabled ? "ON" : "OFF"} (revision ${policy.revision}).\n`);
       process.stdout.write(cleaned ? "Known local queue revocations checked.\n" : "Some local queue cleanup is deferred; delivery still rechecks consent.\n");
+      if (policy.durability === "unconfirmed") {
+        process.stdout.write("This platform cannot confirm the saved choice survives a crash; after a restart, run consent-preview to check it.\n");
+      }
       process.stdout.write("Local restrictions are unchanged. Acknowledged shared consent can authorize capture; authentication, shared pause and other restrictions still apply.\n");
       process.stdout.write("This does not verify hook execution, delivery or report generation.\n");
     } catch (error) {

@@ -29,9 +29,14 @@ function discard(temp) {
 // A renamed or linked directory entry is only durable once its directory is
 // synced. Without this, a revoking write could reappear as the old grant after
 // a crash, and a lost marker would read as first use instead of POLICY_MISSING.
+// Returns false where the platform cannot sync a directory: on Windows, libuv
+// opens directories read-only and FlushFileBuffers requires write access. The
+// caller reports that durability is unconfirmed rather than claiming a sync.
 function syncDir(dir) {
+  if (process.platform === "win32") return false;
   const fd = fs.openSync(dir, "r");
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+  return true;
 }
 
 function validatePolicy(policy) {
@@ -177,8 +182,8 @@ function createSharedPolicyStore({ file, observedFile }) {
         fs.renameSync(temp, file);
         // The rename already published the choice. A failed directory sync must
         // not skip local reconciliation of it, so report it only afterwards.
-        let directorySyncError;
-        try { syncDir(path.dirname(file)); }
+        let directorySyncError, directorySynced = false;
+        try { directorySynced = syncDir(path.dirname(file)); }
         catch (err) { directorySyncError = err; }
         // Keep cooperating writers out until the client has observed revocation.
         try { onCommitted?.(policy); }
@@ -188,6 +193,7 @@ function createSharedPolicyStore({ file, observedFile }) {
             "Shared policy was saved and local cleanup ran, but the save may not survive a crash; inspect consent-preview before retrying."),
           { cause: directorySyncError });
         }
+        Object.defineProperty(policy, "durability", { value: directorySynced ? "synced" : "unconfirmed" });
       } catch (err) {
         // A failed first write has not observed a policy. Roll back only this
         // attempt's marker, under our lock, while the policy is still absent.
