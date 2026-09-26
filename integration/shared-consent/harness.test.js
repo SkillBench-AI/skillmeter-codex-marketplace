@@ -13,8 +13,41 @@ async function remove(root, base) {
     try { settled(base); break; } catch (error) { if (error.code !== "ERR_ASSERTION") throw error; }
     await new Promise(resolve => setTimeout(resolve, 25));
   }
+  // Preserve the fixture for diagnosis if the bounded wait expires.
+  settled(base);
   fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }
+
+for (const [marker, message] of [
+  [".drain-once.lock", "drain-active"],
+  [".drain-once.worker.lock", "drain-active"],
+  [".drain-once.request", "drain-pending"],
+]) {
+  test(`cleanup retains the fixture when ${marker} outlasts the wait`, async t => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "shared-cleanup-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const base = path.join(root, "canary"), logs = path.join(base, "data/logs");
+    fs.mkdirSync(logs, { recursive: true });
+    fs.writeFileSync(path.join(logs, marker), "synthetic-pending");
+    await assert.rejects(remove(root, base), { code: "ERR_ASSERTION", message: new RegExp(message) });
+    assert.equal(fs.readFileSync(path.join(logs, marker), "utf8"), "synthetic-pending");
+  });
+}
+
+test("cleanup removes fixtures with no drain or a completed request", async t => {
+  for (const completed of [false, true]) {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "shared-cleanup-"));
+    t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+    const base = path.join(root, "canary"), logs = path.join(base, "data/logs");
+    fs.mkdirSync(logs, { recursive: true });
+    if (completed) {
+      fs.writeFileSync(path.join(logs, ".drain-once.request"), "synthetic-completed");
+      fs.writeFileSync(path.join(logs, ".drain-once.completed"), "synthetic-completed");
+    }
+    await remove(root, base);
+    assert.equal(fs.existsSync(root), false);
+  }
+});
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "shared harness-"));
