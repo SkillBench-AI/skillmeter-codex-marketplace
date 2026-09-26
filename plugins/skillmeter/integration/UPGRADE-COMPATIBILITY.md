@@ -51,3 +51,18 @@ is an operator/host routing choice, not authorization to collect or replay data.
 `persistent-data-root.test.js` exercises the real logger in child processes,
 directory replacement, inherited data selection and the legacy-state hold using
 temporary fixtures. It does not exercise the desktop's actual install/update UI.
+
+## Authentication and shared clients
+
+`released-auth-upgrades.test.js` loads each released credential writer in an
+isolated child process and exercises candidate delivery. The matrix covers sign-in,
+sign-out, expired credentials, global pause, withdrawn organization scope,
+repository revocation, interrupted refresh and authentication rejection. Held
+batches retain their bytes and retry budget; device identity, salt and unknown
+credential fields survive. All network calls are intercepted, shell/daemon calls
+are denied, and the fixture redirects the home resolver before loading modules.
+
+Run `node plugins/skillmeter/integration/check_mixed_auth.cjs /path/to/claude`
+for the separate mixed-client acceptance gate. A queue-compatible candidate can
+still fail shared-policy semantics. See [release acceptance](RELEASE-ACCEPTANCE.md)
+for CI setup, exact-revision evidence, deployment order and rollback limits.
