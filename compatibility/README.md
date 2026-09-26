@@ -9,8 +9,9 @@ The release queue and authentication suites consume `upgradePaths` directly.
 The mixed-client gate consumes `requiredCases.mixedAuth`. Validation rejects
 unknown schemas, empty or duplicate matrices, floating pins, missing recovery
 paths, omitted cases and unimplemented scenarios. Adding a scenario requires its
-implementation and a validator update; deleting a requirement cannot silently
-reduce coverage through a JSON-only edit.
+implementation and a validator update; removing a required scenario cannot
+silently reduce coverage through a JSON-only edit. Release-path retirement still
+requires the explicit engineering review described below.
 
 A legacy cursor without a consent journal requires an explicit range-bound
 migration. A journal-bearing cursor follows the existing journal. Neither path
