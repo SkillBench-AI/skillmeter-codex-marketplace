@@ -33,8 +33,9 @@ node "$PLUGIN_ROOT/scripts/telemetry.js" disable
 
 The choice is stored per checkout in `.codex/settings.local.json`; clones and
 linked worktrees need their own choice. Before running `disable`, tell the user
-that it also removes this repository's queued, unsent payloads and that
-re-enabling does not restore them. Enabling cannot bring an out-of-scope
+that it removes this repository's queued, unsent payloads, that requests already
+in flight may finish, and that re-enabling does not restore removed payloads.
+Enabling cannot bring an out-of-scope
 repository into scope, and the global pause still applies.
 
 ## Pause or resume all collection on this machine
@@ -45,5 +46,7 @@ node "$PLUGIN_ROOT/scripts/telemetry.js" enable --global
 ```
 
 The global pause stops capture and uploads for every repository and keeps
-queued data; resuming delivers it. After any change, run `status` and report
-the new capture policy line.
+queued data. Requests already in flight may finish. Resuming allows later
+delivery attempts when authentication and connectivity permit; it does not
+guarantee delivery. After any change, run `status` and report the new capture
+policy line.
