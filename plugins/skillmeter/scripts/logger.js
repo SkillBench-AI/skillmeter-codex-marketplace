@@ -14,6 +14,7 @@ const { sanitizeEventData, redactDeep } = require("./sanitizer");
 const credstore = require("./credstore");
 const transcriptQueue = require("./lib/transcript-delta");
 const { createRepositoryQueue } = require("./lib/repository-queue");
+const { readSharedGlobalPolicy, readSharedRepositoryPolicy } = require("./lib/shared-telemetry-policy");
 const {
   getEndpointFromToken,
   getEndpointFromTokenAllowExpired,
@@ -22,6 +23,7 @@ const {
 } = require("./lib/jwt");
 const { trySilentGhActivate, refreshExpiredJwt } = require("./lib/license-activation");
 const { resolveOrgScope } = require("./lib/org-scope");
+const canonicalScope = require("./lib/repo-scope");
 
 // Codex sets PLUGIN_ROOT for plugin-bundled hooks and also exports
 // CLAUDE_PLUGIN_ROOT for compatibility with existing plugin hook scripts.
@@ -52,6 +54,14 @@ const TRANSCRIPT_CAPTURES_DIR = path.join(LOG_DIR, "transcripts", "captures-v1")
 const repositoryQueue = createRepositoryQueue(LOG_DIR, getOrCreateHashSalt, cwd => {
   credstore.refreshFromDisk();
   return resolveTelemetryGate(getTelemetryOptIn(cwd), getRepoScopeDecision(cwd).allowed).capture;
+}, (cwd, knownKey) => {
+  const scope = getRepoScopeDecision(cwd);
+  // Queued records retain their original repository identity even when the
+  // checkout disappears or changes remotes. This never authorizes capture.
+  if (knownKey) {
+    return readSharedRepositoryPolicy({ allowed: true, repoKey: knownKey, remoteOrg: knownKey.split("/")[1] });
+  }
+  return readSharedRepositoryPolicy(scope);
 });
 
 const AGENT_NAME = "codex";
@@ -90,7 +100,7 @@ function getLicenseTokenUncached() {
 }
 
 function getTelemetryGloballyDisabled() {
-  return credstore.getTelemetryDisabled();
+  return credstore.getTelemetryDisabled() || readSharedGlobalPolicy().disabled;
 }
 
 function setTelemetryGloballyDisabled(disabled) {
@@ -161,30 +171,6 @@ function hashHmac(str, salt) {
   return crypto.createHmac("sha256", salt).update(str).digest("hex").slice(0, 12);
 }
 
-function extractGitHubOrgFromRemote(remoteUrl) {
-  if (!remoteUrl || typeof remoteUrl !== "string") return "";
-
-  const trimmed = remoteUrl.trim();
-  const sshMatch = trimmed.match(/^git@github\.com:([^/]+)\/.+?(?:\.git)?$/i);
-  if (sshMatch) return sshMatch[1].toLowerCase();
-
-  const httpsMatch = trimmed.match(
-    /^(?:ssh:\/\/)?(?:git@)?github\.com[:/]([^/]+)\/.+?(?:\.git)?$/i
-  );
-  if (httpsMatch) return httpsMatch[1].toLowerCase();
-
-  try {
-    const normalized = trimmed.startsWith("http")
-      ? trimmed
-      : trimmed.replace(/^ssh:\/\//i, "https://");
-    const url = new URL(normalized);
-    if (url.hostname.toLowerCase() !== "github.com") return "";
-    return (url.pathname.split("/").filter(Boolean)[0] || "").toLowerCase();
-  } catch {
-    return "";
-  }
-}
-
 function findGitRoot(startPath) {
   if (!startPath || typeof startPath !== "string") return "";
 
@@ -204,62 +190,6 @@ function findGitRoot(startPath) {
     const parent = path.dirname(currentPath);
     if (parent === currentPath) return "";
     currentPath = parent;
-  }
-}
-
-function resolveGitDir(repoRoot) {
-  if (!repoRoot) return "";
-
-  const gitPath = path.join(repoRoot, ".git");
-  try {
-    const stats = fs.statSync(gitPath);
-    if (stats.isDirectory()) return gitPath;
-    if (!stats.isFile()) return "";
-
-    const content = fs.readFileSync(gitPath, "utf8");
-    const match = content.match(/^gitdir:\s*(.+)\s*$/im);
-    return match ? path.resolve(repoRoot, match[1]) : "";
-  } catch {
-    return "";
-  }
-}
-
-function getRemoteUrlsForRepo(repoRoot) {
-  const gitDir = resolveGitDir(repoRoot);
-  if (!gitDir) return [];
-
-  try {
-    // Like Claude's repo-scope helper, linked worktrees read shared remotes.
-    let configRoot = gitDir;
-    const commonFile = path.join(gitDir, "commondir");
-    if (fs.existsSync(commonFile)) {
-      const commonDir = fs.readFileSync(commonFile, "utf8").trim();
-      if (!commonDir) return [];
-      configRoot = path.resolve(gitDir, commonDir);
-    }
-    const configPath = path.join(configRoot, "config");
-    const configContent = fs.readFileSync(configPath, "utf8");
-    const urls = [];
-    let inRemoteSection = false;
-
-    for (const line of configContent.split(/\r?\n/)) {
-      if (/^\s*\[remote ".+"\]\s*$/.test(line)) {
-        inRemoteSection = true;
-        continue;
-      }
-      if (/^\s*\[.+\]\s*$/.test(line)) {
-        inRemoteSection = false;
-        continue;
-      }
-      if (!inRemoteSection) continue;
-
-      const urlMatch = line.match(/^\s*url\s*=\s*(.+?)\s*$/);
-      if (urlMatch) urls.push(urlMatch[1]);
-    }
-
-    return urls;
-  } catch {
-    return [];
   }
 }
 
@@ -287,42 +217,8 @@ function getRepoScopeDecision(cwd) {
     ? signedInOrgs.filter((org) => orgFilter.includes(org))
     : signedInOrgs;
 
-  const repoRoot = findGitRoot(cwd);
-  if (!repoRoot) {
-    return { allowed: false, scope: "unknown", classification: "no_repository" };
-  }
-
-  const remoteOrgs = getRemoteUrlsForRepo(repoRoot)
-    .map((remoteUrl) => extractGitHubOrgFromRemote(remoteUrl))
-    .filter(Boolean);
-
-  if (remoteOrgs.length === 0) {
-    return {
-      allowed: false,
-      scope: "unknown",
-      classification: "no_github_remote",
-      repoRoot,
-    };
-  }
-
-  const matchingOrg = remoteOrgs.find((org) => allowedOrgs.includes(org));
-  if (matchingOrg) {
-    return {
-      allowed: true,
-      scope: "approved",
-      classification: "github_org_match",
-      repoRoot,
-      remoteOrg: matchingOrg,
-    };
-  }
-
-  return {
-    allowed: false,
-    scope: "external",
-    classification: "github_org_mismatch",
-    repoRoot,
-    remoteOrg: remoteOrgs[0],
-  };
+  canonicalScope._resetConfigCache();
+  return canonicalScope.getRepoScopeDecision(cwd, allowedOrgs, findGitRoot);
 }
 
 // Compatibility helper for callers that sanitize tool data independently.
@@ -686,22 +582,28 @@ function transcriptScope(cwd, token, observeOnly = false) {
   // Without a stable principal, token rotation cannot reuse this queue. Never
   // deliver one principal's queued transcript as another user.
   const owner = transcriptQueue.hmac(salt, JSON.stringify([claims.iss, claims.aud, claims.sub, identity || token]));
-  let queueEpoch;
-  try { queueEpoch = repositoryQueue.epoch(decision.repoRoot); }
+  let route;
+  try { route = repositoryQueue.register(cwd, decision.repoRoot); }
   catch {
     console.error("[skillmeter] Transcript routing unavailable; capture deferred");
     return null;
   }
   if (!observeOnly && (!decision.allowed || !resolveTelemetryGate(getTelemetryOptIn(cwd), true).capture)) return null;
-  return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner, queueEpoch,
-    consentStamp: owner + decision.repoRoot + (queueEpoch || "") };
+  return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner,
+    queueEpoch: route.epoch, sharedStamp: route.sharedDeliveryToken, sharedPolicySeen: route.sharedPolicySeen,
+    // A changed repository identity must start a separate queue even before
+    // shared policy exists; held chunks must not block the new identity.
+    consentStamp: owner + decision.repoRoot + (route.epoch || "") +
+      (route.sharedPolicySeen || route.previousRepositories?.length ? route.sharedDeliveryToken : "") };
 }
 function scopeStillAllowed(scope, token) {
   const current = transcriptScope(scope.cwd, token);
+  if (current && current.sharedStamp !== scope.sharedStamp &&
+      (scope.sharedStamp !== undefined || current.sharedPolicySeen)) return false;
   return current && (current.queueEpoch || 0) === (scope.queueEpoch || 0) && ["repoRoot", "org", "deviceId", "owner"].every(k => current[k] === scope[k]);
 }
-// Local settings revisions identify transitions without depending on token
-// rotation. Shared policy storage and cross-client transitions are separate.
+// Local settings and shared global decisions identify transitions without
+// depending on token rotation or unrelated repository policy revisions.
 function transcriptConsentStamp(cwd) {
   const root = findGitRoot(cwd) || path.resolve(cwd), revisions = [];
   let current = path.resolve(cwd);
@@ -718,7 +620,12 @@ function transcriptConsentStamp(cwd) {
   // Existing signout/signin generation changes even for the same principal;
   // ordinary refresh leaves it intact. Read it without changing shared auth.
   const authGeneration = credstore.recoverySnapshot?.()?.generation ?? null;
-  return JSON.stringify([revisions, getTelemetryGloballyDisabled(), globalRevision, authGeneration]);
+  const stamp = [revisions, getTelemetryGloballyDisabled(), globalRevision, authGeneration];
+  const shared = readSharedGlobalPolicy();
+  if (shared.boundary !== null) stamp.push(shared.boundary);
+  const repository = readSharedRepositoryPolicy(getRepoScopeDecision(cwd));
+  if (repository.reason !== "absent") stamp.push(repository.stamp);
+  return JSON.stringify(stamp);
 }
 function observeTranscriptConsent(source, cwd, verifyReplacement = false) {
   const scope = transcriptScope(cwd, undefined, true);
@@ -1236,7 +1143,19 @@ async function drainPendingTranscripts(backendUrl, timeoutMs) {
  * Drain both durable queues once. Returns the number of queued items found
  * (pre-drain), which callers use to decide whether work remains.
  */
+function reconcileSharedRevocations() {
+  try {
+    if (repositoryQueue.hasRevoked(LOG_FILE)) sealEventLog();
+    repositoryQueue.purgeEvents();
+  } catch { console.error("[skillmeter] Shared event revocation deferred; routing unavailable"); }
+  for (const dir of transcriptQueue.queueDirectories(TRANSCRIPT_CHUNKS_DIR)) {
+    try { transcriptQueue.purgeRevoked(dir, repositoryQueue.revokedScope); }
+    catch { console.error("[skillmeter] Shared transcript revocation deferred; routing unavailable"); }
+  }
+}
+
 async function drainQueuesOnce(backendUrl, timeoutMs) {
+  reconcileSharedRevocations();
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Queue drain skipped (telemetry globally disabled)`);
     return 0;
@@ -1647,7 +1566,24 @@ function telemetryCliCommand(action) {
   return `node ${JSON.stringify(path.join(PLUGIN_ROOT, "scripts", "telemetry.js"))} ${action}`;
 }
 
+function getRepositoryPolicyDecision(cwd) {
+  const scope = getRepoScopeDecision(cwd);
+  const shared = readSharedRepositoryPolicy(scope);
+  try {
+    if (shared.reason === "absent" && repositoryQueue.requiresSharedPolicy(scope.repoRoot)) {
+      return { ...shared, allowed: false, reason: "shared_policy_missing" };
+    }
+  } catch { return { allowed: false, reason: "routing_unavailable", stamp: null }; }
+  return shared;
+}
+
 function getTelemetryOptIn(cwd) {
+  const shared = getRepositoryPolicyDecision(cwd);
+  if (!shared.allowed) return shared.revoked ? false : null;
+  return getLocalTelemetryOptIn(cwd);
+}
+
+function getLocalTelemetryOptIn(cwd) {
   const root = findGitRoot(cwd) || path.resolve(cwd);
   let current = path.resolve(cwd);
   // Preserve legacy subdirectory opt-outs; a child cannot widen root consent.
@@ -1703,6 +1639,11 @@ function saveTelemetryOptIn(cwd, value) {
 // project has no explicit opt-in. No decision is saved until the user runs
 // `telemetry.js enable|disable`.
 function writeTelemetryConsentFallback(cwd, stream = process.stderr) {
+  const shared = getRepositoryPolicyDecision(cwd);
+  if (!shared.allowed && shared.reason !== "scope_unavailable") {
+    stream.write("SkillMeter: Shared organization/repository policy blocks capture. Check the shared policy controls and telemetry status; local enable cannot override it.\n");
+    return;
+  }
   stream.write(
     [
       `SkillMeter: Telemetry is not configured for ${cwd}`,
@@ -1797,6 +1738,7 @@ async function runHook(eventName, buildData, options = {}) {
     console.error("[skillmeter] Transcript consent observation failed; capture deferred");
     return exit(0);
   }
+  if (readSharedRepositoryPolicy(getRepoScopeDecision(cwd)).revoked) reconcileSharedRevocations();
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] ${eventName}: skipped (telemetry globally disabled)`);
     return exit(0);
@@ -1860,7 +1802,7 @@ async function runHook(eventName, buildData, options = {}) {
     );
   }
 
-  logInfo(eventName, sessionId, data, deviceId, { epoch: route.epoch });
+  logInfo(eventName, sessionId, data, deviceId, { epoch: route.epoch, sharedStamp: route.sharedDeliveryToken });
   console.error(
     `[skillmeter] ${eventName}: logged (session=${String(sessionId).slice(0, 8)}…)`
   );
@@ -1955,6 +1897,7 @@ module.exports = {
   // Cleanup
   cleanupStaleFiles,
   getTelemetryOptIn,
+  getRepositoryPolicyDecision,
   saveTelemetryOptIn,
   writeTelemetryConsentFallback,
   resolveTelemetryGate,

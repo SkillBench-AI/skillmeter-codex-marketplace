@@ -11,6 +11,7 @@ const {
   setTelemetryGloballyDisabled,
   SETTINGS_RELATIVE,
   getRepoScopeDecision,
+  getRepositoryPolicyDecision,
   resolveTelemetryGate,
   isLicenseRejected,
   listPendingTranscripts,
@@ -28,6 +29,7 @@ const {
 const fs = require("fs");
 const path = require("path");
 const { isJwtExpired } = require("./lib/jwt");
+const { readSharedGlobalPolicy } = require("./lib/shared-telemetry-policy");
 
 const cwd = process.cwd();
 const projectRoot = findGitRoot(cwd) || cwd;
@@ -44,9 +46,23 @@ function authenticationLine() {
   return "license locally valid; server acceptance not verified";
 }
 
+function sharedPauseLine() {
+  const policy = readSharedGlobalPolicy();
+  if (policy.reason === "invalid") return "shared policy invalid or unreadable; capture and delivery paused; repair the policy file";
+  if (policy.disabled) return "shared policy paused; resume global telemetry through the shared policy controls";
+  return null;
+}
+
 function capturePolicyLine() {
+  const shared = sharedPauseLine();
+  if (shared) return shared;
   if (getTelemetryGloballyDisabled()) return "globally disabled";
   const scope = getRepoScopeDecision(cwd);
+  const sharedRepository = getRepositoryPolicyDecision(cwd);
+  if (sharedRepository.reason === "shared_policy_missing") return "paused; previously observed shared policy is missing";
+  if (sharedRepository.reason === "routing_unavailable") return "paused; repository routing unavailable";
+  if (scope.allowed && sharedRepository.revoked) return "disabled by shared organization or repository policy";
+  if (scope.allowed && !sharedRepository.allowed) return "paused; shared organization and repository choices must be valid and enabled";
   const gate = resolveTelemetryGate(getTelemetryOptIn(cwd), scope.allowed);
   if (gate.mode === "opted_out") return "disabled for this project";
   if (!scope.allowed) return `excluded (${scope.classification})`;
@@ -92,16 +108,18 @@ switch (action) {
   case "enable":
     if (isGlobal) {
       setTelemetryGloballyDisabled(false);
-      process.stderr.write("SkillMeter: Global telemetry uploads enabled for this machine\n");
+      const shared = sharedPauseLine();
+      process.stderr.write(shared ? `SkillMeter: Local pause cleared; ${shared}\n` : "SkillMeter: Global telemetry uploads enabled for this machine\n");
     } else {
       if (!saveRepositoryChoice(true)) break;
       process.stderr.write(`SkillMeter: Repository choice saved for ${projectRoot}\n`);
       process.stderr.write(`           (saved to ${SETTINGS_RELATIVE}; scope and global pause still apply)\n`);
       if (getTelemetryOptIn(cwd) !== true) {
-        process.stderr.write("SkillMeter: A subdirectory setting still blocks capture here; review its telemetry setting.\n");
+        process.stderr.write(`SkillMeter: Capture remains blocked: ${capturePolicyLine()}\n`);
       }
       if (getTelemetryGloballyDisabled()) {
         process.stderr.write(
+          sharedPauseLine() ? `SkillMeter: ${sharedPauseLine()}\n` :
           "SkillMeter: Global telemetry is still disabled; run with --global to resume uploads\n"
         );
       }
