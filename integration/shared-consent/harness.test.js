@@ -3,10 +3,28 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), cp = require("node:child_process");
 const { prepare } = require("./prepare.cjs");
+const { settled } = require("./verify-turn.cjs");
+
+// A hook in these tests can spawn the real detached drain worker. Removing the
+// canary while that worker still writes its queue fails with ENOTEMPTY, so
+// cleanup waits for the drain to settle and retries the removal. The bound
+// exceeds the worker's 30-second upload timeout. A canary that never settles
+// is retained and cleanup fails, so the pending state can be inspected.
+async function remove(root, base, { attempts = 1600, delay = 25 } = {}) {
+  for (let attempt = 1; ; attempt++) {
+    try { settled(base); break; } catch (error) {
+      if (error.code !== "ERR_ASSERTION") throw error;
+      if (attempt >= attempts) assert.fail(`unsettled canary retained at ${root} (${error.message})`);
+    }
+    await new Promise(resolve => setTimeout(resolve, delay));
+  }
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+}
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "shared harness-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const base = path.join(root, "canary");
+  t.after(() => remove(root, base));
   const claude = path.join(root, "claude-source"); fs.mkdirSync(claude);
   const git = args => {
     const r = cp.spawnSync("git", ["-C", claude, ...args], { encoding: "utf8", env: { PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: "1" } });
@@ -23,7 +41,7 @@ function fixture(t) {
   `);
   git(["init", "--quiet"]); git(["add", "."]);
   git(["-c", "user.name=Synthetic", "-c", "user.email=canary@example.invalid", "commit", "-qm", "Synthetic control spy"]);
-  const base = path.join(root, "canary"); prepare(base, claude);
+  prepare(base, claude);
   const run = (args, input) => cp.spawnSync(process.execPath, [path.join(base, "run.cjs"), ...args], {
     input: input && JSON.stringify(input), encoding: "utf8", timeout: 10000,
     env: { PATH: process.env.PATH, HOME: path.join(root, "unrelated-home") },
@@ -147,7 +165,6 @@ test("guard permits the requested drain handshake but rejects other worker argum
   assert.equal(r.status, 0, r.stderr);
 });
 
-
 test("candidate consent controls remain isolated and pass explicit confirmation arguments", t => {
   const f = fixture(t);
   assert.notEqual(f.run(["consent", "a", "preview"]).status, 0);
@@ -178,4 +195,27 @@ test("candidate consent controls remain isolated and pass explicit confirmation 
   f.ok(["retire"]);
   assert.notEqual(f.run(["consent", "a", "on", ...confirmation]).status, 0);
   assert.equal(fs.existsSync(path.join(f.root, "unrelated-home")), false);
+});
+
+test("cleanup retains a canary with a pending request or live drain lock and removes a settled one", async () => {
+  const canary = () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "shared harness-")), base = path.join(root, "canary");
+    const logs = path.join(base, "data/logs"); fs.mkdirSync(logs, { recursive: true });
+    return { root, base, logs };
+  };
+  const unsettled = {
+    "pending request": logs => fs.writeFileSync(path.join(logs, ".drain-once.request"), "1"),
+    "live drain lock": logs => fs.writeFileSync(path.join(logs, ".drain-once.lock"), ""),
+    "live worker lock": logs => fs.writeFileSync(path.join(logs, ".drain-once.worker.lock"), ""),
+  };
+  for (const [name, arrange] of Object.entries(unsettled)) {
+    const c = canary(); arrange(c.logs);
+    await assert.rejects(remove(c.root, c.base, { attempts: 3, delay: 1 }), { code: "ERR_ASSERTION" }, name);
+    assert.ok(fs.existsSync(c.logs), name + " retained");
+    fs.rmSync(c.root, { recursive: true, force: true });
+  }
+  const c = canary();
+  fs.writeFileSync(path.join(c.logs, ".drain-once.request"), "2"); fs.writeFileSync(path.join(c.logs, ".drain-once.completed"), "2");
+  await remove(c.root, c.base, { attempts: 3, delay: 1 });
+  assert.equal(fs.existsSync(c.root), false, "settled canary removed");
 });
