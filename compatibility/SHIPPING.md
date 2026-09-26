@@ -4,6 +4,8 @@ This setup covers the Codex marketplace's main branch and GitHub release
 workflow. It does not configure the Claude marketplace or backend deployment
 pipelines. Their independent release gates and rollout order still need adoption.
 Do not call compatibility enforced until the hosted acceptance checks below pass.
+Use the [read-only audit and disposable rehearsal tooling](REHEARSAL.md) to
+inspect configuration and exercise synthetic hosted cases.
 
 ## Trust and execution
 
