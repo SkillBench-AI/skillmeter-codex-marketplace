@@ -51,8 +51,12 @@ when the user explicitly asks. Never pick ON or OFF for them.
    ```
 
    Tell the user, in plain words: the `repository` key, the `sharedRevision`,
-   every entry in `localChoices`, and every `notices` message. If `repository`
-   is null, stop and relay the `repository_unavailable` notice.
+   every entry in `localChoices`, and every `notices` message. Stop and relay
+   the notices instead of asking for a choice when `repository` is null
+   (`repository_unavailable`) or when the result has no `sharedRevision`
+   property at all: that means the shared policy is unreadable, malformed or
+   missing after it was seen, and it must be repaired first. A `sharedRevision`
+   of `null` is different: no shared policy exists yet.
 
 2. Ask for an explicit choice: ON or OFF for this repository.
 
@@ -63,9 +67,12 @@ when the user explicitly asks. Never pick ON or OFF for them.
 
    Pass `--acknowledge-machine-scope` only after the user confirms that
    statement in this conversation. Never infer it from the ON request itself.
-   For OFF, tell the user that it removes this repository's queued, unsent
-   payloads for every clone and worktree, that requests already in flight may
-   finish, and that turning it on again does not restore removed payloads.
+   For OFF, tell the user that it removes the queued, unsent payloads this
+   plugin attributed to the repository, for every clone and worktree; that
+   cleanup blocked by an upload in progress is deferred to the next drain,
+   which rechecks consent before sending; that older data queued without a
+   repository keeps its previous behaviour; that requests already in flight may
+   finish; and that turning it on again does not restore removed payloads.
    OFF needs no acknowledgement.
 
 4. Apply, using the key and revision from that same preview. Use `absent` when
@@ -86,8 +93,11 @@ If the command fails, relay the code and message, then act on it:
   the repository the user means; check sign-in, organization scope and remotes.
 - `ACKNOWLEDGEMENT_REQUIRED`: the statement above was not confirmed.
 - `LOCAL_CONSENT_CONFLICT`: a local OFF or invalid setting in this checkout
-  still restricts it. Show the `localChoices` entries; the user must resolve
-  them explicitly (for example with `enable` below) before shared ON.
+  still restricts it. Show each `localChoices` entry whose choice is `off` or
+  `invalid`, with its path relative to the repository root. The user must edit
+  or remove that exact file before shared ON; `enable` writes only the root
+  file and cannot resolve a descendant or an unparsable file. Do not edit or
+  delete these files yourself unless the user asks.
 - `ORGANIZATION_CONSENT_REQUIRED`: the organization has not been authorized at
   consent version 2. That happens in the Claude Code plugin's telemetry
   controls; this command cannot authorize an organization.
