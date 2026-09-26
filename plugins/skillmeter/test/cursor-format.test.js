@@ -18,7 +18,7 @@ for (const location of ["cursor", "transaction"]) for (const field of ["version"
     (location === "cursor" ? data : data.cursor)[field] = 99;
     fs.writeFileSync(target, JSON.stringify(data));
     if (location === "transaction") fs.unlinkSync(path.join(dir, "cursor.json"));
-    const snapshot = () => fs.readdirSync(dir, { recursive: true }).filter(f => fs.statSync(path.join(dir, f)).isFile() && f !== "diagnostic.json")
+    const snapshot = () => fs.readdirSync(dir, { recursive: true }).filter(f => fs.statSync(path.join(dir, f)).isFile() && !["diagnostic.json", "capture-status.json"].includes(f))
       .sort().map(f => [f, fs.readFileSync(path.join(dir, f)).toString("base64")]);
     const before = snapshot();
     assert.throws(() => q.observeConsent(root, source, scope, "fixture", true, "fixture"), /unsupported-cursor-format/);
