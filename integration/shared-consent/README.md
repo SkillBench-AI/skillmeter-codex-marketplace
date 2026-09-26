@@ -74,12 +74,14 @@ Claude native-hook acceptance. Repository changes use its expected-revision chec
 | Unknown state | Assistant replaces only the isolated policy with malformed JSON or temporarily removes it, then restores exact bytes | Prompt during hold is excluded; policy is not overwritten, queues retained, status reports the blocker. |
 
 Commands above are arguments to `node /absolute/new/canary/run.cjs`.
-Before changing policy/receiver state or measuring settled queues, the assistant
-checks that both drain lock files have cleared and, when
-`data/logs/.drain-once.request` exists, that it matches `.drain-once.completed`.
-The first control change can precede any drain request. Lock absence alone can
-mean the worker has not started. A pending capture hint is not proof of delivery.
-Record any required follow-up hook separately.
+After every control change or native prompt that can trigger a drain, and before
+measuring queues or recording hashes, the assistant waits until both drain lock
+files are absent and either no `data/logs/.drain-once.request` exists (nothing
+was requested) or it matches `.drain-once.completed`. Checking only before a
+control is not enough: the hook that the control triggers can request a drain
+afterwards. Lock absence alone can mean the worker has not started. A pending
+capture hint is not proof of delivery. Record any required follow-up hook
+separately.
 Do not count manual drains/replayed hook subprocesses as native dispatch. Older
 payloads after an ambiguous positive timestamp change stay held; that contract
 still needs engineering agreement. Concurrent/in-flight races and expiry remain
