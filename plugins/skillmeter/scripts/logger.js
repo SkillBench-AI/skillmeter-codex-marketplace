@@ -1596,8 +1596,7 @@ function getRepositoryPolicyDecision(cwd) {
   return shared;
 }
 
-function getTelemetryOptIn(cwd) {
-  const shared = getRepositoryPolicyDecision(cwd);
+function getTelemetryOptIn(cwd, shared = getRepositoryPolicyDecision(cwd)) {
   if (!shared.allowed) return shared.revoked ? false : null;
   const local = getLocalTelemetryChoice(cwd);
   if (local === "off") return false;
@@ -1764,7 +1763,12 @@ async function runHook(eventName, buildData, options = {}) {
   // decision stays central — runHook exits below when gate.capture is false.
   // Hooks without an onGate get the default stderr messaging. (Replaces the
   // former OS consent dialog + per-hook checkOptIn override.)
-  const gate = resolveTelemetryGate(getTelemetryOptIn(cwd), repoScopeDecision.allowed);
+  const sharedRepository = getRepositoryPolicyDecision(cwd);
+  if (sharedRepository.reason === "routing_unavailable") {
+    console.error(`[skillmeter] ${eventName}: skipped (repository routing unavailable)`);
+    return exit(0);
+  }
+  const gate = resolveTelemetryGate(getTelemetryOptIn(cwd, sharedRepository), repoScopeDecision.allowed);
   if (options.onGate) {
     options.onGate({ gate, repoScopeDecision, cwd, input, eventName });
   } else {

@@ -220,7 +220,7 @@ test("routing lock contention keeps the Stop hook's JSON and reports a retryable
   const release = require("../../scripts/lib/transcript-delta").acquireLock(path.join(routing, `${id}.json.lock`));
   assert.ok(release);
   try {
-    const hook = f.script("stop.js", { input: { ...EVENT, cwd: f.repo } });
+    const hook = f.script("stop.js", { input: { ...EVENT, cwd: fs.realpathSync(f.repo) } });
     assert.equal(hook.status, 0, hook.stderr);
     assert.deepEqual(JSON.parse(hook.stdout), {});
     assert.match(hook.stderr, /repository routing unavailable/);
