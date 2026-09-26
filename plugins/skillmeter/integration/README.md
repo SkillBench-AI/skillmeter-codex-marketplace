@@ -82,3 +82,10 @@ cannot read `chunks-v1`; do not relabel chunks as legacy snapshots or run old
 cleanup against them. Resume with a compatible client or select still-authorized
 sources for explicit recovery. Verify installed-client behavior, storage and
 report correctness separately from these local tests.
+
+## Stored-record reconciliation
+
+Use the [selected transcript integrity check](TRANSCRIPT-INTEGRITY.md) to compare
+expected sanitized records with approved stored objects using content-free
+receipts. This is a record-set gate; it does not establish full-source coverage
+or weekly-report acceptance.
