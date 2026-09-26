@@ -11,7 +11,8 @@
     "test": "node --test",
     "check:version": "node .github/scripts/check-version.mjs",
     "check:manifests": "node .github/scripts/validate-manifests.mjs",
-    "check": "npm run check:version && npm run check:manifests && npm test"
+    "check": "npm run check:version && npm run check:manifests && npm run check:compatibility && npm test",
+    "check:compatibility": "node .github/scripts/compatibility-contract.cjs"
   },
   "engines": {
     "node": ">=20"

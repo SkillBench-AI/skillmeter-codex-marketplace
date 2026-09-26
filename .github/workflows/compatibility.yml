@@ -46,53 +46,58 @@ jobs:
           CLAUDE_SHA: ${{ inputs.claude_sha }}
           COLLECTOR_SHA: ${{ inputs.collector_sha }}
           PIPELINE_SHA: ${{ inputs.pipeline_sha }}
+          PRODUCER_SHA: ${{ github.sha }}
           READ_TOKEN: ${{ secrets.COMPATIBILITY_READ_TOKEN }}
         run: |
           python - <<'PYCODE'
-          import os, re
-          for key in ('CLAUDE_SHA', 'COLLECTOR_SHA', 'PIPELINE_SHA'):
+          import os, re, json
+          from pathlib import Path
+          from datetime import datetime, timezone
+          for key in ('PRODUCER_SHA', 'CLAUDE_SHA', 'COLLECTOR_SHA', 'PIPELINE_SHA'):
               if not re.fullmatch(r'[0-9a-f]{40}', os.environ[key]):
                   raise SystemExit('A full lowercase commit SHA is required: ' + key)
           if not os.environ.get('READ_TOKEN'):
               raise SystemExit('Configure COMPATIBILITY_READ_TOKEN with contents:read for the two dependency repositories.')
+          expected = {'version': 1, 'startedAt': datetime.now(timezone.utc).isoformat(), 'revisions': {name: os.environ[name.upper() + '_SHA'] for name in ('producer', 'claude', 'collector', 'pipeline')}}
+          (Path(os.environ['RUNNER_TEMP']) / 'expected-candidate.json').write_text(json.dumps(expected))
           PYCODE
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: producer
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: SkillBench-AI/skillmeter-claude-code-collector
           ref: ${{ inputs.collector_sha }}
           path: collector
           token: ${{ secrets.COMPATIBILITY_READ_TOKEN }}
           persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: SkillBench-AI/skillbench-pipelines
           ref: ${{ inputs.pipeline_sha }}
           path: pipeline
           token: ${{ secrets.COMPATIBILITY_READ_TOKEN }}
           persist-credentials: false
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: SkillBench-AI/skillmeter-claude-code-marketplace
           ref: ${{ inputs.claude_sha }}
           path: claude
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 22
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.14'
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
           go-version: '1.25.5'
           cache-dependency-path: collector/go.sum
-      - uses: astral-sh/setup-uv@v6
+      - uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6
         with:
           version: '0.11.26'
           enable-cache: false
@@ -117,20 +122,25 @@ jobs:
         run: |
           python -B plugins/skillmeter/integration/candidate_contract.py pin --collector ../collector --pipeline ../pipeline --manifest "$RUNNER_TEMP/candidate.json"
           python -B plugins/skillmeter/integration/candidate_contract.py run --collector ../collector --pipeline ../pipeline --manifest "$RUNNER_TEMP/candidate.json" --out "$RUNNER_TEMP/candidate-result.json" --python "$GITHUB_WORKSPACE/pipeline/.venv/bin/python" --go "$(command -v go)"
-      - name: Retain content-free evidence
+      - name: Require fresh matching contract evidence
         if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: compatibility-${{ github.sha }}
-          path: |
-            ${{ runner.temp }}/mixed-auth.json
-            ${{ runner.temp }}/candidate.json
-            ${{ runner.temp }}/candidate-result.json
-          if-no-files-found: warn
-          retention-days: 14
-      - name: Require both contracts
-        if: always()
+        working-directory: producer
         env:
           MIXED_OUTCOME: ${{ steps.mixed.outcome }}
           CONTRACT_OUTCOME: ${{ steps.contract.outcome }}
-        run: test "$MIXED_OUTCOME" = success && test "$CONTRACT_OUTCOME" = success
+        run: |
+          if [ "$MIXED_OUTCOME" != success ] || [ "$CONTRACT_OUTCOME" != success ]; then exit 1; fi
+          node .github/scripts/compatibility-gate.cjs "$RUNNER_TEMP/expected-candidate.json" "$RUNNER_TEMP/mixed-auth.json" "$RUNNER_TEMP/candidate-result.json" "$RUNNER_TEMP/compatibility-acceptance.json"
+      - name: Retain content-free evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: compatibility-${{ github.sha }}
+          path: |
+            ${{ runner.temp }}/expected-candidate.json
+            ${{ runner.temp }}/mixed-auth.json
+            ${{ runner.temp }}/candidate.json
+            ${{ runner.temp }}/candidate-result.json
+            ${{ runner.temp }}/compatibility-acceptance.json
+          if-no-files-found: warn
+          retention-days: 14
