@@ -110,9 +110,14 @@ Claude native-hook acceptance. Repository changes use its expected-revision chec
 | Unknown state | Assistant replaces only the isolated policy with malformed JSON or temporarily removes it, then restores exact bytes | Prompt during hold is excluded; policy is not overwritten, queues retained, status reports the blocker. |
 
 Commands above are arguments to `node /absolute/new/canary/run.cjs`.
-Before changing policy/receiver state or measuring settled queues, the assistant
-checks both drain lock formats and any pending request/completion markers. A pending capture hint is not
-proof of delivery. Record any required follow-up hook separately.
+After every control change or native prompt that can trigger a drain, and before
+measuring queues or recording hashes, the assistant waits until both drain lock
+files are absent and either no `data/logs/.drain-once.request` exists (nothing
+was requested) or it matches `.drain-once.completed`. Checking only before a
+control is not enough: the hook that the control triggers can request a drain
+afterwards. Lock absence alone can mean the worker has not started. A pending
+capture hint is not proof of delivery. Record any required follow-up hook
+separately.
 Do not count manual drains/replayed hook subprocesses as native dispatch. Older
 payloads after an ambiguous positive timestamp change stay held under ADR 004. Concurrent/in-flight races and expiry remain
 separate deterministic acceptance cases unless explicitly reproduced natively.
@@ -132,7 +137,9 @@ Publish only reviewed counts, digests, source labels and outcome codes. An
 intercepted 200 is not collector acceptance or dashboard evidence.
 
 Run `node run.cjs retire` to disable callbacks and remove only unchanged generated
-hook files. Verify the detached drain worker lock has cleared before archiving evidence.
+hook files. Before archiving evidence, verify the detached drain worker lock has
+cleared and, if a drain request marker exists, that the matching completion marker
+is present.
 The wrapper and allowed worker both stop at expiration/disabled checks; a request
 already in progress can finish. Controls after expiry require a newly prepared run.
 
