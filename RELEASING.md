@@ -37,7 +37,7 @@ After merging the release PR:
 
 Prepare and review the user-facing notes before pushing the tag. The workflow
 publishes automatically; replace its generated title and body with the approved
-notes afterward. Follow the latest published release's tone and command layout:
+notes afterward.
 
 Release notes are public. They say what changed for the user; the PRs hold the
 rest. Use [0.8.0](https://github.com/SkillBench-AI/skillmeter-codex-marketplace/releases/tag/v0.8.0)
