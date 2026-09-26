@@ -1,7 +1,6 @@
 "use strict";
-
-// Exercise real queue/control code with synthetic state. No hooks, daemon,
-// credentials from the host, or network.
+// Repository revocation, the global pause and mixed batches, driven through
+// the real queue and control code with an intercepted fetch.
 const { test, beforeEach, after } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -9,6 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 const zlib = require("node:zlib");
 const { execFileSync } = require("node:child_process");
+const { makeJwt, transcriptLine: line } = require("../../test-support/plugin.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-revocation-"));
 process.env.HOME = root;
@@ -19,17 +19,14 @@ delete process.env.SKILLMETER_REPO_SCOPE_ORGS;
 delete process.env.SKILLMETER_BACKEND_URL;
 const store = path.join(root, ".skillbench/credentials.json");
 fs.mkdirSync(path.dirname(store), { recursive: true });
-const token = "e30." + Buffer.from(JSON.stringify({
-  sub: "synthetic-tenant", github_id: "synthetic-user", exp: 4102444800,
-  aud: "https://synthetic.meter.skillbench.com",
-})).toString("base64url") + ".fixture";
+const token = makeJwt({ sub: "synthetic-tenant", github_id: "synthetic-user", exp: 4102444800, aud: "https://synthetic.meter.skillbench.com" });
 const credentials = {
   device_id: "SYNTHETIC", hash_salt: "synthetic-salt", license_jwt: token,
   allowed_github_orgs: ["synthetic"],
 };
 fs.writeFileSync(store, JSON.stringify(credentials));
-const logger = require("../scripts/logger");
-const queue = require("../scripts/lib/transcript-delta");
+const logger = require("../../scripts/logger");
+const queue = require("../../scripts/lib/transcript-delta");
 const realFetch = global.fetch;
 const endpoint = "https://collector.invalid/logs/codex";
 const repos = Object.fromEntries(["a", "b"].map(name => {
@@ -39,11 +36,10 @@ const repos = Object.fromEntries(["a", "b"].map(name => {
   return [name, directory];
 }));
 const decode = body => zlib.gunzipSync(body).toString().trim().split("\n").map(JSON.parse);
-const line = content => JSON.stringify({ type: "response_item", payload: { type: "message", role: "user", content } }) + "\n";
 const source = name => path.join(root, `${name}.jsonl`);
 
 function control(name, action) {
-  execFileSync(process.execPath, [path.resolve(__dirname, "../scripts/telemetry.js"), action], {
+  execFileSync(process.execPath, [path.resolve(__dirname, "../../scripts/telemetry.js"), action], {
     cwd: repos[name], env: process.env, stdio: "pipe", timeout: 5000,
   });
 }
@@ -56,8 +52,6 @@ function stage(name, content = `authorized-${name}`) {
 }
 
 function event(name) {
-  // Match the current event's hashed repository fields; do not add a proposed
-  // routing field that the actual producer does not yet write.
   logger.logInfo("Stop", `synthetic-${name}`, {
     cwd: logger.hashHmac(repos[name], credentials.hash_salt),
     repo_root: logger.hashHmac(repos[name], credentials.hash_salt),
@@ -78,15 +72,6 @@ beforeEach(() => {
 after(() => {
   global.fetch = realFetch;
   fs.rmSync(root, { recursive: true, force: true });
-});
-
-test("disabling A preserves B's pending chunk and cursor byte for byte", () => {
-  stage("a");
-  const b = stage("b");
-  const cursor = path.join(path.dirname(path.dirname(b)), "cursor.json");
-  const before = [b, cursor].map(file => fs.readFileSync(file));
-  control("a", "disable");
-  assert.deepEqual([b, cursor].map(file => fs.readFileSync(file)), before);
 });
 
 test("transcript drain rechecks disabled A while delivering authorized B", async () => {
@@ -128,20 +113,17 @@ test("repository disable does not guess ownership or destroy an unattributed leg
   fs.writeFileSync(legacy, bytes);
   control("a", "disable");
   assert.equal(fs.readFileSync(legacy, "utf8"), bytes);
-  // Delivery/quarantine/migration of this batch is intentionally undecided.
 });
 
-test("repository revocation removes A's queued transcript payloads but preserves its cursor",
-  () => {
-    const a = stage("a");
-    const b = stage("b");
-    const cursor = path.join(path.dirname(path.dirname(a)), "cursor.json");
-    const before = fs.readFileSync(cursor);
-    control("a", "disable");
-    assert.ok(fs.existsSync(b), "unrelated repository must survive revocation");
-    assert.deepEqual(fs.readFileSync(cursor), before, "cursor must survive payload removal");
-    assert.equal(fs.existsSync(a), false, "revoked payload must be removed");
-  });
+test("repository revocation removes A's queued transcript payloads but preserves its cursor and B", () => {
+  const a = stage("a");
+  const b = stage("b");
+  const cursors = [a, b].map(file => path.join(path.dirname(path.dirname(file)), "cursor.json"));
+  const before = [b, ...cursors].map(file => fs.readFileSync(file));
+  control("a", "disable");
+  assert.equal(fs.existsSync(a), false, "revoked payload must be removed");
+  assert.deepEqual([b, ...cursors].map(file => fs.readFileSync(file)), before, "B and both cursors survive byte for byte");
+});
 
 test("mixed event batch delivers B without disclosing disabled A",
   async () => {
@@ -165,7 +147,6 @@ test("a failed event delivery rechecks repository consent before retrying",
     await logger.processSealedBatch(sealed, endpoint, 1000);
     assert.equal(calls, 1, "a revoked repository cannot be sent again");
   });
-
 
 test("private routing stays local and authorized B survives an in-flight A revocation", async () => {
   event("a"); event("b");
@@ -205,13 +186,17 @@ test("disable/re-enable during a transcript request purges remaining revoked pay
   assert.deepEqual(received.map(record => record.payload.content), ["new authorization"]);
 });
 
-test("new indexed events with missing routing state are retained without delivery or retry charge", async () => {
-  event("a"); const sealed = logger.sealEventLog();
-  fs.rmSync(path.join(logger.LOG_DIR, "repository-routing"), { recursive: true });
-  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "held");
-  assert.ok(fs.existsSync(sealed));
-  assert.equal(fs.existsSync(`${sealed}.meta`), false);
-});
+for (const damage of ["missing", "corrupt"]) {
+  test(`indexed events with ${damage} routing state are retained without delivery or a retry charge`, async () => {
+    event("a"); const sealed = logger.sealEventLog();
+    const routing = path.join(logger.LOG_DIR, "repository-routing");
+    if (damage === "missing") fs.rmSync(routing, { recursive: true });
+    else for (const file of fs.readdirSync(routing)) fs.writeFileSync(path.join(routing, file), "{}");
+    assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "held");
+    assert.ok(fs.existsSync(sealed));
+    assert.equal(fs.existsSync(`${sealed}.meta`), false);
+  });
+}
 
 test("explicit revocation during global pause removes only the selected repository", () => {
   const a = stage("a"), b = stage("b");
@@ -222,17 +207,6 @@ test("explicit revocation during global pause removes only the selected reposito
   assert.ok(fs.existsSync(b));
   assert.deepEqual(fs.readFileSync(sealed, "utf8").trim().split("\n").map(JSON.parse).map(r => r.session_id), ["synthetic-b"]);
 });
-
-
-test("corrupt routing retains payload without network or a retry charge", async () => {
-  event("a"); const sealed = logger.sealEventLog();
-  const routing = path.join(logger.LOG_DIR, "repository-routing");
-  for (const file of fs.readdirSync(routing)) fs.writeFileSync(path.join(routing, file), "{}");
-  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "held");
-  assert.ok(fs.existsSync(sealed));
-  assert.equal(fs.existsSync(`${sealed}.meta`), false);
-});
-
 
 test("a symlink checkout alias shares the revocation boundary", () => {
   const alias = path.join(root, "alias-a");
@@ -257,8 +231,7 @@ test("a hook at the disable settings-write boundary cannot inherit the revoked g
   const intercept = () => {
     if (injected) return;
     injected = true;
-    // The child runs the hook's actual register + consent check while the
-    // control process is paused immediately before publishing its setting.
+    // A hook registers and checks consent while the control is paused just before publishing.
     snapshot = JSON.parse(execFileSync(process.execPath, ["-e", `
       const logger = require(process.argv[1]);
       const { createRepositoryQueue } = require(process.argv[2]);
@@ -277,7 +250,7 @@ test("a hook at the disable settings-write boundary cannot inherit the revoked g
         if (error.message !== "repository-routing-busy") throw error;
         process.stdout.write("null");
       }
-    `, path.resolve(__dirname, "../scripts/logger.js"), path.resolve(__dirname, "../scripts/lib/repository-queue.js"), repos.a, source("a")],
+    `, path.resolve(__dirname, "../../scripts/logger.js"), path.resolve(__dirname, "../../scripts/lib/repository-queue.js"), repos.a, source("a")],
     { env: process.env, encoding: "utf8", timeout: 5000 }));
   };
   fs.writeFileSync = function(file, ...args) {
@@ -319,7 +292,6 @@ test("temporary missing organization authorization retains events for recovery",
   assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "sent");
   assert.equal(calls, 1);
 });
-
 
 test("missing credentials retain queued events without an upload or retry charge", async () => {
   event("a"); const sealed = logger.sealEventLog(), bytes = fs.readFileSync(sealed);
@@ -398,7 +370,7 @@ test("salvage of a rejected mixed batch never uploads held records", async () =>
 
 test("authorization is evaluated once per cwd per attempt and never during purge", () => {
   event("a"); event("b"); event("a"); const sealed = logger.sealEventLog();
-  const { createRepositoryQueue } = require("../scripts/lib/repository-queue");
+  const { createRepositoryQueue } = require("../../scripts/lib/repository-queue");
   const calls = [];
   const routing = createRepositoryQueue(logger.LOG_DIR, () => credentials.hash_salt, cwd => { calls.push(cwd); return true; });
   routing.pruneFile(sealed);
@@ -521,7 +493,7 @@ test("quarantine purge shares the source lock and retries after it is released",
   assert.ok(release);
   try { control("a", "disable"); assert.deepEqual(fs.readFileSync(poison), bytes); }
   finally { release(); }
-  const { createRepositoryQueue } = require("../scripts/lib/repository-queue");
+  const { createRepositoryQueue } = require("../../scripts/lib/repository-queue");
   const routing = createRepositoryQueue(logger.LOG_DIR, () => credentials.hash_salt, () => assert.fail("purge must not authorize"));
   assert.equal(routing.purgeEvents(), true);
   assert.equal(fs.existsSync(poison), false);

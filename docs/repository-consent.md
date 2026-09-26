@@ -26,7 +26,7 @@ This is a capture-gate change, not complete parity with
 Do not present it as retroactive consent isolation or enable a new surface's
 uploads on this basis. Work-specific consent and delivery are separate.
 
-Run `node --test plugins/skillmeter/test/repository-consent-boundary.test.js`
+Run `node --test plugins/skillmeter/test/consent/repository.test.js`
 for synthetic hook/CLI boundary tests, then `npm run check` for the full suite.
 These checks do not prove native hook approval, production receipt or reporting.
 
@@ -94,5 +94,5 @@ CLI. Unknown legacy event ownership, separate organization consent and shared
 policy migration are not implemented here. Unattributed legacy batches keep their
 existing delivery behavior; this is not a guarantee of retroactive isolation.
 
-Run `node --test plugins/skillmeter/test/queue-revocation.test.js` for mixed-batch,
+Run `node --test plugins/skillmeter/test/consent/queue-revocation.test.js` for mixed-batch,
 retry, cursor preservation, in-flight revocation and disable/re-enable checks.

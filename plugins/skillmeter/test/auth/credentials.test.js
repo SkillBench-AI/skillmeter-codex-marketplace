@@ -1,52 +1,21 @@
 "use strict";
-
-/**
- * Authentication and tenant routing tests.
- * Set the temporary HOME and seed identity before requiring plugin modules;
- * credential paths are resolved at import time and must not reach Keychain.
- */
-
-const os = require("os");
-const fs = require("fs");
-const path = require("path");
-const http = require("http");
-
-const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "sk-auth-home-"));
-process.env.HOME = tmpHome;
-process.env.USERPROFILE = tmpHome;
+// Credentials: JWT claims, the credstore lifecycle, tenant routing, activation
+// URL trust, and authenticated uploads against a loopback server.
+const { isolateHome, makeJwt, tempDir, writeSettings } = require("../../test-support/plugin.cjs");
+const tmpHome = isolateHome({ device_id: "TEST-DEVICE", hash_salt: "deadbeef" });
 delete process.env.SKILLMETER_BACKEND_URL;
 delete process.env.SKILLMETER_ACTIVATE_URL;
 delete process.env.SKILLMETER_GITHUB_CLIENT_ID;
 
-fs.mkdirSync(path.join(tmpHome, ".skillbench"), { recursive: true });
-fs.writeFileSync(
-  path.join(tmpHome, ".skillbench", "credentials.json"),
-  JSON.stringify({ device_id: "TEST-DEVICE", hash_salt: "deadbeef" }) + "\n"
-);
-
+const fs = require("node:fs");
+const path = require("node:path");
+const http = require("node:http");
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-
-const jwt = require("../scripts/lib/jwt");
-const credstore = require("../scripts/credstore");
-const logger = require("../scripts/logger");
-const licenseActivation = require("../scripts/lib/license-activation");
-
-// --- helpers ---------------------------------------------------------------
-
-function b64url(obj) {
-  return Buffer.from(JSON.stringify(obj))
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-// Build a fake (unsigned) JWT with the given payload claims. The signature is a
-// dummy — the plugin never verifies it, it only reads claims locally.
-function makeJwt(claims) {
-  return `${b64url({ alg: "none", typ: "JWT" })}.${b64url(claims)}.sig`;
-}
+const jwt = require("../../scripts/lib/jwt");
+const credstore = require("../../scripts/credstore");
+const logger = require("../../scripts/logger");
+const licenseActivation = require("../../scripts/lib/license-activation");
 
 const FUTURE = Math.floor(Date.now() / 1000) + 3600;
 const PAST = Math.floor(Date.now() / 1000) - 3600;
@@ -65,15 +34,10 @@ function startServer(handler) {
 }
 
 function tmpLogFile(contents) {
-  const p = path.join(
-    fs.mkdtempSync(path.join(os.tmpdir(), "sk-auth-log-")),
-    "events.jsonl.1700000000000"
-  );
+  const p = path.join(tempDir("sk-auth-log"), "events.jsonl.1700000000000");
   fs.writeFileSync(p, contents);
   return p;
 }
-
-// --- lib/jwt ---------------------------------------------------------------
 
 test("decodeJwtPayload returns claims for a well-formed token", () => {
   const payload = jwt.decodeJwtPayload(makeJwt({ sub: "u1", exp: FUTURE }));
@@ -86,9 +50,12 @@ test("decodeJwtPayload returns null for garbage", () => {
   assert.equal(jwt.decodeJwtPayload("a.b"), null);
 });
 
-test("isJwtExpired reflects the exp claim", () => {
+test("isJwtExpired and isLicenseTokenExpired reflect the exp claim; an absent token is expired", () => {
   assert.equal(jwt.isJwtExpired(makeJwt({ exp: FUTURE })), false);
   assert.equal(jwt.isJwtExpired(makeJwt({ exp: PAST })), true);
+  assert.equal(credstore.isLicenseTokenExpired(null), true);
+  assert.equal(credstore.isLicenseTokenExpired(makeJwt({ exp: PAST })), true);
+  assert.equal(credstore.isLicenseTokenExpired(makeJwt({ exp: FUTURE })), false);
 });
 
 test("getEndpointFromToken returns the `aud` endpoint of a valid token", () => {
@@ -113,8 +80,6 @@ test("getEndpointFromToken rejects expired tokens, missing/non-https claims", ()
   assert.equal(jwt.getEndpointFromToken(null), null);
 });
 
-// --- credstore lifecycle ---------------------------------------------------
-
 test("commitSignin stores the license + normalized orgs; signOut clears them", () => {
   const token = makeJwt({ exp: FUTURE });
   const ok = credstore.commitSignin({ jwt: token, orgs: ["Acme", "acme", " Beta ", ""] });
@@ -129,8 +94,7 @@ test("commitSignin stores the license + normalized orgs; signOut clears them", (
   assert.deepEqual(credstore.getAllowedGitHubOrgs(), []);
   assert.equal(credstore.getSignedOut(), true);
   assert.equal(credstore.getTelemetryDisabled(), true);
-  // device identity survives a sign-out
-  assert.equal(credstore.getDeviceId(), "TEST-DEVICE");
+  assert.equal(credstore.getDeviceId(), "TEST-DEVICE", "device identity survives a sign-out");
 });
 
 test("commitSignin is refused while signed out; markEngaged re-arms it", () => {
@@ -167,12 +131,6 @@ test("global telemetry switch blocks event-log uploads without consuming the que
   }
 });
 
-test("isLicenseTokenExpired treats absent/expired tokens as expired", () => {
-  assert.equal(credstore.isLicenseTokenExpired(null), true);
-  assert.equal(credstore.isLicenseTokenExpired(makeJwt({ exp: PAST })), true);
-  assert.equal(credstore.isLicenseTokenExpired(makeJwt({ exp: FUTURE })), false);
-});
-
 test("setLicenseToken('') clears the stored token", () => {
   credstore.setLicenseToken(makeJwt({ exp: FUTURE }));
   assert.notEqual(credstore.getLicenseToken(), null);
@@ -180,25 +138,36 @@ test("setLicenseToken('') clears the stored token", () => {
   assert.equal(credstore.getLicenseToken(), null);
 });
 
-// --- JWT-derived endpoint routing -----------------------------------------
-
-test("getBackendUrl routes to the JWT per-tenant endpoint with /logs/codex", () => {
+test("getBackendUrl: a trusted env override wins, then the JWT tenant, then the shipped default", () => {
   credstore.markEngaged();
-  credstore.setLicenseToken(makeJwt({ exp: FUTURE, aud: "https://acme.meter.skillbench.com" }));
-  // tmpHome has no .codex/settings.local.json, so settings don't interfere.
-  assert.equal(logger.getBackendUrl(tmpHome), "https://acme.meter.skillbench.com/logs/codex");
+  const DEFAULT = logger.DEFAULT_BACKEND_URL;
+  assert.match(DEFAULT, /^https:\/\/api\.meter\.skillbench\.ai\/logs\/codex$/);
+  for (const [name, { env, aud, exp = FUTURE, settings }, expected] of [
+    ["trusted env override over the JWT", { env: "https://api.meter.skillbench.com/logs/codex", aud: "https://jwt.meter.skillbench.com" }, "https://api.meter.skillbench.com/logs/codex"],
+    ["untrusted env override", { env: "https://evil.example.com/logs/codex" }, DEFAULT],
+    ["non-https env override", { env: "http://api.meter.skillbench.com/logs/codex" }, DEFAULT],
+    ["JWT tenant on skillbench.com", { aud: "https://acme.meter.skillbench.com" }, "https://acme.meter.skillbench.com/logs/codex"],
+    ["JWT tenant on skillbench.ai", { aud: "https://acme.meter.skillbench.ai" }, "https://acme.meter.skillbench.ai/logs/codex"],
+    ["expired JWT still routes", { aud: "https://acme.meter.skillbench.com", exp: PAST }, "https://acme.meter.skillbench.com/logs/codex"],
+    ["untrusted JWT tenant", { aud: "https://evil.example.com" }, DEFAULT],
+    ["a backendUrl settings key is ignored", { aud: "https://jwt.meter.skillbench.com", settings: { backendUrl: "https://acme.meter.dev.skillbench.com/logs/codex" } }, "https://jwt.meter.skillbench.com/logs/codex"],
+    ["unauthenticated", {}, DEFAULT],
+  ]) {
+    const cwd = tempDir("sk-auth-cwd");
+    if (settings) writeSettings(cwd, settings);
+    credstore.setLicenseToken(aud ? makeJwt({ aud, exp }) : "");
+    if (env) process.env.SKILLMETER_BACKEND_URL = env;
+    try {
+      assert.equal(logger.getBackendUrl(cwd), expected, name);
+    } finally {
+      delete process.env.SKILLMETER_BACKEND_URL;
+      credstore.setLicenseToken("");
+    }
+  }
 });
-
-test("getBackendUrl falls back to the prod default when unauthenticated", () => {
-  credstore.setLicenseToken("");
-  assert.equal(logger.getBackendUrl(tmpHome), logger.DEFAULT_BACKEND_URL);
-});
-
-// --- activation URL resolution (prod is on skillbench.ai) ------------------
 
 test("activation defaults to the prod skillbench.ai control plane", () => {
-  // getActivateUrl reads `skillmeter.activate_url` from <cwd>/.codex; run from a
-  // clean dir so this repo's own dev settings.local.json doesn't interfere.
+  // getActivateUrl reads <cwd>/.codex settings; run from a clean directory.
   const prevCwd = process.cwd();
   process.chdir(tmpHome);
   try {
@@ -206,15 +175,6 @@ test("activation defaults to the prod skillbench.ai control plane", () => {
     assert.equal(licenseActivation.getRefreshUrl(), "https://api.skillbench.ai/refresh");
   } finally {
     process.chdir(prevCwd);
-  }
-});
-
-test("a trusted skillbench.ai activation override is honored", () => {
-  process.env.SKILLMETER_ACTIVATE_URL = "https://api.skillbench.ai/activate";
-  try {
-    assert.equal(licenseActivation.getActivateUrl(), "https://api.skillbench.ai/activate");
-  } finally {
-    delete process.env.SKILLMETER_ACTIVATE_URL;
   }
 });
 
@@ -235,8 +195,6 @@ test("an untrusted activation override falls back to the prod default", () => {
     delete process.env.SKILLMETER_ACTIVATE_URL;
   }
 });
-
-// --- authenticated upload + auth-failure containment -----------------------
 
 test("transferEventLog attaches the JWT and marks the batch .sent on 2xx", async () => {
   const token = makeJwt({ exp: FUTURE });
@@ -260,9 +218,8 @@ test("transferEventLog attaches the JWT and marks the batch .sent on 2xx", async
   }
 });
 
-// The credential file is shared with the Claude Code plugin, so an auth
-// failure here must never delete the token: doing so signs the whole machine
-// out of both agents. The batch is re-sent once a refresh lands.
+// The credential file is shared with the Claude Code plugin: an auth failure
+// must never delete the token, or the whole machine signs out of both agents.
 for (const status of [401, 402, 403]) {
   test(`transferEventLog keeps the license and the batch on HTTP ${status}`, async () => {
     const token = makeJwt({ exp: FUTURE });
@@ -323,9 +280,8 @@ test("transferEventLog never sends unauthenticated with an expired JWT", async (
   }
 });
 
-// Routing and authorization must come from one credential snapshot: a drain
-// that resolved the host up front could otherwise pair tenant A's endpoint with
-// tenant B's JWT after a concurrent sign-in.
+// Routing and authorization come from one credential snapshot, so a concurrent
+// sign-in cannot pair tenant A's endpoint with tenant B's JWT.
 test("transferEventLog routes by the same token it authenticates with", async () => {
   const token = makeJwt({
     exp: FUTURE,
@@ -342,7 +298,6 @@ test("transferEventLog routes by the same token it authenticates with", async ()
   const logFile = tmpLogFile('{"a":1}\n');
 
   try {
-    // No explicit backendUrl: the transfer resolves its own from the token.
     await logger.transferEventLog(logFile);
     assert.equal(seen.url, "https://tenantb.meter.skillbench.com/logs/codex");
     assert.equal(seen.auth, `Bearer ${token}`);
@@ -352,8 +307,7 @@ test("transferEventLog routes by the same token it authenticates with", async ()
   }
 });
 
-// `exp` says nothing about revocation or a rotated signing key, so a rejected
-// token that still looks fresh must not be resubmitted every sweep forever.
+// A rejected token that still looks fresh must not be resubmitted every sweep.
 test("an authenticated rejection forces the next refresh to rotate", async () => {
   const token = makeJwt({ exp: FUTURE });
   credstore.setLicenseToken(token);
@@ -369,8 +323,6 @@ test("an authenticated rejection forces the next refresh to rotate", async () =>
     await logger.transferEventLog(logFile, `${srv.url}/logs/codex`, 5000);
     assert.equal(logger.isLicenseRejected(), true, "a refresh is now owed");
 
-    // Must differ from `token`: an identical payload would let the assertion
-    // pass even if the rejected credential were returned unchanged.
     const fresh = makeJwt({ exp: FUTURE, jti: "rotated" });
     const realFetch = global.fetch;
     let refreshCalls = 0;
@@ -399,8 +351,7 @@ test("an authenticated rejection forces the next refresh to rotate", async () =>
   }
 });
 
-// The shared credential file has several writers. A fresh read that finds no
-// token must mean "no token", never "reuse the one this process cached".
+// A fresh read that finds no token means "no token", never "reuse the cache".
 test("getLicenseTokenUncached never resurrects a token another client removed", () => {
   const token = makeJwt({ exp: FUTURE });
   credstore.setLicenseToken(token);
@@ -448,21 +399,13 @@ test("legacy transcript snapshots remain queued without an unsequenced upload", 
   }
 });
 
-// --- SessionStart awaits the refresh before the first event -----------------
-
 test("prepareSession refreshes an expired token so the current session is authenticated", async () => {
-  const sessionStart = require("../scripts/session_start");
-
-  // Seed an expired license JWT — the state that used to leave the triggering
-  // session unauthenticated when the refresh ran fire-and-forget from afterLog.
+  const sessionStart = require("../../scripts/session_start");
   const expired = makeJwt({ exp: PAST });
   const fresh = makeJwt({ exp: FUTURE });
   credstore.setLicenseToken(expired);
   assert.equal(credstore.isLicenseTokenExpired(expired), true);
 
-  // Stub the /refresh round-trip. refreshExpiredJwt POSTs via global fetch and
-  // persists payload.token; with fetch mocked, getRefreshUrl's domain gate is
-  // irrelevant because nothing touches the network.
   const realFetch = global.fetch;
   let refreshCalls = 0;
   global.fetch = async () => {
@@ -489,9 +432,6 @@ test("prepareSession refreshes an expired token so the current session is authen
   );
   assert.equal(credstore.isLicenseTokenExpired(fresh), false);
 
-  // End-to-end: the current session's own SessionStart event now uploads
-  // authenticated with the freshly rotated token instead of being dropped as
-  // expired (the transferEventLog "drops an expired JWT" path above).
   let sawAuth = null;
   const srv = await startServer((req, res) => {
     sawAuth = req.headers["authorization"] || null;
@@ -513,7 +453,7 @@ test("prepareSession refreshes an expired token so the current session is authen
 });
 
 test("prepareSession is a no-op (no /refresh) when telemetry is globally disabled", async () => {
-  const sessionStart = require("../scripts/session_start");
+  const sessionStart = require("../../scripts/session_start");
   credstore.setLicenseToken(makeJwt({ exp: PAST }));
 
   const realFetch = global.fetch;
