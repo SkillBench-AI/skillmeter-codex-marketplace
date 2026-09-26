@@ -32,3 +32,22 @@ fixture, interrupted migration tests and a defined recovery path. Backend
 compatibility still requires the separately pinned collector/reader contract.
 Refer to the canonical Claude ADR 005 for the proposed shared compatibility
 contract. No version-retirement window is declared by this fixture list.
+
+## Persistent installation state
+
+Runtime queues use host-provided `PLUGIN_DATA` (or `CLAUDE_PLUGIN_DATA`). Without
+either variable, the runtime derives `plugins/data/<plugin>-<marketplace>` only
+from a recognized `plugins/cache/<marketplace>/<plugin>/<version>` layout with
+an existing data parent. It propagates the resolved absolute path to detached
+workers. It never falls back to writing inside the versioned installation.
+
+If a sibling cached version contains log state, inferred routing stops with
+`legacy-install-data-recovery-required`. Reconcile that state explicitly before
+selecting a data directory; merely pointing at an empty one can strand it. A
+source checkout or unrecognized layout requires an explicit `PLUGIN_DATA` path
+and otherwise stops with `persistent-plugin-data-unavailable`. An explicit path
+is an operator/host routing choice, not authorization to collect or replay data.
+
+`persistent-data-root.test.js` exercises the real logger in child processes,
+directory replacement, inherited data selection and the legacy-state hold using
+temporary fixtures. It does not exercise the desktop's actual install/update UI.

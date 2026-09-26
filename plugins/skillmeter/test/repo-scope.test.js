@@ -13,6 +13,7 @@ const { execFileSync } = require("child_process");
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "sk-scope-home-"));
 process.env.HOME = tmpHome;
 process.env.USERPROFILE = tmpHome;
+process.env.PLUGIN_DATA = path.join(tmpHome, "plugin-data");
 
 fs.mkdirSync(path.join(tmpHome, ".skillbench"), { recursive: true });
 fs.writeFileSync(

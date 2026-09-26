@@ -14,6 +14,7 @@ const http = require("http");
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "sk-auth-home-"));
 process.env.HOME = tmpHome;
 process.env.USERPROFILE = tmpHome;
+process.env.PLUGIN_DATA = path.join(tmpHome, "plugin-data");
 delete process.env.SKILLMETER_BACKEND_URL;
 delete process.env.SKILLMETER_ACTIVATE_URL;
 delete process.env.SKILLMETER_GITHUB_CLIENT_ID;

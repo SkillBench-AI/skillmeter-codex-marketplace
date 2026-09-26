@@ -12,6 +12,7 @@ const path = require("path");
 const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "sk-consent-home-"));
 process.env.HOME = tmpHome;
 process.env.USERPROFILE = tmpHome;
+process.env.PLUGIN_DATA = path.join(tmpHome, "plugin-data");
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");

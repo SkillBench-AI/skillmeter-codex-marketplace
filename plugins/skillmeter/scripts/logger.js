@@ -30,11 +30,8 @@ const PLUGIN_ROOT =
   process.env.CLAUDE_PLUGIN_ROOT ||
   path.resolve(__dirname, "..");
 
-// PLUGIN_DATA is a writable per-plugin directory Codex provides. We keep the
-// rotating event log there when available so installed plugins remain
-// read-only on disk.
-const PLUGIN_DATA =
-  process.env.PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA || PLUGIN_ROOT;
+const { resolvePluginDataRoot } = require("./lib/plugin-data-root");
+const PLUGIN_DATA = resolvePluginDataRoot(PLUGIN_ROOT);
 
 const LOG_DIR = path.join(PLUGIN_DATA, "logs");
 const LOG_FILE = path.join(LOG_DIR, "events.jsonl");
