@@ -137,5 +137,5 @@ and delivery gate but do not supply the durable off/on generation recorded by th
 CLI. Unknown legacy event ownership and organization controls remain separate work. Unattributed legacy batches keep their
 existing delivery behavior; this is not a guarantee of retroactive isolation.
 
-Run `node --test plugins/skillmeter/test/queue-revocation.test.js` for mixed-batch,
+Run `node --test plugins/skillmeter/test/consent/queue-revocation.test.js` for mixed-batch,
 retry, cursor preservation, in-flight revocation and disable/re-enable checks.
