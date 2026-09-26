@@ -29,7 +29,7 @@ function initializeFixture() {
   execFileSync("git", ["init", "--quiet", repo]);
   execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://github.com/synthetic/repo.git"]);
   fs.mkdirSync(path.join(root, ".skillbench"));
-  const claims = { sub: "synthetic-user", exp: 4102444800 };
+  const claims = { sub: "synthetic-tenant", broker_sub: "synthetic-user", aud: "https://synthetic.meter.skillbench.com", exp: 4102444800 };
   const jwt = "e30." + Buffer.from(JSON.stringify(claims)).toString("base64url") + ".fixture";
   fs.writeFileSync(path.join(root, ".skillbench/credentials.json"), JSON.stringify({
     device_id: "SYNTHETIC-DEVICE", hash_salt: "fixture-salt",
@@ -44,12 +44,18 @@ function initializeFixture() {
     if (record.payload?.cwd) record.payload.cwd = repo;
   }
   records.push(repeated, repeated);
-  fs.writeFileSync(source, records.map(JSON.stringify).join("\n") + "\n");
+  fs.writeFileSync(source, "");
+  return records;
 }
 
-if (!appendMode) initializeFixture();
+const initialRecords = !appendMode ? initializeFixture() : null;
 // Load after setting the isolated home and synthetic credentials.
 const logger = require("../scripts/logger");
+if (initialRecords) {
+  logger.saveTelemetryOptIn(repo, true);
+  logger.observeTranscriptConsent(source, repo);
+  fs.appendFileSync(source, initialRecords.map(JSON.stringify).join("\n") + "\n");
+}
 const stage = () => logger.stageTranscriptForUpload(source, { cwd: repo });
 const upload = file => logger.processPendingTranscript(file, "SYNTHETIC-DEVICE", url, 2000);
 const realFetch = global.fetch;
@@ -71,7 +77,11 @@ async function appendAndRecover() {
     attempts.push({ seq, reset, status: response.status });
     if (response.ok) {
       const bytes = zlib.gunzipSync(options.body);
-      expected = seq === reset ? bytes : Buffer.concat([expected, bytes]);
+      // The collector deduplicates stable continuation identities across appends.
+      const rows = (seq === reset ? bytes : Buffer.concat([expected, bytes]))
+        .toString("utf8").trim().split("\n").map(JSON.parse);
+      const unique = new Map(rows.map(record => [record.uuid, record]));
+      expected = Buffer.from([...unique.values()].map(JSON.stringify).join("\n") + "\n");
     }
     return response;
   };

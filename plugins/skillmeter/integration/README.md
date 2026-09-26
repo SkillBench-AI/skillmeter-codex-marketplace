@@ -10,6 +10,55 @@ Run with the pipeline's locked Python 3.14 environment (`moto[s3]`, boto3 and
 skillbench-preprocessor installed), Node >=20, and collector Go 1.25.5 dependencies.
 No Docker or real credentials are needed. The runner binds loopback ports only.
 
+### Pinned candidate gate
+
+From a clean plugin checkout, pin clean collector and pipeline checkouts, then run:
+
+```sh
+python3 -B plugins/skillmeter/integration/candidate_contract.py pin \
+  --collector /path/to/collector --pipeline /path/to/pipelines \
+  --manifest /tmp/candidate.json
+python3 -B plugins/skillmeter/integration/candidate_contract.py run \
+  --collector /path/to/collector --pipeline /path/to/pipelines \
+  --manifest /tmp/candidate.json --out /tmp/candidate-result.json \
+  --python /path/to/pipelines/.venv/bin/python --go /path/to/go
+```
+
+The manifest pins all three commit SHAs plus lockfile/fixture hashes. The command
+rejects dirty or changed checkouts, checks pipeline imports resolve to the selected
+tree, builds the Go bridge from source, and rechecks the pins after execution.
+Install dependencies separately using the repository lockfiles. Go uses existing
+local caches with downloads disabled. Python dependency versions are fingerprinted
+in the receipt; the runner does not certify that a reused environment matches its
+lockfile. It does not certify arbitrary ignored files or an untrusted runtime.
+
+Stage results cover transport/recovery, stored-record equality, normalization,
+scripted analysis and ingest schema. A failed run retains completed stages and
+labels later stages `not-run`. Missing evidence cannot pass, and a new run replaces
+an older receipt before validation. Exit 0 means every synthetic stage passed;
+1 means a gate failed; 2 means invalid invocation or an unavailable output path.
+Keep manifests and results outside the candidate checkouts.
+
+The run uses temporary fixture credentials/home, excludes inherited model/AWS
+credentials and blocks non-loopback Python connections. Output contains hashes,
+counts, revisions and reason codes. The fixture explicitly opts in before writing
+source records. Expectations cover sanitizer policy 3.1.1, opaque tool inputs,
+unknown text provenance and collector generation frames. Fixture objects are
+re-keyed inside the emulator to exercise date-gap recovery, so this is not a
+report-week membership test. Full runs require a compatible continuation reader.
+
+CI runs the runner's stdlib boundary tests. The full cross-repository command is
+ready for an integration job with approved checkout access; this PR does not add
+cross-repository credentials, a required status check or a production schedule.
+
+```sh
+python3 -B -m unittest discover -s plugins/skillmeter/integration -p 'test_candidate_contract.py' -v
+```
+
+### Direct debugging
+
+For lower-level debugging without pinned provenance, build and run directly:
+
 From the collector checkout, build the helper using the current collector source:
 
 ```sh
