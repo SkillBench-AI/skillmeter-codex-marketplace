@@ -76,10 +76,11 @@ Claude native-hook acceptance. Repository changes use its expected-revision chec
 
 Commands above are arguments to `node /absolute/new/canary/run.cjs`.
 Before changing policy/receiver state or measuring settled queues, the assistant
-checks that `data/logs/.drain-once.request` matches `.drain-once.completed` and
-`.drain-once.worker.lock` has cleared. Lock absence alone can mean the worker has not
-started. A pending capture hint is not proof of delivery. Record any required
-follow-up hook separately.
+checks that `.drain-once.worker.lock` has cleared and, when
+`data/logs/.drain-once.request` exists, that it matches `.drain-once.completed`.
+The first control change can precede any drain request. Lock absence alone can
+mean the worker has not started. A pending capture hint is not proof of delivery.
+Record any required follow-up hook separately.
 Do not count manual drains/replayed hook subprocesses as native dispatch. Older
 payloads after an ambiguous positive timestamp change stay held; that contract
 still needs engineering agreement. Concurrent/in-flight races and expiry remain
@@ -100,7 +101,9 @@ Publish only reviewed counts, digests, source labels and outcome codes. An
 intercepted 200 is not collector acceptance or dashboard evidence.
 
 Run `node run.cjs retire` to disable callbacks and remove only unchanged generated
-hook files. Verify the detached drain worker lock has cleared before archiving evidence.
+hook files. Before archiving evidence, verify the detached drain worker lock has
+cleared and, if a drain request marker exists, that the matching completion marker
+is present.
 The wrapper and allowed worker both stop at expiration/disabled checks; a request
 already in progress can finish. Controls after expiry require a newly prepared run.
 
