@@ -48,7 +48,7 @@ test("sk-telemetry disable --global sets the machine-wide pause and enable --glo
   assert.equal(run("sk-telemetry", ["disable", "--global"], dir).status, 0);
   assert.equal(readCredentials(dir).telemetry_disabled, true);
   assert.equal(run("sk-telemetry", ["enable", "--global"], dir).status, 0);
-  assert.equal(readCredentials(dir).telemetry_disabled, false);
+  assert.equal(readCredentials(dir).telemetry_disabled, undefined, "resume removes the flag");
 });
 
 test("signout drops the license and organizations, sets the global pause, and keeps the device identity", () => {
