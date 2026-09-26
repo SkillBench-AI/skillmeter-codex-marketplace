@@ -56,6 +56,11 @@ function createSharedPolicyStore({ file, observedFile }) {
   }
   const lockFile = `${file}.lock`;
 
+  function validMarker() {
+    try { return fs.lstatSync(observedFile).isFile() && fs.readFileSync(observedFile, "utf8") === "1\n"; }
+    catch { return false; }
+  }
+
   function observed(mark = false, onCreate = () => {}) {
     try {
       if (mark && !observed()) {
@@ -79,7 +84,12 @@ function createSharedPolicyStore({ file, observedFile }) {
       if (!fs.lstatSync(observedFile).isFile() || fs.readFileSync(observedFile, "utf8") !== "1\n") throw new Error("invalid marker");
       return true;
     } catch (err) {
-      if (!mark && err.code === "ENOENT" && policyPathIsAbsent(observedFile)) return false;
+      if (!mark && err.code === "ENOENT") {
+        if (policyPathIsAbsent(observedFile)) return false;
+        // Another process may have published the marker between the two
+        // lookups; a valid marker is an observation, not a broken path.
+        if (validMarker()) return true;
+      }
       throw error("POLICY_OBSERVATION_FAILED", "Cannot persist or read shared-policy observation; check client data permissions.");
     }
   }

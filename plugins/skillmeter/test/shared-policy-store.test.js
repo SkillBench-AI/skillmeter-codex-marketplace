@@ -319,3 +319,21 @@ test("a first write whose marker directory sync fails leaves no marker and can b
   assert.equal(f.store.readPolicy(), null);
   assert.equal(f.store.setRepositoryOverride(repo, false, { expectedRevision: null }).revision, 1);
 });
+
+test("a marker published by another process between lookups counts as observed", t => {
+  const f = fixture(t);
+  fs.mkdirSync(path.dirname(f.observedFile), { recursive: true });
+  const lstat = fs.lstatSync;
+  let raced = false;
+  t.mock.method(fs, "lstatSync", (target, ...rest) => {
+    if (!raced && path.resolve(String(target)) === path.resolve(f.observedFile)) {
+      raced = true;
+      const missing = Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      fs.writeFileSync(f.observedFile, "1\n"); // the other writer wins the race
+      throw missing;
+    }
+    return lstat(target, ...rest);
+  });
+  assert.equal(f.store.readPolicy().revision, 4);
+  assert.ok(raced);
+});
