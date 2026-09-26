@@ -102,5 +102,5 @@ test("a failing diagnostics write does not mask the capture error", t => {
   } finally {
     health.update = update;
   }
-  assert.equal(health.inspect(f.dir).capture.activeFailure, null, "nothing was recorded, and nothing else was thrown");
+  assert.equal(health.inspect(f.dir).capture, null, "no status was recorded, and nothing else was thrown");
 });
