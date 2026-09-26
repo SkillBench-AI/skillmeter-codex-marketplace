@@ -21,6 +21,9 @@ function createRepositoryQueue(root, salt, allowed, sharedPolicy = () => null) {
           (state.sharedPolicySeen !== undefined && typeof state.sharedPolicySeen !== "boolean") ||
           (state.sharedDeliveryToken !== undefined && typeof state.sharedDeliveryToken !== "string") ||
           (state.sharedRepoKey !== undefined && typeof state.sharedRepoKey !== "string")) throw new Error("invalid-shared-policy-routing");
+      if (state.previousRepositories !== undefined && (!Array.isArray(state.previousRepositories) ||
+          state.previousRepositories.some(entry => !entry || typeof entry.key !== "string" ||
+            typeof entry.token !== "string" || typeof entry.revoked !== "boolean"))) throw new Error("invalid-previous-repository-routing");
       return state;
     }
     catch (error) { if (error.code === "ENOENT") return null; throw error; }
@@ -36,19 +39,35 @@ function createRepositoryQueue(root, salt, allowed, sharedPolicy = () => null) {
   // Called under the routing lock. Only an observed OFF revokes payloads;
   // changed positive decisions hold older stamps without assuming an OFF.
   function synchronize(state) {
-    const policy = sharedPolicy(state.repoRoot, state.sharedRepoKey);
-    if (!policy || policy.stamp === null) return false;
-    // Once observed, deleting the shared policy is not permission to fall back
-    // to a legacy local grant. Hold existing data until policy is readable.
-    if (state.sharedPolicySeen && policy.reason === "absent") return false;
-    if (policy.key) state.sharedRepoKey = policy.key;
-    const firstSharedPolicy = !state.sharedPolicySeen && policy.reason !== "absent";
-    if (firstSharedPolicy) state.sharedPolicySeen = true;
-    if (state.sharedStamp === policy.stamp) return firstSharedPolicy;
-    if (policy.revoked) state.epoch = crypto.randomUUID();
-    state.sharedStamp = policy.stamp;
-    state.sharedDeliveryToken = crypto.randomUUID();
-    return true;
+    const policy = sharedPolicy(state.repoRoot);
+    let changed = false;
+    const effective = policy?.key ? policy : sharedPolicy(state.repoRoot, state.sharedRepoKey);
+    // Deleting an observed policy cannot restore a legacy local grant.
+    if (effective && effective.stamp !== null && !(state.sharedPolicySeen && effective.reason === "absent")) {
+      if (!state.sharedPolicySeen && effective.reason !== "absent") {
+        state.sharedPolicySeen = true;
+        changed = true;
+      }
+      if (state.sharedStamp !== effective.stamp || (effective.key && effective.key !== state.sharedRepoKey)) {
+        // Keep the attribution of held payloads, including older positive
+        // decisions, when a checkout is reused for another repository.
+        if (state.sharedRepoKey && state.sharedDeliveryToken) {
+          state.previousRepositories ||= [];
+          state.previousRepositories.push({ key: state.sharedRepoKey, token: state.sharedDeliveryToken, revoked: false });
+        }
+        if (effective.key) state.sharedRepoKey = effective.key;
+        state.sharedStamp = effective.stamp;
+        state.sharedDeliveryToken = crypto.randomUUID();
+        changed = true;
+      }
+    }
+    for (const entry of state.previousRepositories || []) {
+      if (!entry.revoked && sharedPolicy(state.repoRoot, entry.key)?.revoked) {
+        entry.revoked = true;
+        changed = true;
+      }
+    }
+    return changed;
   }
   function current(id) {
     const original = read(id);
@@ -94,7 +113,10 @@ function createRepositoryQueue(root, salt, allowed, sharedPolicy = () => null) {
     return state ? { epoch: state.epoch, sharedStamp: state.sharedDeliveryToken } : undefined;
   }
   function revokedScope(scope) {
-    return (scope.queueEpoch || 0) !== epoch(scope.repoRoot);
+    if (!fs.existsSync(index)) return false;
+    const state = current(key(scope.repoRoot));
+    return (scope.queueEpoch || 0) !== (state?.epoch || 0) ||
+      !!state?.previousRepositories?.some(entry => entry.token === scope.sharedStamp && entry.revoked);
   }
   // Unknown legacy rows retain their existing behavior; do not infer a repo
   // from a session ID. New indexed rows with missing routing state are held.
@@ -114,6 +136,9 @@ function createRepositoryQueue(root, salt, allowed, sharedPolicy = () => null) {
         const cwd = state.directories[record.data.cwd];
         if (!cwd) blocked = true;
         else if ((record._queue?.epoch || 0) !== state.epoch) {
+          dropped = true;
+          continue;
+        } else if (state.previousRepositories?.some(entry => entry.token === record._queue?.sharedStamp && entry.revoked)) {
           dropped = true;
           continue;
         } else if (authorize && (record._queue?.sharedStamp !== state.sharedDeliveryToken) &&
