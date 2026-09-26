@@ -2,6 +2,7 @@
 
 const fs = require("node:fs");
 const crypto = require("node:crypto");
+const { sanitizeLine } = require("../sanitizer");
 
 // References are confined to earlier eligible records in this source and reset
 // generation. A missing match retains the full entry. This is context deduplication,
@@ -59,20 +60,21 @@ function createProjection(fd, { salt, id, generation, consent, maxRecord }) {
     }
     if (pending.length) throw new Error("malformed-complete-record");
   }
-  return (record, offset) => {
+  return (record, offset, sanitized = null) => {
     if (record.type !== "compacted" || !record.payload || typeof record.payload !== "object") return record;
     scanThrough(offset);
+    sanitized ||= sanitizeLine(record, salt);
     const payload = { ...record.payload }, fields = {};
     for (const field of HISTORY_FIELDS) {
       if (!Array.isArray(payload[field])) continue;
       let omittedEntries = 0, omittedBytes = 0;
-      payload[field] = payload[field].map(entry => {
+      payload[field] = payload[field].map((entry, i) => {
         const match = entries.get(mac(salt, canonical(entry)));
         if (!match) return entry;
         const reference = { type: "skillmeter_compaction_reference", source_uuid: match.uuid, pointer: match.pointer };
         const bytes = Buffer.byteLength(JSON.stringify(entry));
         // Replacing small entries would increase transport cost.
-        if (bytes <= Buffer.byteLength(JSON.stringify(reference))) return entry;
+        if (Buffer.byteLength(JSON.stringify(sanitized.payload[field][i])) <= Buffer.byteLength(JSON.stringify(reference))) return entry;
         omittedEntries++; omittedBytes += bytes;
         return reference;
       });

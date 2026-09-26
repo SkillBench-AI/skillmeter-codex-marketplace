@@ -324,10 +324,22 @@ function stage(root, source, scope, salt, options = {}) {
             // Collector merges on UUID. Identity uses raw position/content before
             // sanitization, preserving identical authored records and redaction collisions.
             const uuid = hmac(salt, `${id}\0${generation}\0${committed}\0${hmac(salt, raw)}`);
-            const sanitized = sanitizeLine(projectCompaction(record, committed), salt);
-            if (sanitized.uuid) sanitized._codex_source_uuid = sanitized.uuid;
-            sanitized.uuid = uuid;
-            const serialized = JSON.stringify(sanitized) + "\n";
+            const sanitized = sanitizeLine(record, salt);
+            const serialize = value => {
+              if (value.uuid) value._codex_source_uuid = value.uuid;
+              value.uuid = uuid;
+              return JSON.stringify(value) + "\n";
+            };
+            let serialized = serialize(sanitized);
+            if (record.type === "compacted") {
+              // Keep every already-deliverable representation unchanged. Gzip
+              // can compress repeated inline content better than unique refs.
+              try { encodeChunks([serialized], options.maxEnvelope, continuation); }
+              catch (error) {
+                if (error.message !== "oversized-single-record") throw error;
+                serialized = serialize(sanitizeLine(projectCompaction(record, committed, sanitized), salt));
+              }
+            }
             if (Buffer.byteLength(serialized) >= MAX_RECORD) throw new Error("oversized-single-record");
             lines.push(serialized);
           }

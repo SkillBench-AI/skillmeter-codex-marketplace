@@ -93,3 +93,25 @@ test("unmatched oversized compaction and authored records remain recoverable in 
     assert.equal(fs.existsSync(path.join(queue.queueDirectories(f.queueRoot)[0], "cursor.json")), false);
   }
 });
+
+test("already deliverable compaction stays inline, including opaque tool input", t => {
+  const f = fixture(t);
+  const tool = { type: "custom_tool_call", input: crypto.randomBytes(8000).toString("base64") };
+  fs.writeFileSync(f.source, line({ type: "response_item", payload: tool }) + line({ type: "compacted", payload: { guardian_history: [tool] } }));
+  const records = f.read(f.stage().files);
+  assert.equal(records[1]._codex_compaction_projection, undefined);
+  assert.equal(records[1].payload.guardian_history[0].type, "custom_tool_call");
+  assert.ok(records[1].payload.guardian_history[0].input.length < 100);
+});
+
+test("projection retains entries whose sanitized form is smaller than a reference", t => {
+  const f = fixture(t);
+  const tool = { type: "custom_tool_call", input: crypto.randomBytes(8000).toString("base64") };
+  const before = [{ type: "response_item", payload: tool }, ...f.before];
+  const compacted = { ...f.compacted, payload: { ...f.compacted.payload, guardian_history: [tool, ...f.compacted.payload.guardian_history] } };
+  fs.writeFileSync(f.source, before.map(line).join("") + line(compacted));
+  const records = f.read(f.stage().files), last = records.at(-1);
+  assert.equal(last._codex_compaction_projection.fields.guardian_history.referenced_entries, 8);
+  assert.equal(last.payload.guardian_history[0].type, "custom_tool_call");
+  assert.ok(last.payload.guardian_history[0].input.length < 100);
+});
