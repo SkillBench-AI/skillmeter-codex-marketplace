@@ -304,3 +304,18 @@ test("publishing the policy and the observation marker syncs their parent direct
   assert.ok(synced.includes(path.resolve(path.dirname(f.file))), "policy directory synced");
   assert.ok(synced.includes(path.resolve(path.dirname(f.observedFile))), "marker directory synced");
 });
+
+test("a first write whose marker directory sync fails leaves no marker and can be retried", t => {
+  const f = fixture(t, null);
+  const open = fs.openSync, markerDir = path.resolve(path.dirname(f.observedFile));
+  const failing = t.mock.method(fs, "openSync", (target, flags, ...rest) => {
+    if (flags === "r" && path.resolve(String(target)) === markerDir) throw Object.assign(new Error("synthetic sync failure"), { code: "EIO" });
+    return open(target, flags, ...rest);
+  });
+  assert.throws(() => f.store.setRepositoryOverride(repo, false, { expectedRevision: null }), { code: "POLICY_OBSERVATION_FAILED" });
+  assert.equal(fs.existsSync(f.observedFile), false);
+  assert.equal(fs.existsSync(f.file), false);
+  failing.mock.restore();
+  assert.equal(f.store.readPolicy(), null);
+  assert.equal(f.store.setRepositoryOverride(repo, false, { expectedRevision: null }).revision, 1);
+});

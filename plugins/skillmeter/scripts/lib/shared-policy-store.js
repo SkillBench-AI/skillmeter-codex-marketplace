@@ -66,8 +66,10 @@ function createSharedPolicyStore({ file, observedFile }) {
           fd = fs.openSync(temp, "wx", 0o600);
           fs.writeFileSync(fd, "1\n"); fs.fsyncSync(fd);
           fs.linkSync(temp, observedFile);
-          syncDir(path.dirname(observedFile));
+          // Report the new marker before syncing, so a failed sync can still be
+          // rolled back by a first write that owns it.
           onCreate(fs.fstatSync(fd));
+          syncDir(path.dirname(observedFile));
         } catch (err) { if (err.code !== "EEXIST") throw err; }
         finally {
           if (fd !== undefined) fs.closeSync(fd);
@@ -152,10 +154,12 @@ function createSharedPolicyStore({ file, observedFile }) {
       policy.revision++;
       validatePolicy(policy);
       let createdMarker;
-      observed(true, stat => { createdMarker = stat; });
       const temp = `${file}.tmp.${process.pid}.${randomUUID()}`;
       let fd;
       try {
+        // Inside the rollback scope: a marker published by this attempt is
+        // removed if the attempt fails before the policy exists.
+        observed(true, stat => { createdMarker = stat; });
         fd = fs.openSync(temp, "wx", 0o600);
         fs.writeFileSync(fd, JSON.stringify(policy, null, 2) + "\n");
         fs.fsyncSync(fd); fs.closeSync(fd); fd = undefined;
