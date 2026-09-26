@@ -3,6 +3,7 @@
 const fs = require("fs");
 const os = require("os");
 const path = require("path");
+const { validCount } = require("./consent-counters");
 
 // ENOENT can mean a missing file or an unresolved link in any parent path.
 function policyPathIsAbsent(file) {
@@ -33,7 +34,7 @@ function sharedPolicyFile() {
 // organization and repository grants can replace a required local opt-in.
 function evaluateSharedRepositoryPolicy(scope, shared) {
   const key = scope.repoKey;
-  if (shared.reason === "absent") return { key, allowed: true, reason: "absent", stamp: key ? JSON.stringify([key, null]) : null };
+  if (shared.reason === "absent") return { key, allowed: true, reason: "absent", revocations: { org: 0, repo: 0 }, stamp: key ? JSON.stringify([key, null]) : null };
   if (!scope.allowed || !key) return { allowed: false, reason: "scope_unavailable", stamp: null };
   if (!shared.policy) return { allowed: false, reason: "invalid", stamp: null };
   const { organizations, repositories } = shared.policy;
@@ -42,6 +43,7 @@ function evaluateSharedRepositoryPolicy(scope, shared) {
   const organization = Object.hasOwn(organizations, scope.remoteOrg) ? organizations[scope.remoteOrg] : null;
   const repository = Object.hasOwn(repositories, key) ? repositories[key] : null;
   const valid = record => object(record) && typeof record.enabled === "boolean" &&
+    (record.revocations === undefined || validCount(record.revocations)) &&
     (record.decided_at === undefined || (Number.isSafeInteger(record.decided_at) && record.decided_at >= 0));
   const revoked = (valid(organization) && !organization.enabled) || (valid(repository) && !repository.enabled);
   // Preserve a known OFF even when the other choice is absent.
@@ -60,6 +62,9 @@ function evaluateSharedRepositoryPolicy(scope, shared) {
     key,
     allowed: !revoked,
     revoked,
+    revocations: valid(organization) && valid(repository)
+      ? { org: organization.revocations ?? 0, repo: repository.revocations ?? 0 } : null,
+    acknowledgement: JSON.stringify([organization?.consent_version ?? null, repository?.consent_version ?? null]),
     acknowledged: !revoked && organization?.consent_version === 2 && repository?.consent_version === 2,
     reason: revoked ? "shared_opt_out" : "enabled",
     stamp: JSON.stringify([key, recordStamp(organization), recordStamp(repository)]),

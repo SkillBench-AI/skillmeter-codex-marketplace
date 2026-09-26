@@ -49,10 +49,15 @@ test("shared repository OFF purges already queued repository payloads", t => {
   `);
 });
 
-test("an unobserved shared OFF/ON cycle holds old payloads without restoring delivery", t => {
+test("legacy random-token queues stay held across an unobserved shared OFF/ON cycle", t => {
   fixture(t).run(`
     writePolicy(policy); fs.writeFileSync(source,''); logger.observeTranscriptConsent(source,repo);
     fs.appendFileSync(source,line('old authorization')); const old=stage(); assert.ok(old);
+    const routingFile=path.join(logger.LOG_DIR,'repository-routing',logger.hashHmac(repo,'fixture-salt')+'.json');
+    const legacyRouting=JSON.parse(fs.readFileSync(routingFile));
+    delete legacyRouting.revocationsSeen;
+    fs.writeFileSync(routingFile,JSON.stringify(legacyRouting));
+
     writePolicy({...policy,revision:2,repositories:{'github.com/acme/widgets':{enabled:false,decided_at:2}}});
     fs.appendFileSync(source,line('disabled content'));
     writePolicy({...policy,revision:3,repositories:{'github.com/acme/widgets':{enabled:true,decided_at:3}}});
@@ -66,10 +71,15 @@ test("an unobserved shared OFF/ON cycle holds old payloads without restoring del
   `);
 });
 
-test("a changed positive organization decision holds earlier queued data", t => {
+test("a changed positive organization decision holds legacy random-token data", t => {
   fixture(t).run(`
     writePolicy(policy); fs.writeFileSync(source,''); logger.observeTranscriptConsent(source,repo);
     fs.appendFileSync(source,line('old')); const old=stage(); assert.ok(old);
+    const routingFile=path.join(logger.LOG_DIR,'repository-routing',logger.hashHmac(repo,'fixture-salt')+'.json');
+    const legacyRouting=JSON.parse(fs.readFileSync(routingFile));
+    delete legacyRouting.revocationsSeen;
+    fs.writeFileSync(routingFile,JSON.stringify(legacyRouting));
+
     writePolicy({...policy,organizations:{acme:{enabled:true,decided_at:3}}});
     await logger.processPendingTranscript(old,'SYNTHETIC','https://collector.invalid',1000);
     assert.equal(fs.existsSync(old),true);
@@ -197,7 +207,7 @@ test("native hook routing records a shared decision locally and removes it from 
   `);
 });
 
-test("a changed positive decision holds old events without blocking a different repository", t => {
+test("a changed positive decision holds legacy events without blocking a different repository", t => {
   fixture(t).run(`
     const b=path.join(path.dirname(repo),'b'); fs.mkdirSync(path.join(b,'.git'),{recursive:true});
     fs.writeFileSync(path.join(b,'.git/config'),'[remote "origin"]\\nurl = https://github.com/acme/other.git\\n');
@@ -205,6 +215,10 @@ test("a changed positive decision holds old events without blocking a different 
     logger.saveTelemetryOptIn(repo,true); logger.saveTelemetryOptIn(b,true);
     for(const [cwd,name] of [[repo,'a'],[b,'b']]) logger.logInfo('Stop',name,{cwd:logger.hashHmac(cwd,'fixture-salt'),repo_root:logger.hashHmac(cwd,'fixture-salt')},'SYNTHETIC');
     const file=logger.sealEventLog();
+    const routingFile=path.join(logger.LOG_DIR,'repository-routing',logger.hashHmac(repo,'fixture-salt')+'.json');
+    const legacyRouting=JSON.parse(fs.readFileSync(routingFile));
+    delete legacyRouting.revocationsSeen;
+    fs.writeFileSync(routingFile,JSON.stringify(legacyRouting));
     writePolicy({...policy,repositories:{...policy.repositories,'github.com/acme/widgets':{enabled:true,decided_at:3}}});
     const received=[]; global.fetch=async(_,o)=>{received.push(require('node:zlib').gunzipSync(o.body).toString());return {ok:true};};
     await logger.processSealedBatch(file,'https://collector.invalid',1000);
@@ -242,11 +256,16 @@ test("shared OFF purges indexed transcript payloads after the checkout was remov
   `);
 });
 
-test("restoring an older shared policy cannot release held events from its old authorization", t => {
+test("restoring an older shared policy cannot release ambiguous legacy events", t => {
   fixture(t).run(`
     writePolicy(policy); logger.saveTelemetryOptIn(repo,true);
     logger.logInfo('Stop','old',{cwd:logger.hashHmac(repo,'fixture-salt'),repo_root:logger.hashHmac(repo,'fixture-salt')},'SYNTHETIC');
     const file=logger.sealEventLog(), before=fs.readFileSync(file);
+    const routingFile=path.join(logger.LOG_DIR,'repository-routing',logger.hashHmac(repo,'fixture-salt')+'.json');
+    const legacyRouting=JSON.parse(fs.readFileSync(routingFile));
+    delete legacyRouting.revocationsSeen;
+    fs.writeFileSync(routingFile,JSON.stringify(legacyRouting));
+
     writePolicy({...policy,repositories:{'github.com/acme/widgets':{enabled:true,decided_at:2}}});
     assert.equal(await logger.processSealedBatch(file,'https://collector.invalid',1000),'held');
     writePolicy(policy);

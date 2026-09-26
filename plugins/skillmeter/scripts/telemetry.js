@@ -66,6 +66,7 @@ function capturePolicyLine() {
   const scope = getRepoScopeDecision(cwd);
   const sharedRepository = getRepositoryPolicyDecision(cwd);
   if (sharedRepository.reason === "shared_policy_missing") return "paused; previously observed shared policy is missing";
+  if (sharedRepository.reason === "shared_counter_rollback") return "paused; shared revocation counters are older than this client observed";
   if (sharedRepository.reason === "routing_unavailable") return "paused; repository routing unavailable";
   if (scope.allowed && sharedRepository.revoked) return "disabled by shared organization or repository policy";
   if (scope.allowed && !sharedRepository.allowed) return "paused; shared organization and repository choices must be valid and enabled";

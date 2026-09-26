@@ -4,6 +4,7 @@ const fs = require("fs");
 const path = require("path");
 const { randomUUID } = require("crypto");
 const { policyPathIsAbsent } = require("./shared-telemetry-policy");
+const { validCount } = require("./consent-counters");
 
 // Schema, key normalization, lock name and atomic writes follow Claude's
 // telemetry-store.js. Unlike its legacy reader, ordinary writes never repair
@@ -13,6 +14,7 @@ const object = value => value !== null && typeof value === "object" && !Array.is
 const integer = value => Number.isSafeInteger(value) && value >= 0;
 const record = value => object(value) && typeof value.enabled === "boolean" &&
   (value.decided_at === undefined || integer(value.decided_at)) &&
+  (value.revocations === undefined || validCount(value.revocations)) &&
   (value.consent_version === undefined || [1, 2].includes(value.consent_version));
 
 function error(code, message) {
@@ -184,6 +186,7 @@ function createSharedPolicyStore({ file, observedFile }) {
     return mutate(policy => {
       policy.repositories[key] = {
         ...decision(enabled, policy.repositories[key]),
+        revocations: (policy.repositories[key]?.revocations ?? 0) + (enabled ? 0 : 1),
         ...(enabled === true && options?.acknowledged === true ? { consent_version: 2 } : {}),
       };
     }, options, options?.onCommitted);

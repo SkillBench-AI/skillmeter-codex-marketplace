@@ -1586,6 +1586,9 @@ function getRepositoryPolicyDecision(cwd) {
   const scope = getRepoScopeDecision(cwd);
   const shared = readSharedRepositoryPolicy(scope);
   try {
+    if (repositoryQueue.counterHeld(scope.repoRoot)) {
+      return { ...shared, allowed: false, reason: "shared_counter_rollback" };
+    }
     if (shared.reason === "absent" && repositoryQueue.requiresSharedPolicy(scope.repoRoot)) {
       return { ...shared, allowed: false, reason: "shared_policy_missing" };
     }

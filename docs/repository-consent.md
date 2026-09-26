@@ -97,12 +97,39 @@ aliases and Git `insteadOf` rewrites are supported. Codex retains its existing
 stricter rejection of empty/unreadable `commondir`; long-lived processes reload
 remote-resolution configuration so a changed alias is not cached as permission.
 
-Only an observed OFF deletes queued data. A changed positive decision may be an
-unobserved OFF/ON cycle or just reaffirmation: older stamped payloads are held,
-not uploaded or deleted. Capture starts a new consent interval; resets cannot
-reconstruct the uncertain prefix. Unrelated repository decisions do not affect
-this queue. Requests already in flight can finish. Background drains and blocked
-hooks reconcile revocations, including quarantined and active event data.
+Organization and repository records may carry a non-negative safe integer
+`revocations` counter; absence means zero. Every repository OFF write increments
+its counter, including repeated OFF; ON preserves it. A counter increase purges
+previously authorized payloads even if the client missed the OFF/ON transition.
+Equal counters permit delivery after timestamp reaffirmation. Lower counters
+hold capture and delivery until they catch up. Invalid counters hold without
+rewriting the policy. Global pause does not increment a revocation counter.
+
+Queue generations retain the counters observed at capture in the private routing
+index. If one counter rises while another falls, revoke the old generation and
+retain both highest observations; capture stays held until both catch up. Remote
+identity and scope acknowledgement changes still create separate generations.
+Explicit OFF remains a revocation even for writers that omit counters. Payload
+removal preserves cursors, so revoked content cannot return in a reset.
+
+Existing random-token queues without a counter observation remain held on
+upgrade. They are not silently assigned zero, and a later counter increase alone
+cannot prove which data they revoke. An explicit OFF still purges them. Automatic
+migration of these ambiguous queues remains unresolved. Queues created by the
+counter-aware client before the first shared policy do have a zero observation
+and can deliver after zero-counter adoption, subject to the normal consent gates.
+
+Capture intervals remain conservative: a changed decision boundary excludes the
+uncertain prefix even when counters allow previously queued data to deliver.
+Requests already in flight can finish. Background drains and blocked hooks
+reconcile revocations, including quarantined and active event data.
+
+The counter contract follows the proposed
+[canonical ADR 004 amendment](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/pull/149).
+The Codex-specific boundaries are the private routing index, retained component
+high-water marks and conservative handling of pre-counter queue generations.
+Run `node --test compatibility/revocation-generation.cjs` for counter regressions;
+these also run in the default test suite.
 
 `consent-set` writes through the shared store lock and expected revision; it
 preserves local settings and never authorizes an organization. Local ON is not

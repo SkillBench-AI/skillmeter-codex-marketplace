@@ -6,6 +6,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
 const queue = require("./transcript-delta");
+const { validCounters, compareCounters } = require("./consent-counters");
 
 function createRepositoryQueue(root, salt, allowed, sharedPolicy = () => null) {
   const index = path.join(root, "repository-routing");
@@ -21,9 +22,14 @@ function createRepositoryQueue(root, salt, allowed, sharedPolicy = () => null) {
           (state.sharedPolicySeen !== undefined && typeof state.sharedPolicySeen !== "boolean") ||
           (state.sharedDeliveryToken !== undefined && typeof state.sharedDeliveryToken !== "string") ||
           (state.sharedRepoKey !== undefined && typeof state.sharedRepoKey !== "string")) throw new Error("invalid-shared-policy-routing");
+      if ((state.revocationsSeen !== undefined && !validCounters(state.revocationsSeen)) ||
+          (state.sharedCounterHeld !== undefined && typeof state.sharedCounterHeld !== "boolean") ||
+          (state.sharedRevoked !== undefined && typeof state.sharedRevoked !== "boolean") ||
+          (state.sharedAcknowledgement !== undefined && typeof state.sharedAcknowledgement !== "string")) throw new Error("invalid-counter-routing");
       if (state.previousRepositories !== undefined && (!Array.isArray(state.previousRepositories) ||
           state.previousRepositories.some(entry => !entry || typeof entry.key !== "string" ||
-            typeof entry.token !== "string" || typeof entry.revoked !== "boolean"))) throw new Error("invalid-previous-repository-routing");
+            typeof entry.token !== "string" || typeof entry.revoked !== "boolean" ||
+            (entry.revocationsSeen !== undefined && !validCounters(entry.revocationsSeen))))) throw new Error("invalid-previous-repository-routing");
       return state;
     }
     catch (error) { if (error.code === "ENOENT") return null; throw error; }
@@ -36,8 +42,8 @@ function createRepositoryQueue(root, salt, allowed, sharedPolicy = () => null) {
     }
     throw new Error("repository-routing-busy");
   }
-  // Called under the routing lock. Only an observed OFF revokes payloads;
-  // changed positive decisions hold older stamps without assuming an OFF.
+  // Called under the routing lock. Tokens identify immutable queue generations;
+  // only a counter increase or explicit OFF revokes an existing generation.
   function synchronize(state) {
     const policy = sharedPolicy(state.repoRoot);
     let changed = false;
@@ -48,21 +54,43 @@ function createRepositoryQueue(root, salt, allowed, sharedPolicy = () => null) {
         state.sharedPolicySeen = true;
         changed = true;
       }
-      if (state.sharedStamp !== effective.stamp || (effective.key && effective.key !== state.sharedRepoKey)) {
-        // Keep the attribution of held payloads, including older positive
-        // decisions, when a checkout is reused for another repository.
+      const changedRepository = effective.key && effective.key !== state.sharedRepoKey;
+      const counters = effective.revocations;
+      const comparison = validCounters(counters) && validCounters(state.revocationsSeen)
+        ? compareCounters(counters, state.revocationsSeen) : null;
+      const adoptCounters = validCounters(counters) && !validCounters(state.revocationsSeen);
+      const acknowledgement = effective.acknowledgement ?? "[null,null]";
+      const changedAcknowledgement = state.sharedAcknowledgement !== undefined && state.sharedAcknowledgement !== acknowledgement;
+      if (!state.sharedDeliveryToken || changedRepository || adoptCounters || changedAcknowledgement || comparison === "higher" ||
+          (effective.revoked === true && !state.sharedRevoked)) {
+        // Old random-token rows lack a proven counter. Keep their attribution
+        // held rather than silently interpreting them as zero on upgrade.
         if (state.sharedRepoKey && state.sharedDeliveryToken) {
           state.previousRepositories ||= [];
-          state.previousRepositories.push({ key: state.sharedRepoKey, token: state.sharedDeliveryToken, revoked: false });
+          state.previousRepositories.push({ key: state.sharedRepoKey, token: state.sharedDeliveryToken,
+            revoked: !changedRepository && (comparison === "higher" || effective.revoked === true),
+            ...(validCounters(state.revocationsSeen) ? { revocationsSeen: state.revocationsSeen } : {}) });
         }
         if (effective.key) state.sharedRepoKey = effective.key;
-        state.sharedStamp = effective.stamp;
         state.sharedDeliveryToken = crypto.randomUUID();
+        if (validCounters(counters)) {
+          const previous = !changedRepository && state.revocationsSeen;
+          // Never forget a higher observation when only one dimension advances.
+          state.revocationsSeen = { org: Math.max(previous?.org ?? 0, counters.org), repo: Math.max(previous?.repo ?? 0, counters.repo) };
+        } else if (changedRepository) delete state.revocationsSeen;
         changed = true;
       }
+      if (state.sharedAcknowledgement !== acknowledgement) { state.sharedAcknowledgement = acknowledgement; changed = true; }
+      if (state.sharedRevoked !== Boolean(effective.revoked)) { state.sharedRevoked = Boolean(effective.revoked); changed = true; }
+      const held = validCounters(counters) && validCounters(state.revocationsSeen) &&
+        (counters.org < state.revocationsSeen.org || counters.repo < state.revocationsSeen.repo);
+      if (state.sharedCounterHeld !== held) { state.sharedCounterHeld = held; changed = true; }
+      if (state.sharedStamp !== effective.stamp) { state.sharedStamp = effective.stamp; changed = true; }
     }
     for (const entry of state.previousRepositories || []) {
-      if (!entry.revoked && sharedPolicy(state.repoRoot, entry.key)?.revoked) {
+      const previous = sharedPolicy(state.repoRoot, entry.key);
+      if (!entry.revoked && (previous?.revoked || (validCounters(previous?.revocations) &&
+          validCounters(entry.revocationsSeen) && compareCounters(previous.revocations, entry.revocationsSeen) === "higher"))) {
         entry.revoked = true;
         changed = true;
       }
@@ -141,6 +169,8 @@ function createRepositoryQueue(root, salt, allowed, sharedPolicy = () => null) {
         } else if (state.previousRepositories?.some(entry => entry.token === record._queue?.sharedStamp && entry.revoked)) {
           dropped = true;
           continue;
+        } else if (authorize && state.sharedCounterHeld) {
+          blocked = true;
         } else if (authorize && (record._queue?.sharedStamp !== state.sharedDeliveryToken) &&
                    (record._queue?.sharedStamp !== undefined || state.sharedPolicySeen)) {
           blocked = true;
@@ -196,11 +226,14 @@ function createRepositoryQueue(root, salt, allowed, sharedPolicy = () => null) {
     if (!repoRoot || !fs.existsSync(index)) return false;
     return read(key(repoRoot))?.sharedPolicySeen === true;
   }
+  function counterHeld(repoRoot) {
+    return Boolean(repoRoot && fs.existsSync(index) && current(key(repoRoot))?.sharedCounterHeld);
+  }
   function hasRevoked(file) {
     if (!fs.existsSync(file)) return false;
     const bytes = fs.readFileSync(file);
     return filter(bytes, false).kept !== bytes.toString();
   }
-  return { register, epoch, eventRoute, revokedScope, pruneFile, purgeEvents, requiresSharedPolicy, hasRevoked };
+  return { register, epoch, eventRoute, revokedScope, pruneFile, purgeEvents, requiresSharedPolicy, counterHeld, hasRevoked };
 }
 module.exports = { createRepositoryQueue };
