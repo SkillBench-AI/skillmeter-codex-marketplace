@@ -1,8 +1,8 @@
 # Collection State Visibility: Notices, Monitor Lifecycle, and the Local Status Record
 
-**Status:** Adopted by reference, pending the canonical decision. Canonical
-text: [Claude Code plugin ADR 003](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/seungho/inf-174-adr-003-collection-state-visibility/docs/adr/003-collection-state-visibility.md)
-(Proposed, [PR #111](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/pull/111); the link moves to `main` when it lands).
+**Status:** Adopted by reference. Canonical text:
+[Claude Code plugin ADR 003](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/main/docs/adr/003-collection-state-visibility.md)
+(Accepted 2026-09-25, [PR #111](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/pull/111)).
 
 ## What is the same
 
@@ -29,7 +29,8 @@ every user-facing line this plugin prints.
 
 ## Open items
 
-- Write the local status record in the same shape as the Claude plugin once
-  ADR 003 is accepted, so a shared status view can read both.
+- Write the local status record in the same shape as the Claude plugin's, so
+  a shared status view can read both; until then `status` recomputes its
+  answer on every call.
 - Exit the retry daemon on a blocked state instead of running out the
   lifetime.
