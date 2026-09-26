@@ -2,7 +2,7 @@
 
 // M0 compatibility fixture. No credentials, local sessions, or network access.
 // Strict red reproduction:
-// SKILLBENCH_M0_STRICT=1 node --test plugins/skillmeter/test/transcript-compatibility.test.js
+// SKILLBENCH_M0_STRICT=1 node --test plugins/skillmeter/test/transport/collector-contract.test.js
 const { test, after } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -21,7 +21,7 @@ process.env.HOME = dataDir;
 process.env.SKILLMETER_STATE_DIR = path.join(dataDir, ".skillbench");
 const previousData = process.env.PLUGIN_DATA;
 process.env.PLUGIN_DATA = dataDir;
-const credentialModule = require.resolve("../scripts/credstore");
+const credentialModule = require.resolve("../../scripts/credstore");
 const previousCredentials = require.cache[credentialModule];
 require.cache[credentialModule] = {
   id: credentialModule,
@@ -38,7 +38,7 @@ require.cache[credentialModule] = {
     setLicenseToken: () => assert.fail("Fixture must never change authentication"),
   },
 };
-const logger = require("../scripts/logger");
+const logger = require("../../scripts/logger");
 logger.saveTelemetryOptIn(dataDir, true);
 const realFetch = global.fetch;
 
@@ -65,7 +65,7 @@ test("real staged request satisfies the collector chunk-header contract", async 
     return { ok: headers.has("x-chunk-seq"), status: headers.has("x-chunk-seq") ? 200 : 400 };
   };
   const fixture = path.join(dataDir, "codex-m0.jsonl");
-  const fixtureRecords = fs.readFileSync(path.join(__dirname, "fixtures", "codex-m0.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
+  const fixtureRecords = fs.readFileSync(path.join(__dirname, "../fixtures", "codex-m0.jsonl"), "utf8").trim().split("\n").map(JSON.parse);
   for (const record of fixtureRecords) if (record.payload?.cwd) record.payload.cwd = dataDir;
   fs.writeFileSync(fixture, "");
   logger.observeTranscriptConsent(fixture, dataDir);
