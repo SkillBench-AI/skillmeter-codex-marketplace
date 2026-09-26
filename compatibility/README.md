@@ -28,7 +28,7 @@ npm run check
 ## Final candidate gate
 
 `.github/scripts/compatibility-gate.cjs` combines the mixed-client and backend
-receipts. The caller writes `expected-candidate.json` before starting tests:
+and runtime-fault receipts. The caller writes `expected-candidate.json` before starting tests:
 
 ```json
 {
@@ -50,7 +50,8 @@ claimed test result. The hosted workflow does so before checkout and testing.
 ```sh
 node .github/scripts/compatibility-gate.cjs \
   /protected/expected-candidate.json /protected/mixed-auth.json \
-  /protected/candidate-result.json /protected/compatibility-acceptance.json
+  /protected/candidate-result.json /protected/runtime-faults.json \
+  /protected/compatibility-acceptance.json
 ```
 
 The output must be outside the checkout and distinct from all inputs. The gate
@@ -110,3 +111,29 @@ Missing, empty or malformed plural organization claims hold that scope;
 `org.login` is a broker tenant slug and cannot authorize a GitHub repository. A fresh
 broker sign-in without an existing Codex scope remains held; these tests do not
 claim full broker onboarding support or authorize collection.
+
+## Deliberate runtime faults
+
+Run the mutation gate with the pipeline's Python environment:
+
+```sh
+python -B plugins/skillmeter/integration/runtime_faults.py \
+  --pipeline /checkouts/pipeline --python /checkouts/pipeline/.venv/bin/python \
+  --out /protected/runtime-faults.json
+```
+
+It archives the clean pinned producer and reader into temporary directories.
+The same independent oracle runs before and after each source mutation: advance
+a migration cursor past approved backlog, bypass excluded consent ranges, and
+remove Codex format recognition from the reader. The pristine copy must pass,
+and the mutated copy must produce the named semantic violation. A timeout,
+syntax error, import failure, unexpected result or unchanged mutation cannot
+count as successful detection. Source anchors must match once; source changes
+that invalidate a mutation require a reviewed fixture update.
+
+The final candidate gate requires all three results, fresh timestamps, the
+contract digest and matching producer/reader revisions. Private reader code is
+used only in the trusted cross-repository job. Public CI exercises producer
+faults and runner rejection behavior without private checkout access. These
+representative mutations prove the named checks are sensitive; they do not
+prove detection of every possible incompatibility or native host behavior.

@@ -75,6 +75,11 @@
       "broker-refresh-success",
       "broker-scope-boundary",
       "broker-fresh-signin-held"
+    ],
+    "runtimeFaults": [
+      "omitted-backlog",
+      "ignored-consent",
+      "incompatible-reader"
     ]
   },
   "backendStages": [

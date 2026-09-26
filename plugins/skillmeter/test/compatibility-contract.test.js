@@ -22,6 +22,7 @@ const mutations = {
   "legacy path without migration": c => { c.upgradePaths[0].recovery = "existing-journal"; },
   "empty case matrix": c => { c.requiredCases.releasedAuth = []; },
   "consent case removed": c => { c.requiredCases.mixedAuth = c.requiredCases.mixedAuth.filter(x => x !== "repository-off"); },
+  "runtime fault removed": c => { c.requiredCases.runtimeFaults.pop(); },
   "unimplemented case": c => { c.requiredCases.releasedAuth.push("unknown-case"); },
   "duplicate case": c => { c.requiredCases.releasedQueue = ["pending", "pending"]; },
   "backend stage omitted": c => { c.backendStages.pop(); },

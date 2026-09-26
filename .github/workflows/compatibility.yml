@@ -122,15 +122,21 @@ jobs:
         run: |
           python -B plugins/skillmeter/integration/candidate_contract.py pin --collector ../collector --pipeline ../pipeline --manifest "$RUNNER_TEMP/candidate.json"
           python -B plugins/skillmeter/integration/candidate_contract.py run --collector ../collector --pipeline ../pipeline --manifest "$RUNNER_TEMP/candidate.json" --out "$RUNNER_TEMP/candidate-result.json" --python "$GITHUB_WORKSPACE/pipeline/.venv/bin/python" --go "$(command -v go)"
+      - name: Require runtime faults to be detected
+        id: faults
+        continue-on-error: true
+        working-directory: producer
+        run: python -B plugins/skillmeter/integration/runtime_faults.py --pipeline ../pipeline --python "$GITHUB_WORKSPACE/pipeline/.venv/bin/python" --out "$RUNNER_TEMP/runtime-faults.json"
       - name: Require fresh matching contract evidence
         if: always()
         working-directory: producer
         env:
+          FAULTS_OUTCOME: ${{ steps.faults.outcome }}
           MIXED_OUTCOME: ${{ steps.mixed.outcome }}
           CONTRACT_OUTCOME: ${{ steps.contract.outcome }}
         run: |
-          if [ "$MIXED_OUTCOME" != success ] || [ "$CONTRACT_OUTCOME" != success ]; then exit 1; fi
-          node .github/scripts/compatibility-gate.cjs "$RUNNER_TEMP/expected-candidate.json" "$RUNNER_TEMP/mixed-auth.json" "$RUNNER_TEMP/candidate-result.json" "$RUNNER_TEMP/compatibility-acceptance.json"
+          if [ "$FAULTS_OUTCOME" != success ] || [ "$MIXED_OUTCOME" != success ] || [ "$CONTRACT_OUTCOME" != success ]; then exit 1; fi
+          node .github/scripts/compatibility-gate.cjs "$RUNNER_TEMP/expected-candidate.json" "$RUNNER_TEMP/mixed-auth.json" "$RUNNER_TEMP/candidate-result.json" "$RUNNER_TEMP/runtime-faults.json" "$RUNNER_TEMP/compatibility-acceptance.json"
       - name: Retain content-free evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -141,6 +147,7 @@ jobs:
             ${{ runner.temp }}/mixed-auth.json
             ${{ runner.temp }}/candidate.json
             ${{ runner.temp }}/candidate-result.json
+            ${{ runner.temp }}/runtime-faults.json
             ${{ runner.temp }}/compatibility-acceptance.json
           if-no-files-found: warn
           retention-days: 14
