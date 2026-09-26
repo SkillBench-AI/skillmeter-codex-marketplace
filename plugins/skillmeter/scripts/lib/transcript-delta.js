@@ -9,6 +9,7 @@ const crypto = require("node:crypto");
 const zlib = require("node:zlib");
 const { sanitizeLine } = require("../sanitizer");
 const { sessionMetadata, sessionContinuation } = require("./session-metadata");
+const { createProjection } = require("./compaction-projection");
 
 const MAX_ENVELOPE = 5 * 1024 * 1024; // below the 6 MiB Lambda event ceiling
 const ENVELOPE_RESERVE = 128 * 1024; // headers + JSON event wrapper
@@ -289,6 +290,7 @@ function stage(root, source, scope, salt, options = {}) {
     if (reset) { offset = 0; rawPrefix = prefix(fd, 0, salt); }
     const generation = reset ? (cursor?.generation || 0) + 1 : cursor.generation;
     const baseline = reset ? (cursor?.seq || 0) + 1 : cursor.baseline;
+    const projectCompaction = createProjection(fd, { salt, id, generation, consent: options.consent, maxRecord: MAX_RECORD });
     // Every split wire chunk needs identity, including later chunks in the
     // initial batch. The first reset chunk keeps the real session_meta.
     const continuation = preserveMetadata ? continuationLine(fd, stat.size, salt, id, generation, options) : null;
@@ -322,7 +324,7 @@ function stage(root, source, scope, salt, options = {}) {
             // Collector merges on UUID. Identity uses raw position/content before
             // sanitization, preserving identical authored records and redaction collisions.
             const uuid = hmac(salt, `${id}\0${generation}\0${committed}\0${hmac(salt, raw)}`);
-            const sanitized = sanitizeLine(record, salt);
+            const sanitized = sanitizeLine(projectCompaction(record, committed), salt);
             if (sanitized.uuid) sanitized._codex_source_uuid = sanitized.uuid;
             sanitized.uuid = uuid;
             const serialized = JSON.stringify(sanitized) + "\n";
