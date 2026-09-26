@@ -11,31 +11,39 @@ Use `MAJOR.MINOR.PATCH` without prerelease or build suffixes. Include a version
 bump in a release PR: patch for fixes, minor for features. Before 1.0, breaking
 changes may use a minor bump.
 
-After merging the release PR:
+Before enabling publication, complete [shipping gate setup](compatibility/SHIPPING.md).
+The workflow requires reviewed dependency pins, protected environments and a
+dedicated publisher App. Missing configuration holds publication.
 
-1. Update main and run the checks:
+After the release PR passes the merge queue and reaches `main`:
 
-   ```sh
-   git checkout main
-   git pull --ff-only
-   npm run check
-   ```
-
-2. Create and push an annotated tag matching the manifest:
+1. Dispatch the [Release workflow](.github/workflows/release.yml) from `main`:
 
    ```sh
-   VERSION="$(node -p "require('./plugins/skillmeter/.codex-plugin/plugin.json').version")"
-   git tag -a "v${VERSION}" -m "SkillMeter ${VERSION}"
-   git push origin "v${VERSION}"
+   gh workflow run release.yml --ref main
    ```
 
-3. Confirm the [release workflow](.github/workflows/release.yml) succeeds.
-   It checks the tag against the manifest, validates manifests, runs tests,
-   and publishes a source archive with generated release notes.
+2. The compatibility reviewer checks the exact candidate and dependency pins,
+   then approves the `compatibility-reviewed` environment. Fresh tests cover the
+   combined producer, Claude client, collector and reader.
+3. The publisher reviewer checks that successful run before approving the
+   `release-publisher` environment. The workflow checks that the tested commit is
+   still main, creates the manifest's version tag and publishes its source archive.
+   If main advances or the acceptance result becomes more than one hour old
+   while review is pending, dispatch a fresh run.
+
+Do not push release tags manually. Tag creation is reserved for the dedicated
+publisher App; separate rules prevent all actors, including that App, from
+retargeting or deleting version tags. An existing tag at another commit is a
+hard stop: review a new version bump instead. If publication stops after creating
+a tag, rerun only while the same commit is still main; otherwise investigate the
+incomplete release before proceeding. An existing release requires inspection;
+the workflow does not overwrite it or assume its assets are complete. A tag alone
+is not a completed release.
 
 ## Release notes
 
-Prepare and review the user-facing notes before pushing the tag. The workflow
+Prepare and review the user-facing notes before dispatching the release. The workflow
 publishes automatically; replace its generated title and body with the approved
 notes afterward. Follow the latest published release's tone and command layout:
 
@@ -51,6 +59,6 @@ contain only information users need to update and use the plugin.
 
 ## Checks
 
-`npm run check` runs version validation, manifest validation and Node tests.
+`npm run check` runs version validation, manifest and contract validation, and Node tests.
 [PR CI](.github/workflows/ci.yml) tests Node 20 and 22. For optional local hooks,
 install [pre-commit](https://pre-commit.com/) and run `pre-commit install`.

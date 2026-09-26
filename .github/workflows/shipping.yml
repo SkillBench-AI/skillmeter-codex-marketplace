@@ -1,0 +1,58 @@
+name: Shipping compatibility
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, edited]
+  merge_group:
+    types: [checks_requested]
+
+permissions:
+  contents: read
+  actions: read
+
+concurrency:
+  group: shipping-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  prepare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      mode: ${{ steps.target.outputs.mode }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - id: target
+        run: node .github/scripts/shipping-policy.cjs prepare --allow-pr
+      - run: npm run check:compatibility
+  compatibility:
+    needs: prepare
+    if: github.event_name == 'merge_group'
+    uses: ./.github/workflows/compatibility.yml
+  required:
+    name: Compatibility required
+    needs: [prepare, compatibility]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Require the result for this candidate
+        env:
+          SHIPPING_MODE: ${{ needs.prepare.outputs.mode }}
+          PREPARATION_RESULT: ${{ needs.prepare.result }}
+          COMPATIBILITY_RESULT: ${{ needs.compatibility.result }}
+          VERIFIED_SHA: ${{ needs.compatibility.outputs.verified_sha }}
+        run: node .github/scripts/shipping-policy.cjs decide

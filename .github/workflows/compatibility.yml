@@ -1,95 +1,97 @@
 name: Cross-repository compatibility
 
 # Private dependency code never runs in a pull_request or pull_request_target job.
-# Call this from a reviewed release gate, or dispatch after this workflow lands.
+# The fixed environment must have independent review and contain the read token.
 on:
   workflow_dispatch:
-    inputs:
-      claude_sha:
-        description: Reviewed Claude plugin commit (full SHA)
-        required: true
-        type: string
-      collector_sha:
-        description: Reviewed collector commit (full SHA)
-        required: true
-        type: string
-      pipeline_sha:
-        description: Reviewed pipeline commit (full SHA)
-        required: true
-        type: string
   workflow_call:
-    inputs:
-      claude_sha:
-        required: true
-        type: string
-      collector_sha:
-        required: true
-        type: string
-      pipeline_sha:
-        required: true
-        type: string
-    secrets:
-      COMPATIBILITY_READ_TOKEN:
-        required: true
+    outputs:
+      verified_sha:
+        description: Exact producer commit accepted in this invocation
+        value: ${{ jobs.compatibility.outputs.verified_sha }}
+      verified_at:
+        description: UTC time of successful candidate acceptance
+        value: ${{ jobs.compatibility.outputs.verified_at }}
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Validate shipping context and protected environment
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          node .github/scripts/shipping-policy.cjs prepare
+          gh api "repos/$GITHUB_REPOSITORY/environments/compatibility-reviewed" > "$RUNNER_TEMP/environment.json"
+          gh api "repos/$GITHUB_REPOSITORY/environments/compatibility-reviewed/deployment-branch-policies?per_page=100" > "$RUNNER_TEMP/environment-branches.json"
+          node .github/scripts/shipping-policy.cjs environment "$RUNNER_TEMP/environment.json" "$RUNNER_TEMP/environment-branches.json"
   compatibility:
     name: Pinned producer / collector / reader
+    needs: preflight
+    environment: compatibility-reviewed
+    outputs:
+      verified_sha: ${{ steps.accept.outputs.verified_sha }}
+      verified_at: ${{ steps.accept.outputs.verified_at }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Require exact revisions and checkout access
-        env:
-          CLAUDE_SHA: ${{ inputs.claude_sha }}
-          COLLECTOR_SHA: ${{ inputs.collector_sha }}
-          PIPELINE_SHA: ${{ inputs.pipeline_sha }}
-          PRODUCER_SHA: ${{ github.sha }}
-          READ_TOKEN: ${{ secrets.COMPATIBILITY_READ_TOKEN }}
-        run: |
-          python - <<'PYCODE'
-          import os, re, json
-          from pathlib import Path
-          from datetime import datetime, timezone
-          for key in ('PRODUCER_SHA', 'CLAUDE_SHA', 'COLLECTOR_SHA', 'PIPELINE_SHA'):
-              if not re.fullmatch(r'[0-9a-f]{40}', os.environ[key]):
-                  raise SystemExit('A full lowercase commit SHA is required: ' + key)
-          if not os.environ.get('READ_TOKEN'):
-              raise SystemExit('Configure COMPATIBILITY_READ_TOKEN with contents:read for the two dependency repositories.')
-          expected = {'version': 1, 'startedAt': datetime.now(timezone.utc).isoformat(), 'revisions': {name: os.environ[name.upper() + '_SHA'] for name in ('producer', 'claude', 'collector', 'pipeline')}}
-          (Path(os.environ['RUNNER_TEMP']) / 'expected-candidate.json').write_text(json.dumps(expected))
-          PYCODE
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           path: producer
+          ref: ${{ github.sha }}
           fetch-depth: 0
           persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Bind checked-out candidate and dependency pins
+        id: pins
+        working-directory: producer
+        env:
+          READ_TOKEN: ${{ secrets.COMPATIBILITY_READ_TOKEN }}
+        run: |
+          node .github/scripts/shipping-policy.cjs prepare
+          node <<'JS'
+          const fs = require('node:fs');
+          const {dependencies} = require('./.github/scripts/shipping-policy.cjs');
+          const pins = dependencies(JSON.parse(fs.readFileSync('compatibility/dependencies.json')));
+          if (!process.env.READ_TOKEN) throw Error('protected-environment-read-token-required');
+          for (const name of ['claude','collector','pipeline']) fs.appendFileSync(process.env.GITHUB_OUTPUT, `${name}=${pins[name]}\n`);
+          fs.writeFileSync(`${process.env.RUNNER_TEMP}/expected-candidate.json`,JSON.stringify({version:1,startedAt:new Date().toISOString(),revisions:{producer:process.env.GITHUB_SHA,claude:pins.claude,collector:pins.collector,pipeline:pins.pipeline}}));
+          JS
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: SkillBench-AI/skillmeter-claude-code-collector
-          ref: ${{ inputs.collector_sha }}
+          ref: ${{ steps.pins.outputs.collector }}
           path: collector
           token: ${{ secrets.COMPATIBILITY_READ_TOKEN }}
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: SkillBench-AI/skillbench-pipelines
-          ref: ${{ inputs.pipeline_sha }}
+          ref: ${{ steps.pins.outputs.pipeline }}
           path: pipeline
           token: ${{ secrets.COMPATIBILITY_READ_TOKEN }}
           persist-credentials: false
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           repository: SkillBench-AI/skillmeter-claude-code-marketplace
-          ref: ${{ inputs.claude_sha }}
+          ref: ${{ steps.pins.outputs.claude }}
           path: claude
           fetch-depth: 0
           persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 22
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.14'
@@ -128,6 +130,7 @@ jobs:
         working-directory: producer
         run: python -B plugins/skillmeter/integration/runtime_faults.py --pipeline ../pipeline --python "$GITHUB_WORKSPACE/pipeline/.venv/bin/python" --out "$RUNNER_TEMP/runtime-faults.json"
       - name: Require fresh matching contract evidence
+        id: accept
         if: always()
         working-directory: producer
         env:
@@ -137,6 +140,8 @@ jobs:
         run: |
           if [ "$FAULTS_OUTCOME" != success ] || [ "$MIXED_OUTCOME" != success ] || [ "$CONTRACT_OUTCOME" != success ]; then exit 1; fi
           node .github/scripts/compatibility-gate.cjs "$RUNNER_TEMP/expected-candidate.json" "$RUNNER_TEMP/mixed-auth.json" "$RUNNER_TEMP/candidate-result.json" "$RUNNER_TEMP/runtime-faults.json" "$RUNNER_TEMP/compatibility-acceptance.json"
+          echo "verified_sha=$GITHUB_SHA" >> "$GITHUB_OUTPUT"
+          echo "verified_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
       - name: Retain content-free evidence
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

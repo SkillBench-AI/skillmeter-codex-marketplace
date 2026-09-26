@@ -45,7 +45,8 @@ and runtime-fault receipts. The caller writes `expected-candidate.json` before s
 
 Use the actual invocation time and full lowercase commit SHAs, not these
 placeholders. Generate this context in trusted orchestration, not from a PR's
-claimed test result. The hosted workflow does so before checkout and testing.
+claimed test result. The hosted workflow does so after validating the producer checkout and before
+checking out dependencies or starting tests.
 
 ```sh
 node .github/scripts/compatibility-gate.cjs \
@@ -70,11 +71,18 @@ production deployment, native-host behavior or report completeness.
 
 ## Shipping enforcement and maintenance
 
-Both distribution paths matter: the marketplace serves `main`; tags publish
-separate releases. The final gate is wired into the proposed reusable workflow,
-but private checkout access, trusted pre-merge orchestration, required repository
-checks and release-caller wiring still require deployment and verification.
-A successful manual run alone is not an enforced shipping gate.
+The marketplace serves `main`; tags publish separate releases. The shipping
+workflow admits PRs to the merge queue using public checks, then runs private
+compatibility tests on the queue's exact combined commit. The Release workflow
+runs fresh compatibility tests on main before requesting publication credentials.
+Dependency revisions come from reviewed `dependencies.json`, never caller inputs.
+These candidate pins describe tested code, not deployed backend versions.
+
+[Shipping gate setup](SHIPPING.md) defines the required merge queue, status
+checks, protected environments, tag restrictions and hosted acceptance tests.
+Workflow files alone do not enforce repository settings. In particular, the
+PR's `Compatibility required` success means queue admission only. It is safe
+only when direct merging is prohibited by the required merge queue rule.
 
 Version additions or retirements need engineering review of the supported
 population, server combinations and recovery path. Support-window and maintainer
