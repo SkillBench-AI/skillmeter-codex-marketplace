@@ -23,7 +23,20 @@ choices, preservation of version 2 records across unrelated old-client writes,
 stale confirmation after Claude OFF, mutual lock exclusion, and alternating and
 concurrent Claude/Codex writes.
 The unit suite additionally covers concurrent Codex confirmations and I/O failures.
-These are storage checks, not cross-client capture or production acceptance.
+To test a Claude checkout that writes version-2 choices and implements explicit
+acknowledgement, select that contract and run the runtime checks too:
+
+```sh
+node plugins/skillmeter/integration/check_shared_policy_store.cjs /path/to/claude-checkout --v2
+node plugins/skillmeter/integration/check_shared_policy_runtime.cjs /path/to/claude-checkout
+```
+
+The runtime check uses actual Claude writes and Codex capture/delivery code. It
+covers legacy acknowledgement, local OFF precedence, queued revocation, global
+pause retention, exclusion of paused transcript text and Codex's malformed-policy
+hold. It uses synthetic credentials and an intercepted receiver; it does not
+validate Claude's capture runtime, native UI, real collector or production.
+Pin and record both checkout revisions when using these commands.
 
 Codex refuses invalid or unsupported policy and policy-file symlinks instead of
 rewriting them. It does not reclaim an old lock by age because the legacy lock
