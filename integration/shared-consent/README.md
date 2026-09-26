@@ -179,7 +179,11 @@ must match the pinned sanitizer's output record by record. Excluded turns must
 leave queued payload bytes, attempts and received files unchanged. A successful
 turn receipt covers only that turn: the operator still checks baseline backlog
 preservation, revoked-prefix absence, session isolation and collector semantics
-as described above. It is not a whole-suite or production pass.
+as described above. It is not a whole-suite or production pass. The receipt lists
+each bound callback's process ancestry (command names only) and whether its
+stdin was a terminal. That is review material for spotting a replayed hook, not
+an attestation: Codex hooks carry no signed proof of dispatch, so native dispatch
+remains the operator's claim, backed by the hook-trust prompt and the recording.
 
 For the final four steps, the assistant owns this sequence:
 

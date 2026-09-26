@@ -123,7 +123,8 @@ function verify(base, marker) {
   }
   const receipt = { label: s.label, marker, mode: s.mode, status: "passed", heads: s.heads,
     turnRecords: turn.length, linkedToolPairs: s.pairs, at: new Date().toISOString(),
-    scope: "selected desktop turn only; intercepted delivery is not production acceptance" };
+    dispatch: cb.map(x => ({ hook: x.hook, ancestry: x.dispatch?.ancestry ?? null, tty: x.dispatch?.tty ?? null })),
+    scope: "selected desktop turn only; dispatch provenance is recorded from process ancestry, not attested; intercepted delivery is not production acceptance" };
   save(base, marker + ".result.json", receipt); return receipt;
 }
 if (require.main === module) {

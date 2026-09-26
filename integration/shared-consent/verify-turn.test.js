@@ -19,7 +19,7 @@ function fixture(t) {
       { type: "event_msg", payload: { type: "task_complete" } }];
     if (sourceIds) rows.forEach((r, i) => { r.uuid = "source-" + i; });
     fs.appendFileSync(source, rows.map(r => JSON.stringify(r) + "\n").join(""));
-    for (const hook of submit ? ["user_prompt_submit.js", "stop.js"] : ["stop.js"]) fs.appendFileSync(path.join(base, "callbacks.jsonl"), JSON.stringify({ label: "a", hook, outcome: "candidate-completed" }) + "\n");
+    for (const hook of submit ? ["user_prompt_submit.js", "stop.js"] : ["stop.js"]) fs.appendFileSync(path.join(base, "callbacks.jsonl"), JSON.stringify({ label: "a", hook, outcome: "candidate-completed", dispatch: { ancestry: ["node", "sh", "Codex"], tty: false } }) + "\n");
     return rows.map((r, i) => ({ ...sanitizer.sanitizeLine(r, "synthetic-salt"), ...(r.uuid ? { _codex_source_uuid: r.uuid } : {}), uuid: "synthetic-" + i }));
   }
   function deliver(rows) { write("received/one.json", { path: "/logs/codex/transcript", seq: "1", status: 200 }); fs.writeFileSync(path.join(base, "received/one.gz"), zlib.gzipSync(rows.map(r => JSON.stringify(r) + "\n").join(""))); }
@@ -32,7 +32,12 @@ function fixture(t) {
 test("queued and delivered checks compare source values, not just counts", t => {
   for (const mode of ["queued", "delivered"]) {
     const f = fixture(t); begin(f.base, "a", "SHARED-TEST", mode); const rows = f.turn(); f[mode === "queued" ? "queue" : "deliver"](rows);
-    assert.equal(verify(f.base, "SHARED-TEST").status, "passed");
+    const receipt = verify(f.base, "SHARED-TEST");
+    assert.equal(receipt.status, "passed");
+    assert.deepEqual(receipt.dispatch, [
+      { hook: "user_prompt_submit.js", ancestry: ["node", "sh", "Codex"], tty: false },
+      { hook: "stop.js", ancestry: ["node", "sh", "Codex"], tty: false },
+    ], "the receipt carries each callback's recorded provenance");
   }
   const f = fixture(t); begin(f.base, "a", "SHARED-TEST", "delivered"); const rows = f.turn(); rows[1].payload.content = "changed"; f.deliver(rows);
   assert.throws(() => verify(f.base, "SHARED-TEST"), /sanitized-turn-mismatch/);
