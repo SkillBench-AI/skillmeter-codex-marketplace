@@ -78,7 +78,8 @@ function transcriptHealthLines() {
   try {
     const state = inventory(path.dirname(LOG_DIR));
     const blocked = state.sessions.filter(s => s.failures.some(f => f.phase === "capture"));
-    const observed = state.sessions.filter(s => s.capture && !s.capture.unreadable);
+    const observed = state.sessions.filter(s => s.capture && !s.capture.unreadable &&
+      Number.isSafeInteger(s.capture.observedBytes) && Number.isSafeInteger(s.capture.capturedBytes));
     const behind = observed.filter(s => s.capture.observedBytes > s.capture.capturedBytes);
     const progress = observed.map(s => s.capture.lastProgressAt).filter(Boolean).sort();
     const acknowledgments = state.sessions.map(s => s.delivery?.lastSuccessAt).filter(Boolean).sort();

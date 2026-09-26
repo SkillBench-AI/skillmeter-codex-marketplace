@@ -68,3 +68,23 @@ test("older diagnostics survive until the corresponding phase succeeds, includin
   fs.writeFileSync(path.join(f.dir, "delivery-status.json"), "broken synthetic state");
   assert.ok(health.inspect(f.dir).failures.some(f => f.code === "status-unreadable"));
 });
+
+test("a delivery attempt after upgrade cannot overwrite a legacy-only capture failure", t => {
+  const f = fixture(t);
+  fs.mkdirSync(f.dir, { recursive: true });
+  fs.writeFileSync(path.join(f.dir, "diagnostic.json"), JSON.stringify({ code: "oversized-single-record", at: "2026-01-01T00:00:00Z" }));
+  queue.recordFailure(f.dir, "delivery", "http-503", { seq: 1 });
+  assert.deepEqual(health.inspect(f.dir).failures.map(f => f.code).sort(), ["http-503", "oversized-single-record"]);
+  health.update(f.dir, "delivery", null, { acknowledgedSeq: 1 }, queue.writeDurable);
+  assert.deepEqual(health.inspect(f.dir).failures.map(f => f.code), ["oversized-single-record"]);
+});
+
+test("wrong-shaped status is unknown rather than a healthy observation", t => {
+  const f = fixture(t);
+  fs.mkdirSync(f.dir, { recursive: true });
+  for (const value of [{}, { version: 1, phase: "capture", activeFailure: null }, { version: 1, phase: "capture", lastAttemptAt: "2026-01-01T00:00:00Z", activeFailure: null, lastSuccessAt: "2026-01-01T00:00:00Z", capturedBytes: -1 }]) {
+    fs.writeFileSync(path.join(f.dir, "capture-status.json"), JSON.stringify(value));
+    assert.equal(health.inspect(f.dir).capture.unreadable, true);
+    assert.deepEqual(health.inspect(f.dir).failures.map(f => f.code), ["status-unreadable"]);
+  }
+});

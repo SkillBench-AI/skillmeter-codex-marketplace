@@ -29,7 +29,7 @@ function status({ seconds = 3600, credentials = {}, choice = true, malformedChoi
   if (blockedCapture) {
     const dir = path.join(logs, "transcripts/chunks-v1", "b".repeat(64));
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "capture-status.json"), JSON.stringify({ version: 1, activeFailure: { code: "oversized-single-record", at: "2026-01-01T00:00:00Z" }, capturedBytes: 10, observedBytes: 100 }));
+    fs.writeFileSync(path.join(dir, "capture-status.json"), JSON.stringify({ version: 1, phase: "capture", lastAttemptAt: "2026-01-01T00:00:00Z", activeFailure: { code: "oversized-single-record", at: "2026-01-01T00:00:00Z" }, ...(blockedCapture === "before-source" ? {} : { capturedBytes: 10, observedBytes: 100 }) }));
   }
   if (rejected) {
     fs.mkdirSync(logs, { recursive: true });
@@ -95,6 +95,11 @@ test("empty queue and valid credentials still expose a pre-staging capture failu
   assert.match(text, /Transcript capture.*1 blocked, 1 behind/);
   assert.match(text, /oversized-single-record: 1/);
   assert.match(text, /Downstream analysis and report delivery: unknown/);
+});
+
+test("a failure before source inspection has no progress observation", () => {
+  const text = status({ blockedCapture: "before-source" });
+  assert.match(text, /1 blocked, 0 behind.*1 without progress observations/);
 });
 
 test("project opt-out is reported independently of valid authentication", () => {
