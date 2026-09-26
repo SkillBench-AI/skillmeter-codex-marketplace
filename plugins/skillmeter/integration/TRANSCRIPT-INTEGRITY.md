@@ -30,6 +30,12 @@ incomplete final lines block comparison. Hashes use canonical JSON, so object-ke
 ordering does not create false differences. Array ordering and record values
 remain significant. Record order across objects is not checked.
 
+Blank lines and whitespace-only identities are invalid. Numeric tokens must
+round-trip through `JSON.stringify(Number(token))` unchanged, and integer values
+must be safe integers. Other forms (including `1.0`, `-0`, overflowing exponents
+and excessively precise values) count as malformed for this restricted checker.
+This conservative boundary prevents numeric rounding from hiding changed records.
+
 ## Evidence boundary
 
 The expected set must be independently derived from the source/capture contract,
@@ -50,5 +56,5 @@ event-time week membership, analysis coverage, model validity, backend persisten
 and correct-user dashboard delivery require separate gates. Do not promote this
 check's `pass` to overall end-to-end acceptance.
 
-Tests run under the existing Node test suite. This PR does not configure a
-production publication gate, a scheduled canary or a new required GitHub check.
+Tests run under the existing Node test suite. Run the command explicitly when
+collecting selected-record evidence; it is not a production publication gate.

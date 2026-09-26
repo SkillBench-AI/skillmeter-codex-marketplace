@@ -19,11 +19,18 @@ async function receiptFromStreams(streams) {
     const hash = crypto.createHash("sha256");
     let pending = [], length = 0, skipping = false, bytes = 0;
     function consume(raw) {
-      if (!raw.toString("utf8").trim()) return;
       try {
-        const record = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw));
+        const source = new TextDecoder("utf-8", { fatal: true }).decode(raw);
+        const record = JSON.parse(source);
+        // JSON.parse rounds large/precise numbers and accepts overflowing
+        // exponents. Restrict numeric tokens to exact serializer round-trips.
+        for (const match of source.matchAll(/"(?:\\[\s\S]|[^"\\])*"|(-?(?:0|[1-9]\d*)(?:\.\d+)?(?:[eE][+-]?\d+)?)/g)) {
+          if (match[1] === undefined) continue;
+          const number = Number(match[1]);
+          if (!Number.isFinite(number) || (Number.isInteger(number) && !Number.isSafeInteger(number)) || JSON.stringify(number) !== match[1]) throw Error("unsupported-number");
+        }
         if (!record || typeof record !== "object" || Array.isArray(record)) { errors.malformed++; return; }
-        if (typeof record.uuid !== "string" || !record.uuid) { errors.missingIdentity++; return; }
+        if (typeof record.uuid !== "string" || !record.uuid.trim()) { errors.missingIdentity++; return; }
         const id = sha(record.uuid), digest = sha(canonical(record));
         recordCount++;
         if (!records.has(id)) records.set(id, digest);

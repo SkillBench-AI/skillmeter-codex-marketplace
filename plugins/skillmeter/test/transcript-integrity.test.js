@@ -58,6 +58,25 @@ test("stream boundaries and JSON key order do not change record identity", async
   assert.equal(compareReceipts(expected, observed).status, "pass");
 });
 
+test("blank lines and whitespace identities cannot hide malformed records", async () => {
+  const expected = await receipt(lines(records));
+  for (const extra of ["\n", "  \n", '{"uuid":"  "}\n']) {
+    assert.equal(compareReceipts(expected, await receipt(lines(records) + extra)).status, "blocked");
+  }
+});
+
+test("numeric rounding and overflow cannot produce matching fingerprints", async () => {
+  const valid = await receipt('{"uuid":"number","value":null}\n');
+  for (const number of ["9007199254740992", "9007199254740993", "1e400", "1e-400", "0.10000000000000000001", "1.0", "-0"]) {
+    const actual = await receipt(`{"uuid":"number","value":${number}}\n`);
+    assert.equal(actual.errors.malformed, 1, number);
+    assert.equal(compareReceipts(valid, actual).status, "blocked");
+  }
+  const quoted = await receipt('{"uuid":"number","value":"9007199254740993 and \\"1e400\\"","fraction":0.125,"integer":9007199254740991}\n');
+  assert.equal(quoted.errors.malformed, 0);
+  assert.equal(compareReceipts(quoted, quoted).status, "pass");
+});
+
 test("wrong-shaped or duplicate-ID receipts are rejected instead of accepted as empty evidence", async () => {
   const valid = await receipt(lines(records));
   for (const bad of [{}, { ...valid, version: 2 }, { ...valid, errors: {} }, { ...valid, inputs: [] }, { ...valid, recordCount: 0 }, { ...valid, conflictingIds: ["a".repeat(64)] }, { ...valid, records: [...valid.records, valid.records[0]] }]) {
