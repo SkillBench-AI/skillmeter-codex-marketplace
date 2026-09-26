@@ -791,8 +791,7 @@ async function sendTranscriptChunk(meta, compressed, backendUrl, timeoutMs) {
     if (isAuthHttpStatus(res.status) && res.status !== 402) markLicenseRejected(res.status);
     // Auth rejection must not clear shared credentials or fall back to anonymous
     // transcript upload. Keep this chunk and all later chunks for scoped retry.
-    if (meta.queueDir) transcriptQueue.writeDurable(path.join(meta.queueDir, "diagnostic.json"),
-      JSON.stringify({ code: `http-${res.status}`, seq: meta.seq, at: new Date().toISOString() }));
+    if (meta.queueDir) transcriptQueue.recordFailure(meta.queueDir, "delivery", `http-${res.status}`, { seq: meta.seq });
     console.error(`[skillmeter] Transcript chunk ${meta.seq}: HTTP ${res.status}; retained`);
     return isAuthHttpStatus(res.status) ? "auth" : "retry";
   } catch { return "retry"; }
@@ -824,8 +823,7 @@ async function uploadPendingTranscript(pendingPath, deviceId, backendUrl, timeou
 function recordTranscriptQueueFailure(dir) {
   console.error("[skillmeter] Transcript queue unavailable; retained for retry");
   try {
-    transcriptQueue.writeDurable(path.join(dir, "diagnostic.json"),
-      JSON.stringify({ code: "queue-unavailable", at: new Date().toISOString() }));
+    transcriptQueue.recordFailure(dir, "delivery", "queue-unavailable");
   } catch {
     console.error("[skillmeter] Could not persist transcript queue diagnostic");
   }

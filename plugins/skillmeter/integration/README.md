@@ -71,6 +71,20 @@ Read-only inventory (from the plugin directory):
 PLUGIN_DATA=/path/to/plugin-data node scripts/transcript_inventory.js
 ```
 
+Capture and delivery have separate content-free `capture-status.json` and
+`delivery-status.json` records per source queue. They retain the latest failure,
+active failure, attempt identity, last successful attempt and last progress.
+Capture reports observed raw source bytes and the committed raw cursor; delivery
+records the last HTTP-acknowledged sequence/baseline. These byte positions do not
+measure eligible content, and HTTP acceptance does not prove stored completeness.
+
+`telemetry.js status` includes capture blockage even with zero pending chunks.
+Successful staging resolves only the capture error; a delivery error remains
+until delivery succeeds, and the converse also holds. Legacy diagnostics remain
+visible until the corresponding phase succeeds. Observations can be stale, and
+sources that never reached the queue are outside this inventory. Event delivery,
+source discovery, analysis and report acceptance need separate evidence.
+
 Uploads send `X-Transcript-Protocol: chunks-v1`. The on-disk `chunks-v1/`
 queue format is separate from this header. Missing-baseline recovery requires
 the collector to return 409 for an append without a baseline; the client then

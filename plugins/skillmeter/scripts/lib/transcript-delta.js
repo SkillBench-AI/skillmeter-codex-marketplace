@@ -9,6 +9,7 @@ const crypto = require("node:crypto");
 const zlib = require("node:zlib");
 const { sanitizeLine } = require("../sanitizer");
 const { sessionMetadata, sessionContinuation } = require("./session-metadata");
+const health = require("./transcript-health");
 
 const MAX_ENVELOPE = 5 * 1024 * 1024; // below the 6 MiB Lambda event ceiling
 const ENVELOPE_RESERVE = 128 * 1024; // headers + JSON event wrapper
@@ -29,6 +30,8 @@ function writeDurable(file, bytes) {
   syncDir(path.dirname(file));
 }
 function readJson(file) { return JSON.parse(fs.readFileSync(file, "utf8")); }
+function recordFailure(dir, phase, code, progress = {}) { health.update(dir, phase, code, progress, writeDurable); }
+function recordProgress(dir, phase, progress) { health.update(dir, phase, null, progress, writeDurable); }
 function alive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return true; // incomplete lock: fail closed
   try { process.kill(pid, 0); return true; } catch (e) { return e.code !== "ESRCH"; }
@@ -248,14 +251,16 @@ function stage(root, source, scope, salt, options = {}) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const release = acquireLock(path.join(dir, "lock"));
   if (!release) return { status: "busy", files: [] };
-  let fd;
+  let fd, capturedBytes, observedBytes;
   try {
     const cursor = recover(dir);
+    capturedBytes = cursor?.offset || 0;
     if (cursor && (cursor.scope.owner !== scope.owner || cursor.scope.deviceId !== scope.deviceId)) {
       throw new Error("source-owner-changed");
     }
     fd = fs.openSync(source, "r");
     const stat = fs.fstatSync(fd);
+    observedBytes = stat.size;
     if (options.consent) {
       if (!options.consent.enabled || options.consent.owner !== scope.owner ||
           JSON.stringify(readJson(path.join(dir, "consent.json"))) !== JSON.stringify(options.consent)) {
@@ -283,7 +288,10 @@ function stage(root, source, scope, salt, options = {}) {
       if (reset && options.consent && cursor.consentEpoch === options.consent.epoch) {
         throw new Error("consent-source-rewritten");
       }
-      if (!reset && stat.size === offset) return { status: "unchanged", files: [], partial: false };
+      if (!reset && stat.size === offset) {
+        recordProgress(dir, "capture", { capturedBytes: offset, observedBytes, partial: false });
+        return { status: "unchanged", files: [], partial: false };
+      }
       if (!reset) rawPrefix = prefix(fd, offset, salt);
     }
     if (reset) { offset = 0; rawPrefix = prefix(fd, 0, salt); }
@@ -336,7 +344,10 @@ function stage(root, source, scope, salt, options = {}) {
       if (pending.length > MAX_RECORD) throw new Error("oversized-single-record");
       if (lines.length && committed - offset >= (options.stageBytes || STAGE_BYTES)) break;
     }
-    if (!lines.length) return { status: "unchanged", files: [], partial: pending.length > 0 };
+    if (!lines.length) {
+      recordProgress(dir, "capture", { capturedBytes: offset, observedBytes, partial: pending.length > 0 });
+      return { status: "unchanged", files: [], partial: pending.length > 0 };
+    }
     const encoded = encodeChunks(lines, options.maxEnvelope, continuation, offset === 0);
     let seq = cursor?.seq || 0;
     const chunks = encoded.map(({ body, records }) => ({ file: `${++seq}.gz`, seq, reset: baseline, records, sha256: digest(body) }));
@@ -359,12 +370,13 @@ function stage(root, source, scope, salt, options = {}) {
     writeDurable(path.join(dir, "cursor.json"), JSON.stringify(next));
     options.fault?.("after-cursor");
     writeDurable(path.join(group, "ready"), "1");
+    recordProgress(dir, "capture", { capturedBytes: committed, observedBytes, partial: pending.length > 0 });
     return { status: "staged", files: chunks.map(c => path.join(group, c.file)), cursor: next };
   } catch (e) {
     // Error code only. Never persist source text or arbitrary exception payloads.
     const code = ["oversized-single-record", "malformed-complete-record", "invalid-wire-budget",
       "source-changed-during-stage", "source-truncated-during-read", "invalid-cursor", "incomplete-transaction", "source-scope-changed", "source-owner-changed", "consent-source-rewritten", "consent-changed-during-stage", "invalid-session-metadata", "unsupported-session-source", "unsupported-session-originator"].includes(e.message) ? e.message : "stage-failed";
-    writeDurable(path.join(dir, "diagnostic.json"), JSON.stringify({ code, at: new Date().toISOString() }));
+    recordFailure(dir, "capture", code, { capturedBytes, observedBytes });
     throw e;
   } finally { if (fd !== undefined) fs.closeSync(fd); release(); }
 }
@@ -413,11 +425,18 @@ async function drainDirectory(dir, send) {
     for (const file of pendingFiles(dir)) {
       const meta = metadata(file), body = fs.readFileSync(file);
       if (digest(body) !== meta.sha256) throw new Error("chunk-integrity-failed");
+      const previousAttempt = health.inspect(dir).delivery?.attemptId;
       const outcome = await send(meta, body);
       if (outcome === "reset-required") {
         writeDurable(path.join(dir, "reset-request.json"), JSON.stringify({ baseline: meta.reset }));
       }
-      if (outcome !== "sent") break; // never advance over retry/auth/poison
+      if (outcome !== "sent") {
+        const previous = health.inspect(dir).delivery;
+        const code = previous?.attemptId !== previousAttempt && previous?.activeFailure?.code;
+        recordFailure(dir, "delivery", code || `delivery-${outcome}`, { seq: meta.seq });
+        break; // never advance over retry/auth/poison
+      }
+      recordProgress(dir, "delivery", { acknowledgedSeq: meta.seq, acknowledgedBaseline: meta.reset });
       fs.unlinkSync(file); syncDir(path.dirname(file)); sent++;
     }
     for (const group of groups(dir)) {
@@ -429,4 +448,4 @@ async function drainDirectory(dir, send) {
   } finally { release(); }
 }
 module.exports = { stage, observeConsent, purgeRevoked, encodeChunks, acquireLock, recover, queueDirectories, pendingFiles, metadata,
-  drainDirectory, writeDurable, hmac, MAX_ENVELOPE, ENVELOPE_RESERVE, MAX_RECORD, STAGE_BYTES };
+  drainDirectory, writeDurable, recordFailure, hmac, MAX_ENVELOPE, ENVELOPE_RESERVE, MAX_RECORD, STAGE_BYTES };

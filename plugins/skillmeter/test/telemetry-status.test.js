@@ -10,7 +10,7 @@ const roots = [];
 after(() => roots.forEach(root => fs.rmSync(root, { recursive: true, force: true })));
 const plugin = path.resolve(__dirname, "..");
 
-function status({ seconds = 3600, credentials = {}, choice = true, malformedChoice = false, queue = false, rejected = false, transcript = false, corrupt = false } = {}) {
+function status({ seconds = 3600, credentials = {}, choice = true, malformedChoice = false, queue = false, rejected = false, transcript = false, corrupt = false, blockedCapture = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-"));
   roots.push(root);
   const repo = path.join(root, "repo"), data = path.join(root, "data"), state = path.join(root, ".skillbench");
@@ -26,6 +26,11 @@ function status({ seconds = 3600, credentials = {}, choice = true, malformedChoi
     fs.writeFileSync(path.join(repo, ".codex/settings.local.json"), malformedChoice ? "invalid json" : JSON.stringify({ skillmeter: { telemetry: choice } }));
   }
   const logs = path.join(data, "logs");
+  if (blockedCapture) {
+    const dir = path.join(logs, "transcripts/chunks-v1", "b".repeat(64));
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, "capture-status.json"), JSON.stringify({ version: 1, activeFailure: { code: "oversized-single-record", at: "2026-01-01T00:00:00Z" }, capturedBytes: 10, observedBytes: 100 }));
+  }
   if (rejected) {
     fs.mkdirSync(logs, { recursive: true });
     fs.writeFileSync(path.join(logs, ".license-rejected"), "401\n");
@@ -79,8 +84,17 @@ test("healthy credentials and empty queues do not claim delivery or hook health"
   const text = status();
   assert.match(text, /eligible.*hook execution not verified/);
   assert.match(text, /0 sealed event batches.*0 transcript chunks/);
-  assert.match(text, /Last successful upload: unknown/);
+  assert.match(text, /Last successful event upload: unknown/);
+  assert.match(text, /Last transcript HTTP acknowledgment: unknown/);
   assert.match(text, /empty queue does not prove delivery/);
+});
+
+test("empty queue and valid credentials still expose a pre-staging capture failure", () => {
+  const text = status({ blockedCapture: true });
+  assert.match(text, /0 sealed event batches.*0 transcript chunks/);
+  assert.match(text, /Transcript capture.*1 blocked, 1 behind/);
+  assert.match(text, /oversized-single-record: 1/);
+  assert.match(text, /Downstream analysis and report delivery: unknown/);
 });
 
 test("project opt-out is reported independently of valid authentication", () => {
