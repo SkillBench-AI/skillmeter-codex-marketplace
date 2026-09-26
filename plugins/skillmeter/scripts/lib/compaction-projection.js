@@ -76,7 +76,7 @@ function createProjection(fd, { salt, id, generation, consent, maxRecord }) {
         omittedEntries++; omittedBytes += bytes;
         return reference;
       });
-      fields[field] = { entries: payload[field].length, referenced_entries: omittedEntries, referenced_source_bytes: omittedBytes };
+      fields[field] = { entries: payload[field].length, referenced_entries: omittedEntries, referenced_json_bytes: omittedBytes };
     }
     if (!Object.values(fields).some(f => f.referenced_entries)) return record;
     return { ...record, payload, _codex_compaction_projection: { version: 1, fields } };

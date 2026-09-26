@@ -70,8 +70,8 @@ enough to exceed the wire budget. Within `replacement_history` and
 is a JSON Pointer into an earlier record in the same source/reset generation.
 Array positions, unmatched entries, timestamps and other compaction metadata
 remain intact. `_codex_compaction_projection.version = 1` records each field's
-entry count, referenced entry count and original raw JSON bytes represented by
-references. Byte counts are accounting, not claims about analyzed coverage.
+entry count, referenced entry count and compact JSON-serialized entry bytes
+represented by references (before sanitization, excluding source whitespace). Byte counts are accounting, not claims about analyzed coverage.
 
 Matching uses a salted canonical-content digest before sanitization. Only
 earlier eligible `response_item.payload` or compaction-history entries are
