@@ -75,12 +75,14 @@ opt-outs remain restrictive; subdirectory opt-ins cannot enable the whole repo.
 This follows Claude's explicit repository opt-in rule. Codex still stores the
 choice per checkout, so clones and linked worktrees require separate choices.
 It does not yet use Claude's shared organization/repository policy store.
-Repository disable stops new capture but does not purge previously queued data;
-event batches may still drain. Global pause stops capture and transmission while
-retaining queues. Observed disabled transcript intervals are excluded from later staging and
-baseline recovery. The first observation excludes existing content, so native
-startup timing matters for capture completeness. Shared policy and queue
-revocation remain required for full consent parity. See the [alignment boundary](../../docs/repository-consent.md).
+Repository disable stops new capture and removes that repository's queued,
+unsent event and transcript payloads; privacy cursors are kept, so re-enabling
+does not restore removed data, and requests already in flight complete. Global
+pause stops capture and transmission while retaining queues. Observed disabled
+transcript intervals are excluded from later staging and baseline recovery. The
+first observation excludes existing content, so native startup timing matters
+for capture completeness. Shared policy remains required for full consent
+parity. See the [alignment boundary](../../docs/repository-consent.md).
 
 ## Data and privacy
 
