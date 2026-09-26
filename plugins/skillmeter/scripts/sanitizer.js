@@ -3,7 +3,23 @@
 // rules and path vocabulary unchanged; document the pin in docs/sanitizer-parity.md.
 const fs = require("node:fs");
 const shared = require("./lib/sanitize");
-const { SECRET_PLACEHOLDER } = require("./lib/rules");
+const { SECRET_PLACEHOLDER, KINDS } = require("./lib/rules");
+
+// Same tally the shared engine stamps on its own records (sanitize.js keeps it
+// private since policy 3.1.2). Codex adds its opaque-input redactions first.
+function summarizeRedactions(redactions) {
+  const counts = {};
+  for (const k of KINDS) counts[k] = 0;
+  let secrets = 0, pii = 0;
+  for (const r of redactions) {
+    if (r.category === "secret") secrets++;
+    else if (r.category === "pii") pii++;
+    const kind = r.kind || r.category;
+    counts[kind] = (counts[kind] || 0) + 1;
+  }
+  const ids = [...new Set(redactions.filter(r => r.category !== "path").map(r => r.id))].sort();
+  return { policyVersion: shared.POLICY_VERSION, secrets, pii, counts, ids };
+}
 
 const OPAQUE_KEYS = new Set(["command", "cmd", "patch"]);
 // A compaction reference names an already-sanitized queued record by its
@@ -70,7 +86,7 @@ function sanitizeRecord(record, salt) {
   const result = shared.sanitizeEventData(prepare(input, salt, opaque, references), salt);
   if (references.length) restoreReferences(result.value, references);
   result.redactions.push(...opaque);
-  result.meta = shared.summarizeRedactions(result.redactions);
+  result.meta = summarizeRedactions(result.redactions);
   if (result.value && typeof result.value === "object" && !Array.isArray(result.value)) {
     result.value._sanitization = result.meta;
   }

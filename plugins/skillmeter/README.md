@@ -128,7 +128,7 @@ Collected data can include:
 - Configuration names and counts, plus bounded descriptions and bodies of
   custom project/user skills. This is **not metadata-only collection**.
 
-Policy 3.1.1 redacts recognized secrets, email addresses, VCS author names,
+Policy 3.1.2 redacts recognized secrets, email addresses, VCS author names,
 phone numbers, IP addresses, national identifiers and payment-card numbers with
 typed placeholders. File-path fields retain hierarchy, extensions and approved
 technical vocabulary; other segments are hashed. Directory fields, commands and
