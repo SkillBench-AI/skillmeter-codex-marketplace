@@ -7,7 +7,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const queue = require("./transcript-delta");
 
-function createRepositoryQueue(root, salt, allowed) {
+function createRepositoryQueue(root, salt, allowed, sharedPolicy = () => null) {
   const index = path.join(root, "repository-routing");
   const key = cwd => queue.hmac(salt(), path.resolve(cwd)).slice(0, 12);
   const canonical = cwd => fs.realpathSync(cwd);
@@ -17,6 +17,13 @@ function createRepositoryQueue(root, salt, allowed) {
       const state = JSON.parse(fs.readFileSync(path.join(index, `${id}.json`), "utf8"));
       if (state.canonical && alias) return read(state.canonical, false);
       if (typeof state.repoRoot !== "string" || !state.directories || typeof state.directories !== "object" || Array.isArray(state.directories) || !(state.epoch === 0 || typeof state.epoch === "string")) throw new Error("invalid-repository-routing");
+      if ((state.sharedStamp !== undefined && typeof state.sharedStamp !== "string") ||
+          (state.sharedPolicySeen !== undefined && typeof state.sharedPolicySeen !== "boolean") ||
+          (state.sharedDeliveryToken !== undefined && typeof state.sharedDeliveryToken !== "string") ||
+          (state.sharedRepoKey !== undefined && typeof state.sharedRepoKey !== "string")) throw new Error("invalid-shared-policy-routing");
+      if (state.previousRepositories !== undefined && (!Array.isArray(state.previousRepositories) ||
+          state.previousRepositories.some(entry => !entry || typeof entry.key !== "string" ||
+            typeof entry.token !== "string" || typeof entry.revoked !== "boolean"))) throw new Error("invalid-previous-repository-routing");
       return state;
     }
     catch (error) { if (error.code === "ENOENT") return null; throw error; }
@@ -29,6 +36,51 @@ function createRepositoryQueue(root, salt, allowed) {
     }
     throw new Error("repository-routing-busy");
   }
+  // Called under the routing lock. Only an observed OFF revokes payloads;
+  // changed positive decisions hold older stamps without assuming an OFF.
+  function synchronize(state) {
+    const policy = sharedPolicy(state.repoRoot);
+    let changed = false;
+    const effective = policy?.key ? policy : sharedPolicy(state.repoRoot, state.sharedRepoKey);
+    // Deleting an observed policy cannot restore a legacy local grant.
+    if (effective && effective.stamp !== null && !(state.sharedPolicySeen && effective.reason === "absent")) {
+      if (!state.sharedPolicySeen && effective.reason !== "absent") {
+        state.sharedPolicySeen = true;
+        changed = true;
+      }
+      if (state.sharedStamp !== effective.stamp || (effective.key && effective.key !== state.sharedRepoKey)) {
+        // Keep the attribution of held payloads, including older positive
+        // decisions, when a checkout is reused for another repository.
+        if (state.sharedRepoKey && state.sharedDeliveryToken) {
+          state.previousRepositories ||= [];
+          state.previousRepositories.push({ key: state.sharedRepoKey, token: state.sharedDeliveryToken, revoked: false });
+        }
+        if (effective.key) state.sharedRepoKey = effective.key;
+        state.sharedStamp = effective.stamp;
+        state.sharedDeliveryToken = crypto.randomUUID();
+        changed = true;
+      }
+    }
+    for (const entry of state.previousRepositories || []) {
+      if (!entry.revoked && sharedPolicy(state.repoRoot, entry.key)?.revoked) {
+        entry.revoked = true;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+  function current(id) {
+    const original = read(id);
+    if (!original) return null;
+    const canonicalId = key(original.repoRoot);
+    const file = path.join(index, `${canonicalId}.json`);
+    const release = acquireRoutingLock(`${file}.lock`);
+    try {
+      const state = read(canonicalId);
+      if (state && synchronize(state)) queue.writeDurable(file, JSON.stringify(state));
+      return state;
+    } finally { release(); }
+  }
   function register(cwd, repoRoot, revoke = false, prepareConsent) {
     fs.mkdirSync(index, { recursive: true, mode: 0o700 });
     const canonicalRoot = canonical(repoRoot), id = key(canonicalRoot), file = path.join(index, `${id}.json`);
@@ -39,8 +91,9 @@ function createRepositoryQueue(root, salt, allowed) {
       // Prepare/validate settings under the same lock as registration. Publish
       // the generation and choice before another hook can acquire this lock.
       const publishConsent = prepareConsent?.();
+      const changed = synchronize(state);
       const canonicalCwd = canonical(cwd);
-      if (!revoke && !publishConsent && state.directories[key(cwd)] === path.resolve(cwd) &&
+      if (!changed && !revoke && !publishConsent && state.directories[key(cwd)] === path.resolve(cwd) &&
           state.directories[key(canonicalCwd)] === canonicalCwd && read(key(repoRoot))) return state;
       state.directories[key(cwd)] = path.resolve(cwd);
       state.directories[key(canonicalCwd)] = canonicalCwd;
@@ -53,17 +106,17 @@ function createRepositoryQueue(root, salt, allowed) {
   }
   function epoch(repoRoot) {
     if (!fs.existsSync(index)) return 0;
-    const id = key(canonical(repoRoot));
-    const release = acquireRoutingLock(path.join(index, `${id}.json.lock`));
-    try { return read(id)?.epoch || 0; }
-    finally { release(); }
+    return current(key(repoRoot))?.epoch || 0;
   }
   function eventRoute(data) {
     const state = read(data?.repo_root);
-    return state ? { epoch: state.epoch } : undefined;
+    return state ? { epoch: state.epoch, sharedStamp: state.sharedDeliveryToken } : undefined;
   }
   function revokedScope(scope) {
-    return (scope.queueEpoch || 0) !== epoch(scope.repoRoot);
+    if (!fs.existsSync(index)) return false;
+    const state = current(key(scope.repoRoot));
+    return (scope.queueEpoch || 0) !== (state?.epoch || 0) ||
+      !!state?.previousRepositories?.some(entry => entry.token === scope.sharedStamp && entry.revoked);
   }
   // Unknown legacy rows retain their existing behavior; do not infer a repo
   // from a session ID. New indexed rows with missing routing state are held.
@@ -76,7 +129,7 @@ function createRepositoryQueue(root, salt, allowed) {
       try { record = JSON.parse(line); } catch { kept.push(line); ready.push(line); wire.push(line); continue; }
       if (!record || typeof record !== "object" || Array.isArray(record)) { kept.push(line); ready.push(line); wire.push(line); continue; }
       const id = record?.data?.repo_root;
-      if (!states.has(id)) states.set(id, read(id));
+      if (!states.has(id)) states.set(id, current(id));
       const state = states.get(id);
       let blocked = Boolean(record._queue && !state);
       if (state) {
@@ -85,6 +138,12 @@ function createRepositoryQueue(root, salt, allowed) {
         else if ((record._queue?.epoch || 0) !== state.epoch) {
           dropped = true;
           continue;
+        } else if (state.previousRepositories?.some(entry => entry.token === record._queue?.sharedStamp && entry.revoked)) {
+          dropped = true;
+          continue;
+        } else if (authorize && (record._queue?.sharedStamp !== state.sharedDeliveryToken) &&
+                   (record._queue?.sharedStamp !== undefined || state.sharedPolicySeen)) {
+          blocked = true;
         } else if (authorize) {
           if (!decisions.has(cwd)) decisions.set(cwd, allowed(cwd));
           blocked = !decisions.get(cwd);
@@ -133,6 +192,15 @@ function createRepositoryQueue(root, salt, allowed) {
     }
     return complete;
   }
-  return { register, epoch, eventRoute, revokedScope, pruneFile, purgeEvents };
+  function requiresSharedPolicy(repoRoot) {
+    if (!repoRoot || !fs.existsSync(index)) return false;
+    return read(key(repoRoot))?.sharedPolicySeen === true;
+  }
+  function hasRevoked(file) {
+    if (!fs.existsSync(file)) return false;
+    const bytes = fs.readFileSync(file);
+    return filter(bytes, false).kept !== bytes.toString();
+  }
+  return { register, epoch, eventRoute, revokedScope, pruneFile, purgeEvents, requiresSharedPolicy, hasRevoked };
 }
 module.exports = { createRepositoryQueue };

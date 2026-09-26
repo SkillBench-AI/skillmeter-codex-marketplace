@@ -6,8 +6,9 @@ See the [installation and update guide](../../README.md#install) to get started.
 
 ## Sign in and controls
 
-In Codex, ask SkillMeter to sign you in, sign you out, or check whether the
-current repository is in scope. The bundled skills are listed below.
+In Codex, ask SkillMeter to sign you in, sign you out, show collection status,
+enable or disable the repository you are in, or check whether it is in scope.
+The bundled skills are listed below.
 
 For terminal commands, set `PLUGIN_ROOT` to the **Installed plugin root** printed
 by `codex plugin add`. Replace the placeholder below with that exact path so the
@@ -147,6 +148,7 @@ Current limitations:
 | --- | --- |
 | [signin](skills/signin/SKILL.md) | Authenticate with GitHub and choose organization scope |
 | [signout](skills/signout/SKILL.md) | Remove the shared license and stop uploads |
+| [telemetry](skills/telemetry/SKILL.md) | Show collection status; enable, disable, pause or resume collection |
 | [check-repo-scope](skills/check-repo-scope/SKILL.md) | Check whether the current repository is eligible |
 | [collect-export](skills/collect-export/SKILL.md) | Prepare a sanitized export for a one-off review |
 | [review-export](skills/review-export/SKILL.md) | Review an export before upload |
@@ -171,14 +173,9 @@ For implementation details, see the [hook definitions](hooks/hooks.json),
 [transport and recovery guide](integration/README.md). Run `npm run check` from
 the repository root when changing plugin code.
 
-Queue revocation fixtures run with `node --test
-plugins/skillmeter/test/queue-revocation.test.js` from the repository root.
-They use synthetic repositories and intercepted requests to check repository
-payload purge, mixed event isolation, and retry authorization. Set
-`SKILLMETER_STRICT_QUEUE_CONTRACT=1` on the same command to make every assertion
-mandatory, including cases marked TODO. A green default run does not establish
-that TODO assertions pass. The reference is
-Claude's `scripts/lib/repository-queue.js`: repository revocation removes its
-queued payloads while preserving cursors, and global pause retains queues.
-Legacy batch migration and crash recovery during a future purge remain separate
-implementation decisions; these fixtures do not select a migration policy.
+Tests live under `test/` by purpose (`sanitizer`, `consent`, `hooks`,
+`transport`, `auth`) with shared fixtures in `test-support/`. Queue revocation
+runs with `node --test plugins/skillmeter/test/consent/queue-revocation.test.js`
+from the repository root; it uses synthetic repositories and an intercepted
+fetch to check repository payload purge, mixed-batch isolation and retry
+authorization against Claude's `scripts/lib/repository-queue.js` contract.

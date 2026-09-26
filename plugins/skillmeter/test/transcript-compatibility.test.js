@@ -15,6 +15,10 @@ const { execFileSync } = require("node:child_process");
 execFileSync("git", ["init", "--quiet", dataDir]);
 execFileSync("git", ["-C", dataDir, "remote", "add", "origin", "https://github.com/synthetic/repo.git"]);
 const token = "e30." + Buffer.from(JSON.stringify({ sub: "synthetic-user", exp: 4102444800 })).toString("base64url") + ".fixture";
+const previousHome = process.env.HOME;
+const previousState = process.env.SKILLMETER_STATE_DIR;
+process.env.HOME = dataDir;
+process.env.SKILLMETER_STATE_DIR = path.join(dataDir, ".skillbench");
 const previousData = process.env.PLUGIN_DATA;
 process.env.PLUGIN_DATA = dataDir;
 const credentialModule = require.resolve("../scripts/credstore");
@@ -40,6 +44,10 @@ const realFetch = global.fetch;
 
 after(() => {
   global.fetch = realFetch;
+  if (previousHome === undefined) delete process.env.HOME;
+  else process.env.HOME = previousHome;
+  if (previousState === undefined) delete process.env.SKILLMETER_STATE_DIR;
+  else process.env.SKILLMETER_STATE_DIR = previousState;
   if (previousData === undefined) delete process.env.PLUGIN_DATA;
   else process.env.PLUGIN_DATA = previousData;
   if (previousCredentials) require.cache[credentialModule] = previousCredentials;
