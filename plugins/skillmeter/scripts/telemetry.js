@@ -7,6 +7,8 @@
 
 const {
   getTelemetryOptIn,
+  getLocalTelemetryChoice,
+  readSharedGlobalPolicy,
   getTelemetryGloballyDisabled,
   saveTelemetryOptIn,
   setTelemetryGloballyDisabled,
@@ -30,8 +32,8 @@ const {
 const fs = require("fs");
 const path = require("path");
 const { isJwtExpired } = require("./lib/jwt");
-const { readSharedGlobalPolicy, sharedPolicyFile } = require("./lib/shared-telemetry-policy");
 const { inventory } = require("./transcript_inventory");
+const { sharedPolicyFile } = require("./lib/shared-telemetry-policy");
 
 const cwd = process.cwd();
 const projectRoot = findGitRoot(cwd) || cwd;
@@ -50,6 +52,8 @@ function authenticationLine() {
 
 function sharedPauseLine() {
   const policy = readSharedGlobalPolicy();
+  if (policy.reason === "missing") return "paused; previously observed shared policy is missing; restore it before capture or delivery";
+  if (policy.errorCode === "POLICY_OBSERVATION_FAILED") return "paused; shared policy observation unavailable; check client data permissions";
   if (policy.reason === "invalid") return "shared policy invalid or unreadable; capture and delivery paused; repair the policy file";
   if (policy.disabled) return "shared policy paused; resume global telemetry through the shared policy controls";
   return null;
@@ -68,7 +72,11 @@ function capturePolicyLine() {
   const gate = resolveTelemetryGate(getTelemetryOptIn(cwd), scope.allowed);
   if (gate.mode === "opted_out") return "disabled for this project";
   if (!scope.allowed) return `excluded (${scope.classification})`;
+  if (getLocalTelemetryChoice(cwd) === "invalid") return "paused; invalid local consent settings; repair them before capture";
+  if (!gate.capture && sharedRepository.reason === "enabled" && !sharedRepository.acknowledged) return "disabled; machine-wide acknowledgement required or legacy local opt-in";
   if (!gate.capture) return "disabled; repository choice required";
+  if (sharedRepository.acknowledged) return "eligible through acknowledged shared consent; hook execution not verified";
+  if (sharedRepository.reason === "enabled") return "eligible through legacy local opt-in; shared scope acknowledgement pending; hook execution not verified";
   return "eligible for this repository; hook execution not verified";
 }
 
@@ -161,7 +169,7 @@ switch (action) {
       });
       process.stdout.write(`Shared repository choice saved: ${options.enabled ? "ON" : "OFF"} (revision ${policy.revision}).\n`);
       process.stdout.write(cleaned ? "Known local queue revocations checked.\n" : "Some local queue cleanup is deferred; delivery still rechecks consent.\n");
-      process.stdout.write("Local settings are unchanged. Capture still requires local opt-in; authentication, shared pause and other restrictions still apply.\n");
+      process.stdout.write("Local restrictions are unchanged. Acknowledged shared consent can authorize capture; authentication, shared pause and other restrictions still apply.\n");
       process.stdout.write("This does not verify hook execution, delivery or report generation.\n");
     } catch (error) {
       process.stderr.write(`SkillMeter: ${error.code || "CONSENT_UPDATE_FAILED"}: ${error.message}\n`);

@@ -138,12 +138,12 @@ test("absent policy can record OFF without inventing an organization grant", t =
   assert.deepEqual(updated.organizations,{});
 `));
 
-test("new clone records shared consent without silently creating local permission", t => fixture(t).run(setup + `
+test("new clone records shared consent without creating local settings", t => fixture(t).run(setup + `
   fs.unlinkSync(path.join(repo,'.codex/settings.local.json'));
   const updated=apply();
   assert.equal(updated.repositories[key].consent_version,2);
   assert.equal(fs.existsSync(path.join(repo,'.codex/settings.local.json')),false);
-  assert.equal(logger.getTelemetryOptIn(repo),null);
+  assert.equal(logger.getTelemetryOptIn(repo),true);
 `));
 
 test("CLI OFF/ON excludes disabled text and preserves another repository's queued data", t => fixture(t).run(setup + `
