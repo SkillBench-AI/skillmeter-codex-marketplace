@@ -8,7 +8,9 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const zlib = require("node:zlib");
 const { sanitizeLine } = require("../sanitizer");
-const { sessionMetadata } = require("./session-metadata");
+const { sessionMetadata, sessionContinuation } = require("./session-metadata");
+const health = require("./transcript-health");
+const { createProjection } = require("./compaction-projection");
 
 const MAX_ENVELOPE = 5 * 1024 * 1024; // below the 6 MiB Lambda event ceiling
 const ENVELOPE_RESERVE = 128 * 1024; // headers + JSON event wrapper
@@ -29,6 +31,8 @@ function writeDurable(file, bytes) {
   syncDir(path.dirname(file));
 }
 function readJson(file) { return JSON.parse(fs.readFileSync(file, "utf8")); }
+function recordFailure(dir, phase, code, progress = {}) { health.update(dir, phase, code, progress, writeDurable); }
+function recordProgress(dir, phase, progress) { health.update(dir, phase, null, progress, writeDurable); }
 function alive(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return true; // incomplete lock: fail closed
   try { process.kill(pid, 0); return true; } catch (e) { return e.code !== "ESRCH"; }
@@ -87,20 +91,60 @@ function prefix(fd, length, salt) {
   return hash;
 }
 
-function encodeChunks(lines, maxEnvelope = MAX_ENVELOPE) {
+// The first complete line of the source, or null while none is complete.
+function firstRecord(fd, size) {
+  const buffer = Buffer.alloc(64 * 1024);
+  const parts = [];
+  let length = 0, position = 0;
+  while (position < size && length <= MAX_RECORD) {
+    const n = fs.readSync(fd, buffer, 0, Math.min(buffer.length, size - position), position);
+    if (!n) break;
+    position += n;
+    const read = buffer.subarray(0, n);
+    const end = read.indexOf(10);
+    const part = Buffer.from(end >= 0 ? read.subarray(0, end + 1) : read);
+    parts.push(part);
+    length += part.length;
+    if (end >= 0) return Buffer.concat(parts, length);
+  }
+  return null;
+}
+
+// Routing identity for a batch staged past the file start. A first record that
+// is not a usable session_meta leaves the batch as before: content only.
+function continuationLine(fd, size, salt, id, generation, options) {
+  const raw = firstRecord(fd, size);
+  if (!raw) return null;
+  let projected;
+  try {
+    projected = sessionContinuation(JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw).trim()));
+  } catch { return null; }
+  if (!projected) return null;
+  if (options.authorizeRecord && !options.authorizeRecord(projected)) throw new Error("source-scope-changed");
+  const sanitized = sanitizeLine(projected, salt);
+  // One identity line per generation: the collector merges on uuid, so every
+  // batch that lands in the same stored object collapses to a single line.
+  sanitized.uuid = hmac(salt, `${id}\0${generation}\0continuation`);
+  return JSON.stringify(sanitized) + "\n";
+}
+
+function encodeChunks(lines, maxEnvelope = MAX_ENVELOPE, continuation = null, startsSession = false) {
   const limit = Math.min(MAX_ENVELOPE, maxEnvelope);
   if (!Number.isFinite(limit) || limit <= ENVELOPE_RESERVE + 128) throw new Error("invalid-wire-budget");
   const output = [];
-  function encode(group) {
-    const body = zlib.gzipSync(Buffer.from(group.join("")));
+  function encode(group, first) {
+    // Keep routing identity with each wire payload. Splitting a prefixed batch
+    // can otherwise strand its header, or file later chunks without identity.
+    const records = continuation ? [first && startsSession ? lines[0] : continuation, ...group] : group;
+    const body = zlib.gzipSync(Buffer.from(records.join("")));
     if (4 * Math.ceil(body.length / 3) + ENVELOPE_RESERVE <= limit) {
-      output.push({ body, records: group.length }); return;
+      output.push({ body, records: records.length }); return;
     }
-    if (group.length === 1) throw new Error("oversized-single-record");
+    if (group.length <= 1) throw new Error("oversized-single-record");
     const mid = Math.floor(group.length / 2);
-    encode(group.slice(0, mid)); encode(group.slice(mid));
+    encode(group.slice(0, mid), first); encode(group.slice(mid), false);
   }
-  if (lines.length) encode(lines);
+  if (lines.length) encode(continuation && startsSession ? lines.slice(1) : lines, true);
   return output;
 }
 
@@ -208,14 +252,16 @@ function stage(root, source, scope, salt, options = {}) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   const release = acquireLock(path.join(dir, "lock"));
   if (!release) return { status: "busy", files: [] };
-  let fd;
+  let fd, capturedBytes, observedBytes;
   try {
     const cursor = recover(dir);
+    capturedBytes = cursor?.offset || 0;
     if (cursor && (cursor.scope.owner !== scope.owner || cursor.scope.deviceId !== scope.deviceId)) {
       throw new Error("source-owner-changed");
     }
     fd = fs.openSync(source, "r");
     const stat = fs.fstatSync(fd);
+    observedBytes = stat.size;
     if (options.consent) {
       if (!options.consent.enabled || options.consent.owner !== scope.owner ||
           JSON.stringify(readJson(path.join(dir, "consent.json"))) !== JSON.stringify(options.consent)) {
@@ -243,12 +289,19 @@ function stage(root, source, scope, salt, options = {}) {
       if (reset && options.consent && cursor.consentEpoch === options.consent.epoch) {
         throw new Error("consent-source-rewritten");
       }
-      if (!reset && stat.size === offset) return { status: "unchanged", files: [], partial: false };
+      if (!reset && stat.size === offset) {
+        recordProgress(dir, "capture", { capturedBytes: offset, observedBytes, partial: false });
+        return { status: "unchanged", files: [], partial: false };
+      }
       if (!reset) rawPrefix = prefix(fd, offset, salt);
     }
     if (reset) { offset = 0; rawPrefix = prefix(fd, 0, salt); }
     const generation = reset ? (cursor?.generation || 0) + 1 : cursor.generation;
     const baseline = reset ? (cursor?.seq || 0) + 1 : cursor.baseline;
+    const projectCompaction = createProjection(fd, { salt, id, generation, consent: options.consent, maxRecord: MAX_RECORD });
+    // Every split wire chunk needs identity, including later chunks in the
+    // initial batch. The first reset chunk keeps the real session_meta.
+    const continuation = preserveMetadata ? continuationLine(fd, stat.size, salt, id, generation, options) : null;
     let pending = Buffer.alloc(0), readPosition = offset, committed = offset;
     let lineCount = reset ? 0 : cursor.lineCount;
     const lines = [];
@@ -280,9 +333,21 @@ function stage(root, source, scope, salt, options = {}) {
             // sanitization, preserving identical authored records and redaction collisions.
             const uuid = hmac(salt, `${id}\0${generation}\0${committed}\0${hmac(salt, raw)}`);
             const sanitized = sanitizeLine(record, salt);
-            if (sanitized.uuid) sanitized._codex_source_uuid = sanitized.uuid;
-            sanitized.uuid = uuid;
-            const serialized = JSON.stringify(sanitized) + "\n";
+            const serialize = value => {
+              if (value.uuid) value._codex_source_uuid = value.uuid;
+              value.uuid = uuid;
+              return JSON.stringify(value) + "\n";
+            };
+            let serialized = serialize(sanitized);
+            if (record.type === "compacted") {
+              // Keep every already-deliverable representation unchanged. Gzip
+              // can compress repeated inline content better than unique refs.
+              try { encodeChunks([serialized], options.maxEnvelope, continuation); }
+              catch (error) {
+                if (error.message !== "oversized-single-record") throw error;
+                serialized = serialize(sanitizeLine(projectCompaction(record, committed, sanitized), salt));
+              }
+            }
             if (Buffer.byteLength(serialized) >= MAX_RECORD) throw new Error("oversized-single-record");
             lines.push(serialized);
           }
@@ -293,8 +358,11 @@ function stage(root, source, scope, salt, options = {}) {
       if (pending.length > MAX_RECORD) throw new Error("oversized-single-record");
       if (lines.length && committed - offset >= (options.stageBytes || STAGE_BYTES)) break;
     }
-    if (!lines.length) return { status: "unchanged", files: [], partial: pending.length > 0 };
-    const encoded = encodeChunks(lines, options.maxEnvelope);
+    if (!lines.length) {
+      recordProgress(dir, "capture", { capturedBytes: offset, observedBytes, partial: pending.length > 0 });
+      return { status: "unchanged", files: [], partial: pending.length > 0 };
+    }
+    const encoded = encodeChunks(lines, options.maxEnvelope, continuation, offset === 0);
     let seq = cursor?.seq || 0;
     const chunks = encoded.map(({ body, records }) => ({ file: `${++seq}.gz`, seq, reset: baseline, records, sha256: digest(body) }));
     const next = { version: 1, seq, baseline, generation, offset: committed, lineCount,
@@ -316,12 +384,14 @@ function stage(root, source, scope, salt, options = {}) {
     writeDurable(path.join(dir, "cursor.json"), JSON.stringify(next));
     options.fault?.("after-cursor");
     writeDurable(path.join(group, "ready"), "1");
+    recordProgress(dir, "capture", { capturedBytes: committed, observedBytes, partial: pending.length > 0 });
     return { status: "staged", files: chunks.map(c => path.join(group, c.file)), cursor: next };
   } catch (e) {
     // Error code only. Never persist source text or arbitrary exception payloads.
     const code = ["oversized-single-record", "malformed-complete-record", "invalid-wire-budget",
       "source-changed-during-stage", "source-truncated-during-read", "invalid-cursor", "incomplete-transaction", "source-scope-changed", "source-owner-changed", "consent-source-rewritten", "consent-changed-during-stage", "invalid-session-metadata", "unsupported-session-source", "unsupported-session-originator"].includes(e.message) ? e.message : "stage-failed";
-    writeDurable(path.join(dir, "diagnostic.json"), JSON.stringify({ code, at: new Date().toISOString() }));
+    // A failed diagnostics write must not replace the capture error.
+    try { recordFailure(dir, "capture", code, { capturedBytes, observedBytes }); } catch {}
     throw e;
   } finally { if (fd !== undefined) fs.closeSync(fd); release(); }
 }
@@ -370,11 +440,18 @@ async function drainDirectory(dir, send) {
     for (const file of pendingFiles(dir)) {
       const meta = metadata(file), body = fs.readFileSync(file);
       if (digest(body) !== meta.sha256) throw new Error("chunk-integrity-failed");
+      const previousAttempt = health.inspect(dir).delivery?.attemptId;
       const outcome = await send(meta, body);
       if (outcome === "reset-required") {
         writeDurable(path.join(dir, "reset-request.json"), JSON.stringify({ baseline: meta.reset }));
       }
-      if (outcome !== "sent") break; // never advance over retry/auth/poison
+      if (outcome !== "sent") {
+        const previous = health.inspect(dir).delivery;
+        const code = previous?.attemptId !== previousAttempt && previous?.activeFailure?.code;
+        recordFailure(dir, "delivery", code || `delivery-${outcome}`, { seq: meta.seq });
+        break; // never advance over retry/auth/poison
+      }
+      recordProgress(dir, "delivery", { acknowledgedSeq: meta.seq, acknowledgedBaseline: meta.reset });
       fs.unlinkSync(file); syncDir(path.dirname(file)); sent++;
     }
     for (const group of groups(dir)) {
@@ -386,4 +463,4 @@ async function drainDirectory(dir, send) {
   } finally { release(); }
 }
 module.exports = { stage, observeConsent, purgeRevoked, encodeChunks, acquireLock, recover, queueDirectories, pendingFiles, metadata,
-  drainDirectory, writeDurable, hmac, MAX_ENVELOPE, ENVELOPE_RESERVE, MAX_RECORD, STAGE_BYTES };
+  drainDirectory, writeDurable, recordFailure, hmac, MAX_ENVELOPE, ENVELOPE_RESERVE, MAX_RECORD, STAGE_BYTES };

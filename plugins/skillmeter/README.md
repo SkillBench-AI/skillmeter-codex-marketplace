@@ -6,14 +6,16 @@ See the [installation and update guide](../../README.md#install) to get started.
 
 ## Sign in and controls
 
-In Codex, ask SkillMeter to sign you in, sign you out, or check whether the
-current repository is in scope. The bundled skills are listed below.
+In Codex, ask SkillMeter to sign you in, sign you out, show collection status,
+enable or disable the repository you are in, or check whether it is in scope.
+The bundled skills are listed below.
 
 For terminal commands, set `PLUGIN_ROOT` to the **Installed plugin root** printed
-by `codex plugin add`. For a default 0.6.1 installation:
+by `codex plugin add`. Replace the placeholder below with that exact path so the
+commands use the installed version rather than an older cached copy:
 
 ```sh
-export PLUGIN_ROOT="$HOME/.codex/plugins/cache/skillbench/skillmeter/0.6.1"
+export PLUGIN_ROOT="/absolute/path/to/installed/skillmeter"
 ```
 
 Run project controls from the repository you want to configure:
@@ -74,12 +76,14 @@ opt-outs remain restrictive; subdirectory opt-ins cannot enable the whole repo.
 This follows Claude's explicit repository opt-in rule. Codex still stores the
 choice per checkout, so clones and linked worktrees require separate choices.
 It does not yet use Claude's shared organization/repository policy store.
-Repository disable stops new capture but does not purge previously queued data;
-event batches may still drain. Global pause stops capture and transmission while
-retaining queues. Observed disabled transcript intervals are excluded from later staging and
-baseline recovery. The first observation excludes existing content, so native
-startup timing matters for capture completeness. Shared policy and queue
-revocation remain required for full consent parity. See the [alignment boundary](../../docs/repository-consent.md).
+Repository disable stops new capture and removes that repository's queued,
+unsent event and transcript payloads; privacy cursors are kept, so re-enabling
+does not restore removed data, and requests already in flight complete. Global
+pause stops capture and transmission while retaining queues. Observed disabled
+transcript intervals are excluded from later staging and baseline recovery. The
+first observation excludes existing content, so native startup timing matters
+for capture completeness. Shared policy remains required for full consent
+parity. See the [alignment boundary](../../docs/repository-consent.md).
 
 ## Data and privacy
 
@@ -90,7 +94,7 @@ Collected data can include:
 - Configuration names and counts, plus bounded descriptions and bodies of
   custom project/user skills. This is **not metadata-only collection**.
 
-Policy 3.1.0 redacts recognized secrets, email addresses, VCS author names,
+Policy 3.1.1 redacts recognized secrets, email addresses, VCS author names,
 phone numbers, IP addresses, national identifiers and payment-card numbers with
 typed placeholders. File-path fields retain hierarchy, extensions and approved
 technical vocabulary; other segments are hashed. Directory fields, commands and
@@ -110,7 +114,12 @@ for downstream analysis.
 
 Uploads use durable local queues. Transcript chunks retain their order and
 retry identity across interruption and restart. A send failure does not require
-reinstalling the plugin or deleting its data.
+reinstalling the plugin or deleting its data. Each later wire chunk, including
+chunks split from a large batch, opens with a `session_continuation` record that
+carries only the session id, working directory, originator and lineage, so a
+stored object that holds later chunks of a long session can still be attributed
+to that session. This requires a usable first `session_meta` record and metadata
+preservation; otherwise, later batches remain content-only.
 
 | Symptom | Check |
 | --- | --- |
@@ -139,6 +148,7 @@ Current limitations:
 | --- | --- |
 | [signin](skills/signin/SKILL.md) | Authenticate with GitHub and choose organization scope |
 | [signout](skills/signout/SKILL.md) | Remove the shared license and stop uploads |
+| [telemetry](skills/telemetry/SKILL.md) | Show collection status; enable, disable, pause or resume collection |
 | [check-repo-scope](skills/check-repo-scope/SKILL.md) | Check whether the current repository is eligible |
 | [collect-export](skills/collect-export/SKILL.md) | Prepare a sanitized export for a one-off review |
 | [review-export](skills/review-export/SKILL.md) | Review an export before upload |
@@ -163,14 +173,9 @@ For implementation details, see the [hook definitions](hooks/hooks.json),
 [transport and recovery guide](integration/README.md). Run `npm run check` from
 the repository root when changing plugin code.
 
-Queue revocation fixtures run with `node --test
-plugins/skillmeter/test/queue-revocation.test.js` from the repository root.
-They use synthetic repositories and intercepted requests to check repository
-payload purge, mixed event isolation, and retry authorization. Set
-`SKILLMETER_STRICT_QUEUE_CONTRACT=1` on the same command to make every assertion
-mandatory, including cases marked TODO. A green default run does not establish
-that TODO assertions pass. The reference is
-Claude's `scripts/lib/repository-queue.js`: repository revocation removes its
-queued payloads while preserving cursors, and global pause retains queues.
-Legacy batch migration and crash recovery during a future purge remain separate
-implementation decisions; these fixtures do not select a migration policy.
+Tests live under `test/` by purpose (`sanitizer`, `consent`, `hooks`,
+`transport`, `auth`) with shared fixtures in `test-support/`. Queue revocation
+runs with `node --test plugins/skillmeter/test/consent/queue-revocation.test.js`
+from the repository root; it uses synthetic repositories and an intercepted
+fetch to check repository payload purge, mixed-batch isolation and retry
+authorization against Claude's `scripts/lib/repository-queue.js` contract.
