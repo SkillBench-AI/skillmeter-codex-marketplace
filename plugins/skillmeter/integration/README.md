@@ -100,6 +100,9 @@ linear in source size.
 
 ## Queue and recovery
 
+See [released-state upgrade checks](UPGRADE-COMPATIBILITY.md) for the pinned
+historical queue matrix and the limits of its compatibility evidence.
+
 Capture hints live in `logs/transcripts/captures-v1/`. Immutable gzip chunks,
 transaction manifests and raw-byte cursors live in `logs/transcripts/chunks-v1/`.
 Transactions publish chunks before advancing the cursor; restart recovery finishes

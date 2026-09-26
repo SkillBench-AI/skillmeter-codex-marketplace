@@ -31,7 +31,7 @@ function withQueue(root, source, salt, io, fn) {
   if (!fs.existsSync(path.join(dir, "cursor.json"))) fail("legacy-cursor-required");
   const release = io.acquireLock(path.join(dir, "lock"));
   if (!release) fail("legacy-queue-busy");
-  try { return fn(dir); } finally { release(); }
+  try { io.assertQueueFormats(dir); return fn(dir); } finally { release(); }
 }
 
 function snapshot(dir, source, scope, salt, io) {
