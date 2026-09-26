@@ -3,10 +3,23 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), cp = require("node:child_process");
 const { prepare } = require("./prepare.cjs");
+const { settled } = require("./verify-turn.cjs");
+
+// A hook in these tests can spawn the real detached drain worker. Removing the
+// canary while that worker still writes its queue fails with ENOTEMPTY, so
+// cleanup waits for the drain to settle and retries the removal.
+async function remove(root, base) {
+  for (let attempt = 0; attempt < 200; attempt++) {
+    try { settled(base); break; } catch (error) { if (error.code !== "ERR_ASSERTION") throw error; }
+    await new Promise(resolve => setTimeout(resolve, 25));
+  }
+  fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+}
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "shared harness-"));
-  t.after(() => fs.rmSync(root, { recursive: true, force: true }));
+  const base = path.join(root, "canary");
+  t.after(() => remove(root, base));
   const claude = path.join(root, "claude-source"); fs.mkdirSync(claude);
   const git = args => {
     const r = cp.spawnSync("git", ["-C", claude, ...args], { encoding: "utf8", env: { PATH: process.env.PATH, HOME: root, GIT_CONFIG_NOSYSTEM: "1" } });
@@ -23,7 +36,7 @@ function fixture(t) {
   `);
   git(["init", "--quiet"]); git(["add", "."]);
   git(["-c", "user.name=Synthetic", "-c", "user.email=canary@example.invalid", "commit", "-qm", "Synthetic control spy"]);
-  const base = path.join(root, "canary"); prepare(base, claude);
+  prepare(base, claude);
   const run = (args, input) => cp.spawnSync(process.execPath, [path.join(base, "run.cjs"), ...args], {
     input: input && JSON.stringify(input), encoding: "utf8", timeout: 10000,
     env: { PATH: process.env.PATH, HOME: path.join(root, "unrelated-home") },
