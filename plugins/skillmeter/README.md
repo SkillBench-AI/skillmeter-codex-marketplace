@@ -6,8 +6,9 @@ See the [installation and update guide](../../README.md#install) to get started.
 
 ## Sign in and controls
 
-In Codex, ask SkillMeter to sign you in, sign you out, or check whether the
-current repository is in scope. The bundled skills are listed below.
+In Codex, ask SkillMeter to sign you in, sign you out, show collection status,
+enable or disable the repository you are in, or check whether it is in scope.
+The bundled skills are listed below.
 
 For terminal commands, set `PLUGIN_ROOT` to the **Installed plugin root** printed
 by `codex plugin add`. Replace the placeholder below with that exact path so the
@@ -147,6 +148,7 @@ Current limitations:
 | --- | --- |
 | [signin](skills/signin/SKILL.md) | Authenticate with GitHub and choose organization scope |
 | [signout](skills/signout/SKILL.md) | Remove the shared license and stop uploads |
+| [telemetry](skills/telemetry/SKILL.md) | Show collection status; enable, disable, pause or resume collection |
 | [check-repo-scope](skills/check-repo-scope/SKILL.md) | Check whether the current repository is eligible |
 | [collect-export](skills/collect-export/SKILL.md) | Prepare a sanitized export for a one-off review |
 | [review-export](skills/review-export/SKILL.md) | Review an export before upload |
