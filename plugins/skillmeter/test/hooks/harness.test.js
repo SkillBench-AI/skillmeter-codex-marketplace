@@ -52,6 +52,7 @@ test("bare project: flat defaults, Level 2 unknown, no raw content", () => {
   const h = detectHarness(root, { homeDir: home, repoRoot: root, hashSalt: SALT });
 
   assert.equal(h.harness_schema_version, HARNESS_SCHEMA_VERSION);
+  assert.equal(HARNESS_SCHEMA_VERSION, "2.1", "consumers depend on this version");
   assert.equal(h.agent_type, "codex");
   assert.equal(h.agent_version, "");
   assert.equal(h.has_agents_md, false);

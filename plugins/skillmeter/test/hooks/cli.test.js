@@ -43,6 +43,14 @@ test("sk-jwt flags an expired token", () => {
   assert.match(run("sk-jwt", [], home({ device_id: "DEV-1", hash_salt: "abcd", license_jwt: jwt })).stdout, /EXPIRED/i);
 });
 
+test("sk-telemetry disable --global sets the machine-wide pause and enable --global clears it", () => {
+  const dir = home({ device_id: "DEV-1", hash_salt: "abcd" });
+  assert.equal(run("sk-telemetry", ["disable", "--global"], dir).status, 0);
+  assert.equal(readCredentials(dir).telemetry_disabled, true);
+  assert.equal(run("sk-telemetry", ["enable", "--global"], dir).status, 0);
+  assert.equal(readCredentials(dir).telemetry_disabled, false);
+});
+
 test("signout drops the license and organizations, sets the global pause, and keeps the device identity", () => {
   const dir = home({ device_id: "DEV-1", hash_salt: "abcd", license_jwt: makeJwt({ sub: "u", exp: now() + 3600 }), allowed_github_orgs: ["acme"] });
   assert.equal(run("signout", [], dir).status, 0);

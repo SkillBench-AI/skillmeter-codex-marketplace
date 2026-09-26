@@ -242,3 +242,17 @@ test("a fresh lock naming a live process is still respected", () => {
   fs.unlinkSync(lock);
 });
 
+// A dead owner is recovered at once, without waiting for the age backstop.
+test("a crashed writer's fresh lock is recovered immediately without evicting a live owner", () => {
+  const lock = `${credentialPath}.lock`;
+  childProcess.execFileSync(process.execPath, ["-e", `
+    require(${JSON.stringify(require.resolve("../../scripts/lib/credential-lock"))})
+      .acquireLock(${JSON.stringify(lock)});
+  `]);
+  const release = acquireLock(lock);
+  assert.equal(typeof release, "function");
+  try { assert.equal(acquireLock(lock), null); }
+  finally { release(); }
+  assert.equal(fs.existsSync(lock), false);
+});
+

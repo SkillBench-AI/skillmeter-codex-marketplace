@@ -64,6 +64,25 @@ test("maybeRefreshLicense makes no network call when the token is comfortably va
   assert.equal(credstore.getLicenseToken(), valid, "the valid token is left untouched");
 });
 
+test("successive sweeps keep refreshing a token that is still expired", async () => {
+  const expired = makeJwt({ exp: nowSec() - 60 });
+  credstore.setLicenseToken(expired);
+  let calls = 0;
+  global.fetch = async () => {
+    calls += 1;
+    return { ok: true, status: 200, json: async () => ({ token: makeJwt({ exp: nowSec() - 60, jti: calls }) }), text: async () => "" };
+  };
+  logger.refreshRetryDaemonLock();
+  logger.drainQueuesOnce = async () => 0;
+  try {
+    await daemon.sweep();
+    await daemon.sweep();
+  } finally {
+    logger.clearRetryDaemonLock();
+  }
+  assert.equal(calls, 2, "each sweep refreshes the still-expired token");
+});
+
 test("a refresh failure is logged and never aborts the sweep's drain", async () => {
   logger.refreshRetryDaemonLock();
   assert.equal(logger.ownsRetryDaemonLock(), true);
