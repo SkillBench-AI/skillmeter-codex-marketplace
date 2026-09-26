@@ -3,6 +3,7 @@
 const fs = require("node:fs");
 const path = require("node:path");
 const zlib = require("node:zlib");
+const assert = require("node:assert/strict");
 const { execFileSync } = require("node:child_process");
 
 const root = process.argv[2];
@@ -51,10 +52,18 @@ function initializeFixture() {
 const initialRecords = !appendMode ? initializeFixture() : null;
 // Load after setting the isolated home and synthetic credentials.
 const logger = require("../scripts/logger");
+const queue = require("../scripts/lib/transcript-delta");
+let legacyFirst;
 if (initialRecords) {
   logger.saveTelemetryOptIn(repo, true);
-  logger.observeTranscriptConsent(source, repo);
-  fs.appendFileSync(source, initialRecords.map(JSON.stringify).join("\n") + "\n");
+  // Build a legacy v1 queue before the new consent observer sees this source.
+  // Split substantive work across the upgrade, including linked tool evidence.
+  fs.appendFileSync(source, initialRecords.slice(0, 4).map(JSON.stringify).join("\n") + "\n");
+  const scope = {cwd:repo,repoRoot:repo,org:"synthetic",deviceId:"SYNTHETIC-DEVICE",
+    owner:queue.hmac("fixture-salt",JSON.stringify([undefined,"https://synthetic.meter.skillbench.com","synthetic-tenant","synthetic-user"]))};
+  legacyFirst = queue.stage(logger.TRANSCRIPT_CHUNKS_DIR,source,scope,"fixture-salt").files[0];
+  assert.throws(()=>logger.observeTranscriptConsent(source,repo),/legacy-consent-migration-required/);
+  fs.appendFileSync(source, initialRecords.slice(4).map(JSON.stringify).join("\n") + "\n");
 }
 const stage = () => logger.stageTranscriptForUpload(source, { cwd: repo });
 const upload = file => logger.processPendingTranscript(file, "SYNTHETIC-DEVICE", url, 2000);
@@ -92,7 +101,7 @@ async function appendAndRecover() {
 }
 
 async function uploadWithLostResponse() {
-  const first = stage();
+  const first = legacyFirst;
   if (!first) throw Error("no chunk");
   const initial = zlib.gunzipSync(fs.readFileSync(first));
   const attempts = [];
@@ -114,15 +123,28 @@ async function uploadWithLostResponse() {
     },
   };
   fs.appendFileSync(source, JSON.stringify(next) + "\n");
+  assert.throws(()=>logger.migrateLegacyTranscript(source,repo),/legacy-pending-chunks/);
+  await upload(first); // Acknowledge exactly the legacy bytes before migration.
+  if (logger.listPendingTranscripts().length) throw Error("legacy queue did not drain");
+  const plan = logger.migrateLegacyTranscript(source,repo);
+  const migrated = logger.migrateLegacyTranscript(source,repo,{
+    plan,authorizedRanges:[[0,plan.observed]],evidence:"synthetic fixture explicitly authorized in full",
+  });
+  assert.equal(migrated.generation,1);
+  assert.equal(migrated.baseline,1);
   const second = stage();
   const expected = Buffer.concat([initial, zlib.gunzipSync(fs.readFileSync(second))]);
-  await upload(first);
+  await upload(second);
   if (logger.listPendingTranscripts().length) throw Error("queue did not drain");
   if (JSON.stringify(attempts[0]) !== JSON.stringify(attempts[1])) throw Error("retry mutated request");
   fs.writeFileSync(expectedFile, expected);
   // Retained only in the temporary fixture directory for delayed replay.
   fs.writeFileSync(path.join(root, "stale-request.json"), JSON.stringify(attempts.at(-1)));
   fs.writeFileSync(path.join(root, "attempts.json"), JSON.stringify(attempts.map(({ seq, reset }) => ({ seq, reset }))));
+  fs.writeFileSync(path.join(root,"migration-result.json"),JSON.stringify({
+    pendingHeld:true,legacyDrained:true,generationPreserved:true,baselinePreserved:true,
+    legacyCommittedOffset:plan.committedOffset,approvedObserved:plan.observed,
+  }));
   console.log(JSON.stringify({ records: expected.toString().trim().split("\n").length, attempts: attempts.map(a => a.seq) }));
 }
 

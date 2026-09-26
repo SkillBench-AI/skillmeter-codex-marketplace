@@ -9,6 +9,7 @@ const crypto = require("node:crypto");
 const zlib = require("node:zlib");
 const { sanitizeLine } = require("../sanitizer");
 const { sessionMetadata, sessionContinuation } = require("./session-metadata");
+const legacyMigration = require("./legacy-consent-migration");
 
 const MAX_ENVELOPE = 5 * 1024 * 1024; // below the 6 MiB Lambda event ceiling
 const ENVELOPE_RESERVE = 128 * 1024; // headers + JSON event wrapper
@@ -148,6 +149,7 @@ function groups(dir) {
   return fs.readdirSync(dir).filter(n => /^batch-\d+-[a-f0-9-]+$/.test(n)).sort().map(n => path.join(dir, n));
 }
 function recover(dir) {
+  legacyMigration.recoverMigration(dir, { writeDurable });
   const file = path.join(dir, "cursor.json");
   let cursor = fs.existsSync(file) ? readJson(file) : null;
   if (cursor && (cursor.version !== 1 || !Number.isSafeInteger(cursor.seq) || cursor.seq < 1)) {
@@ -201,9 +203,14 @@ function observeConsent(root, source, scope, salt, enabled, stamp, rebase = fals
   const release = acquireLock(path.join(dir, "lock"));
   if (!release) return null;
   try {
+    legacyMigration.recoverMigration(dir, { writeDurable });
     const stat = fs.statSync(source), fileId = `${stat.dev}:${stat.ino}`;
     const file = path.join(dir, "consent.json");
     let state = fs.existsSync(file) ? readJson(file) : null;
+    if (!state && fs.existsSync(path.join(dir, "cursor.json"))) {
+      writeDurable(path.join(dir, "diagnostic.json"), JSON.stringify({ code: "legacy-consent-migration-required", at: new Date().toISOString() }));
+      throw new Error("legacy-consent-migration-required");
+    }
     if (state) validateConsent(state);
     if (state && state.owner !== scope.owner) throw new Error("source-owner-changed");
     if (state && state.fileId !== fileId && !rebase && enabled && state.enabled && state.stamp === stamp) {
@@ -273,6 +280,11 @@ function stage(root, source, scope, salt, options = {}) {
       (preserveMetadata && cursor.metadataVersion !== 1) ||
       (options.consent && (cursor.consentEpoch !== options.consent.epoch || cursor.scope.consentStamp !== scope.consentStamp)) ||
       (requested && requested.baseline >= cursor.baseline);
+    // A reset must not replace already acknowledged legacy evidence with a
+    // smaller baseline when historical authorization could not be established.
+    if (reset && cursor?.legacyMigration && options.consent?.excluded.some(([start]) => start < cursor.legacyMigration.committedOffset)) {
+      throw new Error("legacy-reset-recovery-required");
+    }
     if (reset && cursor && options.consent && cursor.consentEpoch === options.consent.epoch &&
         (stat.size < offset || prefix(fd, offset, salt).digest("hex") !== cursor.prefix)) {
       throw new Error("consent-source-rewritten");
@@ -341,6 +353,7 @@ function stage(root, source, scope, salt, options = {}) {
     let seq = cursor?.seq || 0;
     const chunks = encoded.map(({ body, records }) => ({ file: `${++seq}.gz`, seq, reset: baseline, records, sha256: digest(body) }));
     const next = { version: 1, seq, baseline, generation, offset: committed, lineCount,
+      ...(cursor?.legacyMigration ? { legacyMigration: cursor.legacyMigration } : {}),
       ...(options.consent ? { consentEpoch: options.consent.epoch } : {}),
       ...(preserveMetadata ? { metadataVersion: 1 } : {}),
       prefix: rawPrefix.digest("hex"), fileId, scope, source: path.resolve(source), transcriptId: path.basename(source) };
@@ -363,7 +376,7 @@ function stage(root, source, scope, salt, options = {}) {
   } catch (e) {
     // Error code only. Never persist source text or arbitrary exception payloads.
     const code = ["oversized-single-record", "malformed-complete-record", "invalid-wire-budget",
-      "source-changed-during-stage", "source-truncated-during-read", "invalid-cursor", "incomplete-transaction", "source-scope-changed", "source-owner-changed", "consent-source-rewritten", "consent-changed-during-stage", "invalid-session-metadata", "unsupported-session-source", "unsupported-session-originator"].includes(e.message) ? e.message : "stage-failed";
+      "source-changed-during-stage", "source-truncated-during-read", "invalid-cursor", "incomplete-transaction", "source-scope-changed", "source-owner-changed", "consent-source-rewritten", "consent-changed-during-stage", "invalid-session-metadata", "unsupported-session-source", "unsupported-session-originator", "legacy-reset-recovery-required"].includes(e.message) ? e.message : "stage-failed";
     writeDurable(path.join(dir, "diagnostic.json"), JSON.stringify({ code, at: new Date().toISOString() }));
     throw e;
   } finally { if (fd !== undefined) fs.closeSync(fd); release(); }
@@ -428,5 +441,8 @@ async function drainDirectory(dir, send) {
     return sent;
   } finally { release(); }
 }
-module.exports = { stage, observeConsent, purgeRevoked, encodeChunks, acquireLock, recover, queueDirectories, pendingFiles, metadata,
+const migrationIO = { hmac, prefix, writeDurable, acquireLock, recover, pendingFiles };
+const prepareLegacyMigration = (root, source, scope, salt) => legacyMigration.prepare(root, source, scope, salt, migrationIO);
+const applyLegacyMigration = (root, source, scope, salt, options) => legacyMigration.apply(root, source, scope, salt, options, migrationIO);
+module.exports = { prepareLegacyMigration, applyLegacyMigration, stage, observeConsent, purgeRevoked, encodeChunks, acquireLock, recover, queueDirectories, pendingFiles, metadata,
   drainDirectory, writeDurable, hmac, MAX_ENVELOPE, ENVELOPE_RESERVE, MAX_RECORD, STAGE_BYTES };

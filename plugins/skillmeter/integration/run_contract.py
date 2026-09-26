@@ -220,6 +220,11 @@ def main():
                 result = subprocess.run(command, capture_output=True, text=True, timeout=30)
                 if result.returncode:
                     raise RuntimeError(result.stderr)
+                migration = json.loads((root / "migration-result.json").read_text())
+                assert all(migration.get(k) is True for k in (
+                    "pendingHeld", "legacyDrained", "generationPreserved", "baselinePreserved"
+                ))
+                assert 0 < migration["legacyCommittedOffset"] < migration["approvedObserved"]
                 listed = client.list_objects_v2(Bucket="synthetic-transcripts")["Contents"]
                 assert len(listed) == 1
                 key = listed[0]["Key"]
@@ -468,6 +473,8 @@ def main():
                     "storedSha256": hashlib.sha256(stored).hexdigest(),
                     "records": len(stored.splitlines()) - 1,
                     "storageFrameValidated": True,
+                    "legacyMigrationVerified": True,
+                    "legacyMigration": migration,
                     "fixtureDateRekeyed": True,
                     "canonicalSessions": 1,
                     "canonicalMessages": len(messages),
