@@ -20,12 +20,12 @@ function timestamp(value) {
   check(typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d(?:\.\d+)?(?:Z|\+00:00)$/.test(value), "invalid-evidence-time");
   const time = Date.parse(value); check(Number.isFinite(time), "invalid-evidence-time"); return time;
 }
-function evaluate(contract, expected, mixed, backend, now = Date.now()) {
+function evaluate(contract, expected, mixed, backend, faults, now = Date.now()) {
   validate(contract);
   check(keys(expected, ["version", "startedAt", "revisions"]) && expected.version === 1 && keys(expected.revisions, COMPONENTS) && Object.values(expected.revisions).every(revision), "invalid-expected-candidate");
   const start = timestamp(expected.startedAt);
   check(start <= now && now - start <= 60 * 60 * 1000, "expired-gate-invocation");
-  for (const receipt of [mixed, backend]) {
+  for (const receipt of [mixed, backend, faults]) {
     check(receipt && typeof receipt === "object" && !Array.isArray(receipt), "missing-receipt");
     const first = timestamp(receipt.startedAt), last = timestamp(receipt.finishedAt);
     check(start <= first && first <= last && last <= now, "stale-or-future-evidence");
@@ -33,6 +33,11 @@ function evaluate(contract, expected, mixed, backend, now = Date.now()) {
   check(mixed.version === 1 && mixed.kind === "mixed-client-authorization-gate" && mixed.contractSha256 === digest(contract), "mixed-contract-mismatch");
   check(keys(mixed.revisions, ["codex", "claude"]) && mixed.revisions.codex === expected.revisions.producer && mixed.revisions.claude === expected.revisions.claude, "mixed-revision-mismatch");
   check(Array.isArray(mixed.results) && sameSet(mixed.results.map(row => row?.scenario), contract.requiredCases.mixedAuth) && mixed.results.every(row => keys(row, ["scenario", "status"]) && row.status === "pass"), "incomplete-mixed-evidence");
+  check(faults.version === 1 && faults.kind === "runtime-fault-gate" && faults.status === "pass" && faults.contractSha256 === digest(contract), "runtime-fault-contract-failed");
+  check(keys(faults.revisions, ["producer", "pipeline"]) && faults.revisions.producer === expected.revisions.producer && faults.revisions.pipeline === expected.revisions.pipeline, "runtime-fault-revision-mismatch");
+  check(Array.isArray(faults.results) && sameSet(faults.results.map(row => row?.scenario), contract.requiredCases.runtimeFaults) && faults.results.every(row =>
+    keys(row, ["scenario", "status", "baseline", "mutant", "reason", "mutation"]) && row.status === "pass" && row.baseline === "pass" && row.mutant === "detected" && row.reason === row.scenario &&
+    keys(row.mutation, ["beforeSha256", "afterSha256"]) && Object.values(row.mutation).every(value => typeof value === "string" && /^[a-f0-9]{64}$/.test(value)) && row.mutation.beforeSha256 !== row.mutation.afterSha256), "incomplete-runtime-fault-evidence");
   check(backend.version === 1 && backend.kind === "synthetic-contract-run" && backend.status === "pass", "backend-contract-failed");
   check(backend.candidate?.version === 1 && backend.candidate.kind === "synthetic-contract-candidate" && keys(backend.candidate.components, ["producer", "collector", "pipeline"]), "invalid-backend-candidate");
   check(backend.candidateSha256 === digest(backend.candidate), "backend-candidate-digest-mismatch");
@@ -48,15 +53,15 @@ function evaluate(contract, expected, mixed, backend, now = Date.now()) {
 }
 module.exports = { evaluate, INPUTS };
 if (require.main === module) {
-  const [expectedFile, mixedFile, backendFile, out] = process.argv.slice(2);
-  if (!out || process.argv.length !== 6) { console.error("Usage: node compatibility-gate.cjs expected.json mixed.json backend.json output.json"); process.exitCode = 2; }
+  const [expectedFile, mixedFile, backendFile, faultsFile, out] = process.argv.slice(2);
+  if (!out || process.argv.length !== 7) { console.error("Usage: node compatibility-gate.cjs expected.json mixed.json backend.json faults.json output.json"); process.exitCode = 2; }
   else {
-    if ([expectedFile, mixedFile, backendFile].some(file => path.resolve(file) === path.resolve(out)) || path.resolve(out).startsWith(path.resolve(__dirname, "../..") + path.sep)) {
+    if ([expectedFile, mixedFile, backendFile, faultsFile].some(file => path.resolve(file) === path.resolve(out)) || path.resolve(out).startsWith(path.resolve(__dirname, "../..") + path.sep)) {
       console.error("Output must be outside the checkout and distinct from inputs."); process.exitCode = 2;
     } else {
     let result = { version: 1, kind: "compatibility-acceptance", status: "failed", reason: "unreadable-input" };
     try {
-      check(![expectedFile, mixedFile, backendFile].some(file => path.resolve(file) === path.resolve(out)), "output-overlaps-input");
+      check(![expectedFile, mixedFile, backendFile, faultsFile].some(file => path.resolve(file) === path.resolve(out)), "output-overlaps-input");
       const root = path.resolve(__dirname, "../..");
       check(!path.resolve(out).startsWith(root + path.sep), "output-inside-checkout");
       // Replace an old success before attempting to read any evidence.
@@ -66,7 +71,7 @@ if (require.main === module) {
       const git = args => execFileSync("git", args, { cwd: root, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
       check(git(["status", "--porcelain", "--untracked-files=all"]) === "", "dirty-producer-checkout");
       check(git(["rev-parse", "HEAD"]) === expected.revisions?.producer, "producer-revision-mismatch");
-      result = evaluate(load(), expected, read(mixedFile), read(backendFile));
+      result = evaluate(load(), expected, read(mixedFile), read(backendFile), read(faultsFile));
     } catch (error) {
       // Emit only fixed reason codes, never JSON contents, paths or subprocess output.
       if (/^[a-z]+(?:-[a-z]+)+$/.test(error.message)) result.reason = error.message;

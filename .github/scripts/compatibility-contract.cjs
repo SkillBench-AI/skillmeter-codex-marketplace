@@ -4,6 +4,7 @@ const path = require("node:path");
 const crypto = require("node:crypto");
 const DEFAULT_CONTRACT = path.resolve(__dirname, "../../compatibility/contract.json");
 const REQUIRED = {
+  runtimeFaults: ["omitted-backlog", "ignored-consent", "incompatible-reader"],
   releasedQueue: ["acknowledged", "pending"],
   releasedAuth: ["signed-in", "signed-out", "expired", "global-pause", "scope-withdrawn", "repository-off", "interrupted-refresh", "signout-signin-refresh", "auth-rejection"],
   mixedAuth: ["signed-in", "signed-out", "expired", "global-pause", "repository-off", "interrupted-refresh", "signout-signin-refresh", "auth-rejection", "concurrent-identity", "concurrent-writers", "interrupted-credential-writer", "delayed-claude-refresh-signout", "delayed-claude-refresh-cycle", "delayed-claude-rejection-cycle", "delayed-codex-refresh-cycle", "surviving-codex-process", "aged-live-writer", "aged-live-release", "dead-owner-reaper-race", "aliased-dead-owner-reapers", "broker-refresh-failure", "broker-refresh-success", "broker-scope-boundary", "broker-fresh-signin-held"],

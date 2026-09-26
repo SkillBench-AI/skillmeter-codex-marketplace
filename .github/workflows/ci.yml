@@ -23,8 +23,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.14'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
       - name: Test pins, failure receipts and environment boundaries
-        run: python -B -m unittest discover -s plugins/skillmeter/integration -p 'test_candidate_contract.py' -v
+        run: python -B -m unittest discover -s plugins/skillmeter/integration -p 'test_*.py' -v
 
   validate:
     name: Validate manifests & version

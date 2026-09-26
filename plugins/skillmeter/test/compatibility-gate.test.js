@@ -19,9 +19,11 @@ function fixture() {
     stages: Object.fromEntries(contract.backendStages.map(name => [name, { status: "pass" }])),
     evidence: { syntheticOnly: true, backendDashboard: false, independentRecordOracle: true, independentCanonicalOracle: true, storageFrameValidated: true, legacyMigrationVerified: true,
       analyzerReport: { schemaValidated: true }, records: 2, recordIntegrity: { status: "pass", issues: [], expectedRecords: 2, observedRecords: 2 } } };
-  return { contract, expected, mixed, backend };
+  const faults = {version:1,kind:"runtime-fault-gate",status:"pass",...times,contractSha256:digest(contract),revisions:{producer:revisions.producer,pipeline:revisions.pipeline},
+    results:contract.requiredCases.runtimeFaults.map(scenario=>({scenario,status:"pass",baseline:"pass",mutant:"detected",reason:scenario,mutation:{beforeSha256:"a".repeat(64),afterSha256:"b".repeat(64)}}))};
+  return { contract, expected, mixed, backend, faults };
 }
-function gate(f) { return evaluate(f.contract, f.expected, f.mixed, f.backend, now); }
+function gate(f) { return evaluate(f.contract, f.expected, f.mixed, f.backend, f.faults, now); }
 test("gate admits complete matching evidence without granting production acceptance", () => {
   const f = fixture(), result = gate(f);
   assert.equal(result.status, "pass");
@@ -29,6 +31,17 @@ test("gate admits complete matching evidence without granting production accepta
   assert.deepEqual(result.revisions, f.expected.revisions);
 });
 const failures = {
+  "absent fault receipt": [f => { f.faults = null; }, /missing-receipt/],
+  "failed fault suite": [f => { f.faults.status = "failed"; }, /runtime-fault-contract-failed/],
+  "wrong fault contract": [f => { f.faults.contractSha256 = "0".repeat(64); }, /runtime-fault-contract-failed/],
+  "wrong fault revision": [f => { f.faults.revisions.pipeline = "0".repeat(40); }, /runtime-fault-revision-mismatch/],
+  "missing mutation": [f => { f.faults.results.pop(); }, /incomplete-runtime-fault-evidence/],
+  "duplicate mutation": [f => { f.faults.results[1] = f.faults.results[0]; }, /incomplete-runtime-fault-evidence/],
+  "broken pristine runtime": [f => { f.faults.results[0].baseline = "failed"; }, /incomplete-runtime-fault-evidence/],
+  "surviving mutation": [f => { f.faults.results[0].mutant = "survived"; }, /incomplete-runtime-fault-evidence/],
+  "unrelated mutant crash": [f => { f.faults.results[0].reason = "probe-error"; }, /incomplete-runtime-fault-evidence/],
+  "unchanged mutation": [f => { f.faults.results[0].mutation.afterSha256 = f.faults.results[0].mutation.beforeSha256; }, /incomplete-runtime-fault-evidence/],
+  "stale mutation": [f => { f.faults.startedAt = "2026-09-25T09:51:00Z"; }, /stale-or-future-evidence/],
   "wrong expected revision": [f => { f.expected.revisions.producer = "a".repeat(40); }, /mixed-revision-mismatch/],
   "floating expected pin": [f => { f.expected.revisions.claude = "main"; }, /invalid-expected-candidate/],
   "another contract": [f => { f.mixed.contractSha256 = "0".repeat(64); }, /mixed-contract-mismatch/],
@@ -62,7 +75,7 @@ test("unreadable input replaces stale CLI success without exposing raw data", t 
   const input = path.join(root, "bad.json"), out = path.join(root, "result.json");
   fs.writeFileSync(input, "synthetic-private-content");
   fs.writeFileSync(out, '{"status":"pass"}');
-  const result = spawnSync(process.execPath, [path.resolve(__dirname, "../../../.github/scripts/compatibility-gate.cjs"), input, input, input, out], { encoding: "utf8" });
+  const result = spawnSync(process.execPath, [path.resolve(__dirname, "../../../.github/scripts/compatibility-gate.cjs"), input, input, input, input, out], { encoding: "utf8" });
   assert.equal(result.status, 1);
   assert.equal(JSON.parse(fs.readFileSync(out)).status, "failed");
   assert.ok(!result.stdout.includes("synthetic-private-content"));
@@ -74,7 +87,7 @@ test("CLI refuses to replace an input with its own failure receipt", t => {
   t.after(() => fs.rmSync(root, { recursive: true, force: true }));
   const input = path.join(root, "input.json"), bytes = '{"keep":"original"}';
   fs.writeFileSync(input, bytes);
-  const result = spawnSync(process.execPath, [path.resolve(__dirname, "../../../.github/scripts/compatibility-gate.cjs"), input, input, input, input], { encoding: "utf8" });
+  const result = spawnSync(process.execPath, [path.resolve(__dirname, "../../../.github/scripts/compatibility-gate.cjs"), input, input, input, input, input], { encoding: "utf8" });
   assert.equal(result.status, 2);
   assert.equal(fs.readFileSync(input, "utf8"), bytes);
 });
