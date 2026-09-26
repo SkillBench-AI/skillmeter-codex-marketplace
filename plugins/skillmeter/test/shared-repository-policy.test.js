@@ -302,3 +302,22 @@ test("revoking the new remote keeps prior-repository payloads held", t => {
     assert.deepEqual(fs.readFileSync(old),before);
   `);
 });
+
+
+test("an allowed remote change without shared policy does not block later transcript delivery", t => {
+  fixture(t).run(`
+    assert.equal(fs.existsSync(policyFile),false);
+    fs.writeFileSync(source,''); logger.observeTranscriptConsent(source,repo);
+    fs.appendFileSync(source,line('old repository')); const old=stage(); assert.ok(old);
+    const oldBytes=fs.readFileSync(old);
+    fs.writeFileSync(path.join(repo,'.git/config'),'[remote "origin"]\\nurl = https://github.com/acme/other.git\\n');
+    logger.observeTranscriptConsent(source,repo);
+    fs.appendFileSync(source,line('new repository')); const next=stage(); assert.ok(next);
+    const received=[];
+    global.fetch=async(_,options)=>{received.push(...require('node:zlib').gunzipSync(options.body).toString().trim().split('\\n').map(JSON.parse));return {ok:true};};
+    await logger.drainPendingTranscripts('https://collector.invalid',1000);
+    assert.deepEqual(received.filter(r=>r.type==='response_item').map(r=>r.payload.content),['new repository']);
+    assert.deepEqual(fs.readFileSync(old),oldBytes,'prior repository payload remains held');
+    assert.equal(fs.existsSync(policyFile),false,'no policy is invented');
+  `);
+});
