@@ -68,8 +68,8 @@ async function rehearse(claudeRepo, mode = "legacy") {
   try {
     run("arm"); run("shared", "org", "on"); run("shared", "repo", "a", "on"); run("shared", "repo", "b", "on");
     if (acknowledged) {
-      // Synthetic organization authorization only: the supplied legacy Claude
-      // store does not implement the version-2 acknowledgement flow.
+      // Synthetic organization authorization, compatible with either writer.
+      // This does not exercise Claude's version-2 acknowledgement flow.
       const policy = JSON.parse(fs.readFileSync(policyFile));
       policy.organizations.acme.consent_version = 2;
       policy.revision++;

@@ -38,9 +38,14 @@ Use a composed Codex checkout containing the shared store, `consent-preview`,
 that checkout's committed HEAD, so commit the composition before running:
 
 ```sh
-node integration/shared-consent/rehearse.cjs /absolute/claude-checkout legacy
-node integration/shared-consent/rehearse.cjs /absolute/claude-checkout acknowledged
+node integration/shared-consent/rehearse.cjs /absolute/legacy-claude-checkout legacy
+node integration/shared-consent/rehearse.cjs /absolute/reviewed-claude-checkout acknowledged
 ```
+
+Legacy mode requires a pinned Claude writer that creates version-1 choices.
+A current writer that creates acknowledged version-2 grants will fail the
+legacy no-local-capture expectation; that pairing does not test legacy behavior.
+Use acknowledged mode for the current writer and record both checkout revisions.
 
 The acknowledged mode seeds **synthetic version-2 organization authorization**
 inside the isolated fixture. This is not an organization control or evidence of
