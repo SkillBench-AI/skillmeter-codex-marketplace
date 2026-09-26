@@ -11,10 +11,12 @@ const OPAQUE_KEYS = new Set(["command", "cmd", "patch"]);
 // content rules: a random hex string can look like a card number.
 const REFERENCE_TYPE = "skillmeter_compaction_reference";
 const REFERENCE_ID = /^[a-f0-9]{64}$/;
-const REFERENCE_TOKEN = /^skillmeter:reference:(\d+)$/;
 
-function prepare(value, salt, opaque, references) {
-  if (Array.isArray(value)) return value.map(item => prepare(item, salt, opaque, references));
+// `references` collects { path, id } for every identifier replaced in this
+// pass; only those exact paths are restored, so a supplied value that looks
+// like a placeholder is never turned into a reference.
+function prepare(value, salt, opaque, references, trail = []) {
+  if (Array.isArray(value)) return value.map((item, i) => prepare(item, salt, opaque, references, [...trail, i]));
   if (!value || typeof value !== "object") return value;
   const out = {};
   for (const [key, item] of Object.entries(value)) {
@@ -24,22 +26,22 @@ function prepare(value, salt, opaque, references) {
       out[key] = shared.hashHmac(item, salt);
       if (item && salt) opaque.push({ id: "codex-opaque-tool", category: "path", kind: "path", action: "hashed" });
     } else if (key === "source_uuid" && value.type === REFERENCE_TYPE && typeof item === "string" && REFERENCE_ID.test(item)) {
-      out[key] = `skillmeter:reference:${references.push(item) - 1}`;
+      out[key] = `skillmeter:reference:${references.length}`;
+      references.push({ path: [...trail, key], id: item });
     } else {
-      Object.defineProperty(out, key, {value: prepare(item, salt, opaque, references), enumerable: true, configurable: true, writable: true});
+      Object.defineProperty(out, key, {value: prepare(item, salt, opaque, references, [...trail, key]), enumerable: true, configurable: true, writable: true});
     }
   }
   return out;
 }
 
 function restoreReferences(value, references) {
-  if (Array.isArray(value)) { value.forEach(item => restoreReferences(item, references)); return; }
-  if (!value || typeof value !== "object") return;
-  for (const [key, item] of Object.entries(value)) {
-    const match = key === "source_uuid" && value.type === REFERENCE_TYPE && typeof item === "string" && REFERENCE_TOKEN.exec(item);
-    if (match && references[Number(match[1])]) value[key] = references[Number(match[1])];
-    else restoreReferences(item, references);
-  }
+  references.forEach(({ path, id }, index) => {
+    let node = value;
+    for (const key of path.slice(0, -1)) node = node?.[key];
+    const last = path[path.length - 1];
+    if (node && typeof node === "object" && node[last] === `skillmeter:reference:${index}`) node[last] = id;
+  });
 }
 
 function sanitizeRecord(record, salt) {

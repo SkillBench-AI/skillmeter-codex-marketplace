@@ -65,6 +65,19 @@ test("compaction references keep their source identifier while the surrounding h
   assert.equal(JSON.stringify(out).includes("skillmeter:reference:"), false, "no placeholder token leaks");
 });
 
+test("a supplied value that looks like a reference placeholder is never restored as a reference", () => {
+  const source = "e50a17dff2ebc4573704406067bd59ea299b57dc0ef957df4efee7e0b2d36129";
+  const out = s.sanitizeLine({ type: "response_item", payload: { type: "compacted", guardian_history: [
+    { type: "skillmeter_compaction_reference", source_uuid: source, pointer: "/payload" },
+    { type: "skillmeter_compaction_reference", source_uuid: "skillmeter:reference:0", pointer: "/payload" },
+    { type: "message", role: "user", content: "skillmeter:reference:0" },
+  ] } }, "synthetic-salt");
+  const [reference, forged, message] = out.payload.guardian_history;
+  assert.equal(reference.source_uuid, source);
+  assert.equal(forged.source_uuid, "skillmeter:reference:0", "the supplied string stays what it was");
+  assert.equal(message.content, "skillmeter:reference:0");
+});
+
 test("unsupported tool arguments are opaque with an explicit format outcome", () => {
   for (const args of ['{"password":', '"raw argument"', "123", "null", "[]"]) {
     const out = s.sanitizeLine({ type: "response_item", payload: { type: "function_call", call_id: "fixture", arguments: args } }, "synthetic-salt");
