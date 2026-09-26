@@ -4,6 +4,7 @@
 const fs = require("node:fs"), path = require("node:path"), os = require("node:os"), cp = require("node:child_process");
 const assert = require("node:assert/strict");
 const { prepare } = require("./prepare.cjs");
+const { settled: assertSettled } = require("./verify-turn.cjs");
 async function rehearse(claudeRepo) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "shared-consent-rehearsal-"));
   const base = path.join(root, "canary");
@@ -21,14 +22,9 @@ async function rehearse(claudeRepo) {
     await settled();
   }
   async function settled() {
-    // The worker acquires its own lock after spawn. Absence of the lock alone
-    // can mean it has not started yet; wait for the requested handoff receipt.
+    // Include requested workers that have not acquired their lock yet.
     for (let attempt = 0; attempt < 200; attempt++) {
-      const logs = path.join(base, "data/logs");
-      const marker = name => { try { return fs.readFileSync(path.join(logs, name), "utf8"); } catch (e) { if (e.code === "ENOENT") return null; throw e; } };
-      const request = marker(".drain-once.request");
-      if (!fs.existsSync(path.join(logs, ".drain-once.worker.lock")) &&
-          (!request || request === marker(".drain-once.completed"))) return;
+      try { assertSettled(base); return; } catch (error) { if (error.code !== "ERR_ASSERTION") throw error; }
       await new Promise(r => setTimeout(r, 25));
     }
     assert.fail("Detached worker did not finish");

@@ -47,7 +47,7 @@ function prepare(destination, claudeRepo) {
   git(workspaces.clone, ["remote", "set-url", "origin", "https://github.com/acme/widgets.git"], { env });
   git(workspaces.a, ["worktree", "add", "--quiet", "--detach", workspaces.worktree], { env });
   const harness = {};
-  for (const name of ["run.cjs", "guard.cjs"]) {
+  for (const name of ["run.cjs", "guard.cjs", "verify-turn.cjs", "overlap.cjs"]) {
     const bytes = fs.readFileSync(path.join(__dirname, name));
     write(name, bytes); harness[name] = crypto.createHash("sha256").update(bytes).digest("hex");
   }
