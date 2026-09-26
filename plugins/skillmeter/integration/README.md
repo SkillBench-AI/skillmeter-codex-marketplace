@@ -87,6 +87,34 @@ decoded records must remain below 32 MiB. Malformed/oversized input retains the
 source and cursor with a content-free diagnostic. Failed chunks and superseded
 reset generations are retained; historical transcripts are not replayed automatically.
 
+### Compaction context references
+
+`compacted` records can contain copies of earlier conversation history large
+enough to exceed the wire budget. Within `replacement_history` and
+`guardian_history`, the producer can replace an exact earlier match with
+`{type: "skillmeter_compaction_reference", source_uuid, pointer}`. `pointer`
+is a JSON Pointer into an earlier record in the same source/reset generation.
+Array positions, unmatched entries, timestamps and other compaction metadata
+remain intact. `_codex_compaction_projection.version = 1` records each field's
+entry count, referenced entry count and compact JSON-serialized entry bytes
+represented by references (before sanitization, excluding source whitespace). Byte counts are accounting, not claims about analyzed coverage.
+
+Matching uses a salted canonical-content digest before sanitization. Only
+earlier eligible `response_item.payload` or compaction-history entries are
+targets; excluded intervals are never decoded or indexed. The temporary index
+is bounded to 50,000 entries. Eviction or a missing match preserves full content.
+The source file is unchanged. Retry and crash recovery use the ordinary chunk
+transaction and raw-position identities.
+
+This changes compaction context representation, not authored message/tool
+records. Consumers that need compaction context must resolve references against
+the composed session, preserving unresolved references as incomplete context.
+The current analysis reader ignores compaction context; it still receives the
+original authored records. Multi-object composition remains required. Do not
+interpret a projected compaction as proof all source objects were stored or
+analyzed. Oversized unmatched/authored records still hold capture explicitly;
+fragmentation needs a separate producer/reader contract before release.
+
 Queues created with an earlier owner-identity formula remain preserved but may
 not be eligible for delivery. Never edit their owner fields to force migration;
 select still-authorized source files for explicit recovery instead.
@@ -96,6 +124,20 @@ Read-only inventory (from the plugin directory):
 ```sh
 PLUGIN_DATA=/path/to/plugin-data node scripts/transcript_inventory.js
 ```
+
+Capture and delivery have separate content-free `capture-status.json` and
+`delivery-status.json` records per source queue. They retain the latest failure,
+active failure, attempt identity, last successful attempt and last progress.
+Capture reports observed raw source bytes and the committed raw cursor; delivery
+records the last HTTP-acknowledged sequence/baseline. These byte positions do not
+measure eligible content, and HTTP acceptance does not prove stored completeness.
+
+`telemetry.js status` includes capture blockage even with zero pending chunks.
+Successful staging resolves only the capture error; a delivery error remains
+until delivery succeeds, and the converse also holds. Legacy diagnostics remain
+visible until the corresponding phase succeeds. Observations can be stale, and
+sources that never reached the queue are outside this inventory. Event delivery,
+source discovery, analysis and report acceptance need separate evidence.
 
 Uploads send `X-Transcript-Protocol: chunks-v1`. The on-disk `chunks-v1/`
 queue format is separate from this header. Missing-baseline recovery requires
