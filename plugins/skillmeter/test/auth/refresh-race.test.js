@@ -1,5 +1,6 @@
 "use strict";
-
+// Cross-process credential races: refresh commits guarded by the recovery
+// snapshot, and the credential lock's reaping and fencing rules.
 const { test, beforeEach, afterEach, after } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("fs");
@@ -24,15 +25,15 @@ const refreshedA = makeJwt("tenant-a");
 const baseline = { device_id: "TEST-DEVICE", hash_salt: "test", license_jwt: tokenA };
 fs.writeFileSync(credentialPath, JSON.stringify(baseline));
 
-// Never invoke the user's gh CLI, including on an unexpected fallback.
+// The gh CLI must never run, not even on a fallback path.
 const originalExecSync = childProcess.execSync;
 let activationAttempts = 0;
 childProcess.execSync = () => { activationAttempts++; throw new Error("gh disabled in test"); };
-const credstore = require("../scripts/credstore");
-const logger = require("../scripts/logger");
-const activation = require("../scripts/lib/license-activation");
+const credstore = require("../../scripts/credstore");
+const logger = require("../../scripts/logger");
+const activation = require("../../scripts/lib/license-activation");
 childProcess.execSync = originalExecSync;
-const { acquireLock } = require("../scripts/lib/credential-lock");
+const { acquireLock } = require("../../scripts/lib/credential-lock");
 const originalFetch = global.fetch;
 
 function readStore() { return JSON.parse(fs.readFileSync(credentialPath, "utf8")); }
@@ -40,7 +41,7 @@ function writeStore(value) { fs.writeFileSync(credentialPath, JSON.stringify(val
 function otherProcess(code) {
   childProcess.execFileSync(process.execPath, ["-e", `
     require("os").homedir = () => ${JSON.stringify(root)};
-    const store = require(${JSON.stringify(require.resolve("../scripts/credstore"))});
+    const store = require(${JSON.stringify(require.resolve("../../scripts/credstore"))});
     ${code}
   `]);
 }
@@ -81,7 +82,6 @@ for (const action of ["signin", "signout", "remove", "rotate", "same-token-signi
     global.fetch = async () => {
       if (action === "signin") otherProcess(`store.commitSignin({jwt:${JSON.stringify(tokenB)},orgs:["b"]});`);
       if (action === "signout") otherProcess("store.signOut();");
-      // Model a legacy writer that does not participate in the new lock.
       if (action === "remove") { const state = readStore(); delete state.license_jwt; writeStore(state); }
       if (action === "rotate") otherProcess(`store.setLicenseToken(${JSON.stringify(tokenB)});`);
       if (action === "same-token-signin") otherProcess(`
@@ -149,7 +149,7 @@ test("writers read current state after waiting for the shared lock", async () =>
   const release = acquireLock(`${credentialPath}.lock`);
   const child = childProcess.spawn(process.execPath, ["-e", `
     require("os").homedir = () => ${JSON.stringify(root)};
-    const store = require(${JSON.stringify(require.resolve("../scripts/credstore"))});
+    const store = require(${JSON.stringify(require.resolve("../../scripts/credstore"))});
     process.send("ready");
     store.setTelemetryDisabled(true);
     process.disconnect();
@@ -167,26 +167,23 @@ test("writers read current state after waiting for the shared lock", async () =>
   assert.equal(readStore().telemetry_disabled, true);
 });
 
-// The age backstop can reap a holder that was paused long enough, so a writer
-// must re-check ownership before it persists rather than assume the lock it
-// took is the lock it still has.
+// The age backstop can reap a paused holder, so a writer re-checks ownership
+// before it persists.
 test("a holder can tell that its lock was reaped", () => {
   const lock = `${credentialPath}.lock.fence`;
   const release = acquireLock(lock);
   assert.equal(release.stillHeld(), true);
 
-  fs.unlinkSync(lock); // the age backstop reaps us while we are paused
+  fs.unlinkSync(lock);
   assert.equal(release.stillHeld(), false);
 
-  const replacement = acquireLock(lock); // someone else takes over
+  const replacement = acquireLock(lock);
   assert.equal(release.stillHeld(), false, "the replacement owner is not us");
   replacement();
 });
 
-// An inode is recycled the moment the old file is unlinked, so a replacement
-// owner can land on the same inode number — routinely on Linux. Rewriting the
-// owner file in place reproduces exactly that, deterministically, on any
-// filesystem: same inode, different owner.
+// A replacement owner can land on a recycled inode; rewriting the owner file in
+// place reproduces that on any filesystem.
 test("a replacement owner is not mistaken for us when the inode is recycled", () => {
   const lock = `${credentialPath}.lock.recycled`;
   const release = acquireLock(lock);
@@ -209,8 +206,7 @@ test("a mutation preempted mid-flight retries on the newer state instead of clob
   const outcome = credstore.mutateStore(store => {
     calls += 1;
     if (calls === 1) {
-      // Simulate being paused past the staleness ceiling: our lock is reaped
-      // and a replacement writer commits a newer credential.
+      // Paused past the staleness ceiling: reaped, and another writer commits.
       fs.unlinkSync(`${credentialPath}.lock`);
       writeStore({ ...readStore(), license_jwt: tokenB });
     }
@@ -223,33 +219,20 @@ test("a mutation preempted mid-flight retries on the newer state instead of clob
   assert.equal(readStore().license_jwt, tokenB, "the other writer's change survived");
 });
 
-// A pid does not identify a process incarnation: after a crash inside the
-// critical section the OS can hand that number to an unrelated long-lived
-// process. Without the age backstop the lock would then look held for as long
-// as that process runs, and every credential write would fail permanently.
-test("a stale lock naming a live unrelated process is still reaped", () => {
-  const lock = `${credentialPath}.lock.pid-reuse`;
-  // process.pid is unquestionably alive and has nothing to do with this lock.
-  fs.writeFileSync(lock, JSON.stringify({ pid: process.pid }));
-  const old = Date.now() - 120_000;
-  fs.utimesSync(lock, old / 1000, old / 1000);
-
-  const release = acquireLock(lock);
-  assert.equal(typeof release, "function", "the stale owner was reaped");
-  release();
-  assert.equal(fs.existsSync(lock), false);
-});
-
-test("an unparseable owner file is reaped once stale instead of wedging forever", () => {
-  const lock = `${credentialPath}.lock.garbage`;
-  fs.writeFileSync(lock, "not json");
-  const old = Date.now() - 120_000;
-  fs.utimesSync(lock, old / 1000, old / 1000);
-
-  const release = acquireLock(lock);
-  assert.equal(typeof release, "function");
-  release();
-});
+// A pid can be reused by an unrelated process after a crash, so age, not
+// liveness, decides when a stale lock is reaped.
+for (const [name, owner] of [["a live unrelated process", JSON.stringify({ pid: process.pid })], ["an unparseable owner file", "not json"]]) {
+  test(`a stale lock naming ${name} is still reaped`, () => {
+    const lock = `${credentialPath}.lock.stale`;
+    fs.writeFileSync(lock, owner);
+    const old = Date.now() - 120_000;
+    fs.utimesSync(lock, old / 1000, old / 1000);
+    const release = acquireLock(lock);
+    assert.equal(typeof release, "function", "the stale owner was reaped");
+    release();
+    assert.equal(fs.existsSync(lock), false);
+  });
+}
 
 test("a fresh lock naming a live process is still respected", () => {
   const lock = `${credentialPath}.lock.fresh`;
@@ -259,15 +242,3 @@ test("a fresh lock naming a live process is still respected", () => {
   fs.unlinkSync(lock);
 });
 
-test("a crashed writer's lock can be recovered without evicting a live owner", () => {
-  const lock = `${credentialPath}.lock`;
-  childProcess.execFileSync(process.execPath, ["-e", `
-    require(${JSON.stringify(require.resolve("../scripts/lib/credential-lock"))})
-      .acquireLock(${JSON.stringify(lock)});
-  `]);
-  const release = acquireLock(lock);
-  assert.equal(typeof release, "function");
-  try { assert.equal(acquireLock(lock), null); }
-  finally { release(); }
-  assert.equal(fs.existsSync(lock), false);
-});

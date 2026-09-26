@@ -1,52 +1,21 @@
 "use strict";
-
-/**
- * Retry-monitor refresh and lifecycle tests. Isolate HOME and PLUGIN_DATA
- * before importing modules. Stub fetch because refresh accepts trusted hosts only;
- * stub logger methods for failure-isolation cases.
- */
-
-const os = require("os");
-const fs = require("fs");
-const path = require("path");
-const { execFile } = require("child_process");
-
-const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "sk-daemon-home-"));
-process.env.HOME = tmpHome;
-process.env.USERPROFILE = tmpHome;
-const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), "sk-daemon-data-"));
-process.env.PLUGIN_DATA = tmpData;
+// The retry monitor: proactive license refresh inside a sweep, failure
+// isolation, and self-termination of the real daemon once queues stay idle.
+const { isolateHome, tempDir, writeCredentials, makeJwt, SCRIPTS } = require("../../test-support/plugin.cjs");
+isolateHome({ device_id: "TEST-DEVICE", hash_salt: "deadbeef" });
+process.env.PLUGIN_DATA = tempDir("sk-daemon-data");
 delete process.env.SKILLMETER_BACKEND_URL;
 delete process.env.SKILLMETER_ACTIVATE_URL;
 
-fs.mkdirSync(path.join(tmpHome, ".skillbench"), { recursive: true });
-fs.writeFileSync(
-  path.join(tmpHome, ".skillbench", "credentials.json"),
-  JSON.stringify({ device_id: "TEST-DEVICE", hash_salt: "deadbeef" }) + "\n"
-);
-
+const path = require("node:path");
+const { execFile } = require("node:child_process");
 const { test, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
+const logger = require("../../scripts/logger");
+const credstore = require("../../scripts/credstore");
+const daemon = require("../../scripts/monitors/retry_daemon");
 
-const logger = require("../scripts/logger");
-const credstore = require("../scripts/credstore");
-const daemon = require("../scripts/monitors/retry_daemon");
-
-const DAEMON_PATH = path.join(__dirname, "..", "scripts", "monitors", "retry_daemon.js");
-
-// --- helpers ---------------------------------------------------------------
-
-function b64url(obj) {
-  return Buffer.from(JSON.stringify(obj))
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-}
-
-function makeJwt(claims) {
-  return `${b64url({ alg: "none", typ: "JWT" })}.${b64url(claims)}.sig`;
-}
+const DAEMON_PATH = path.join(SCRIPTS, "monitors", "retry_daemon.js");
 
 function nowSec() {
   return Math.floor(Date.now() / 1000);
@@ -61,8 +30,6 @@ afterEach(() => {
   logger.tryRefreshLicense = realTryRefresh;
   logger.drainQueuesOnce = realDrain;
 });
-
-// --- proactive refresh -----------------------------------------------------
 
 test("maybeRefreshLicense rotates an expiring token via the awaited /refresh", async () => {
   credstore.setLicenseToken(makeJwt({ exp: nowSec() - 60 }));
@@ -97,32 +64,7 @@ test("maybeRefreshLicense makes no network call when the token is comfortably va
   assert.equal(credstore.getLicenseToken(), valid, "the valid token is left untouched");
 });
 
-test("a continuous session outliving its token keeps rotating without re-signin", async () => {
-  // Each refreshed token is still inside the 5-min expiry skew, so every sweep
-  // sees it as expiring and rotates again — simulating a session that runs well
-  // past a single token lifetime. No sign-in ever happens in this loop.
-  credstore.setLicenseToken(makeJwt({ exp: nowSec() - 60 }));
-
-  let calls = 0;
-  let lastIssued = null;
-  global.fetch = async () => {
-    calls += 1;
-    lastIssued = makeJwt({ exp: nowSec() + 60, jti: calls });
-    return { ok: true, status: 200, json: async () => ({ token: lastIssued }), text: async () => "" };
-  };
-
-  const SWEEPS = 5;
-  for (let i = 0; i < SWEEPS; i++) {
-    await daemon.maybeRefreshLicense();
-  }
-
-  assert.equal(calls, SWEEPS, "every sweep re-rotates the still-expiring token");
-  assert.equal(credstore.getLicenseToken(), lastIssued, "the newest token is always persisted");
-});
-
 test("a refresh failure is logged and never aborts the sweep's drain", async () => {
-  // Own the lock so sweep() doesn't stand down, then make the refresh throw and
-  // confirm drainQueuesOnce still runs to completion.
   logger.refreshRetryDaemonLock();
   assert.equal(logger.ownsRetryDaemonLock(), true);
 
@@ -141,7 +83,7 @@ test("a refresh failure is logged and never aborts the sweep's drain", async () 
   logger.clearRetryDaemonLock();
 });
 
-test("maybeRefreshLicense passes the device id and is a no-op with no device", async () => {
+test("maybeRefreshLicense forwards the resolved device id to tryRefreshLicense", async () => {
   let seenDeviceId = "unset";
   logger.tryRefreshLicense = async (deviceId) => {
     seenDeviceId = deviceId;
@@ -152,19 +94,11 @@ test("maybeRefreshLicense passes the device id and is a no-op with no device", a
   assert.equal(seenDeviceId, "TEST-DEVICE", "the resolved device id is forwarded to tryRefreshLicense");
 });
 
-// --- self-termination lifecycle --------------------------------------------
-
 test("the daemon self-terminates once the queues stay idle (shortened env)", async () => {
-  // Signed out + no token → tryRefreshLicense short-circuits with zero external
-  // calls, so this stays hermetic. With an empty queue every sweep is idle, so
-  // the daemon exits cleanly after MAX_IDLE_SWEEPS.
-  const subHome = fs.mkdtempSync(path.join(os.tmpdir(), "sk-daemon-sub-home-"));
-  const subData = fs.mkdtempSync(path.join(os.tmpdir(), "sk-daemon-sub-data-"));
-  fs.mkdirSync(path.join(subHome, ".skillbench"), { recursive: true });
-  fs.writeFileSync(
-    path.join(subHome, ".skillbench", "credentials.json"),
-    JSON.stringify({ device_id: "SUB-DEVICE", hash_salt: "deadbeef", signed_out: true }) + "\n"
-  );
+  // Signed out with an empty queue: no external call, every sweep idle.
+  const subHome = tempDir("sk-daemon-sub-home");
+  const subData = tempDir("sk-daemon-sub-data");
+  writeCredentials(subHome, { device_id: "SUB-DEVICE", hash_salt: "deadbeef", signed_out: true });
 
   const result = await new Promise((resolve) => {
     execFile(

@@ -1,9 +1,71 @@
 "use strict";
-
+// Deep walking of records: secret-labelled keys, key collisions after
+// redaction, scalar preservation, metadata, and input immutability.
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const s = require("../scripts/lib/sanitize");
-const SALT = "synthetic-key-collision-salt";
+const { SALT, SAMPLES, hi } = require("../../test-support/sanitizer.cjs");
+const s = require("../../scripts/lib/sanitize");
+const adapter = require("../../scripts/sanitizer");
+
+test("secret-labelled keys force redaction of opaque values, including through arrays", () => {
+  const { value } = s.sanitizeEventData({
+    mcp: { env: { API_KEY: "someRealLookingValue123" } },
+    authorization: "Bearer abc", auth: "zzz", token: "qqq",
+    tokens: ["plainButUnderTokenKey123", "anotherOpaqueValue456"],
+  }, SALT);
+  assert.equal(value.mcp.env.API_KEY, "[REDACTED_SECRET]");
+  for (const key of ["authorization", "auth", "token"]) assert.equal(value[key], "[REDACTED_SECRET]", key);
+  assert.deepEqual(value.tokens, ["[REDACTED_SECRET]", "[REDACTED_SECRET]"]);
+});
+
+test("placeholders under secret keys and author-like keys are left alone", () => {
+  const { value } = s.sanitizeEventData({
+    token: "example", author: "Jane Doe", authored_by: "Bob", author_email: "x@y.com", description: "deploy the api gateway",
+  }, SALT);
+  assert.equal(value.token, "example");
+  assert.equal(value.author, "Jane Doe");
+  assert.equal(value.authored_by, "Bob");
+  assert.equal(value.author_email, "[EMAIL]", "redacted by the email rule, not the key");
+  assert.equal(value.description, "deploy the api gateway");
+});
+
+test("redactDeep walks nested objects and arrays and preserves scalars and shape", () => {
+  const redactions = [];
+  const out = adapter.redactDeep({
+    prompt: `deploy with ${SAMPLES["openai-api-key"]}`,
+    tool_input: { args: ["--token", SAMPLES["github-token"]], nested: { note: "email me at dev@example.org" } },
+    n: 1, b: true, nul: null, arr: [1, "ok", { path: "/x", secret: SAMPLES["openai-api-key"] }],
+  }, redactions, SALT);
+  const text = JSON.stringify(out);
+  for (const raw of [hi(36), "dev@example.org"]) assert.equal(text.includes(raw), false, raw);
+  assert.equal(out.n, 1);
+  assert.equal(out.b, true);
+  assert.equal(out.nul, null);
+  assert.deepEqual(out.arr.slice(0, 2), [1, "ok"]);
+  assert.match(out.arr[2].path, /^[a-f0-9]{12}$/);
+  assert.equal(redactions.filter(r => r.category === "secret").length, 3);
+  const list = adapter.redactDeep([`a ${SAMPLES["github-token"]}`, "clean"], []);
+  assert.equal(list[0].includes(hi(36)), false);
+  assert.equal(list[1], "clean");
+});
+
+test("sanitizeEventData meta carries counts, sorted unique ids and the policy version, never original values", () => {
+  const { value, meta } = s.sanitizeEventData({
+    a: `first ${SAMPLES["github-token"]}`, b: `second ${SAMPLES["github-token"]}`, c: "email me at dev@example.org",
+    n: 42, flag: true, z: null,
+  }, SALT);
+  assert.equal(meta.secrets, 2);
+  assert.equal(meta.pii, 1);
+  assert.deepEqual(meta.ids, ["email", "github-token"]);
+  assert.equal(meta.policyVersion, s.POLICY_VERSION);
+  assert.deepEqual([value.n, value.flag, value.z], [42, true, null]);
+  assert.equal(value._sanitization.policyVersion, s.POLICY_VERSION);
+  const text = JSON.stringify(meta);
+  assert.equal(text.includes(hi(36)) || text.includes("dev@example.org"), false);
+  const clean = s.sanitizeEventData({ prompt: "please refactor the billing module", count: 5 }, SALT);
+  assert.deepEqual([clean.meta.secrets, clean.meta.pii, clean.meta.ids], [0, 0, []]);
+  assert.equal(clean.value.count, 5);
+});
 
 test("redacted path keys preserve every change and extension without mutating input", () => {
   const record = { changes: {
@@ -16,7 +78,7 @@ test("redacted path keys preserve every change and extension without mutating in
   assert.deepEqual(Object.values(value.changes), Object.values(record.changes));
   assert.ok(Object.keys(value.changes).every(key => key.endsWith(".cjs")));
   assert.equal(JSON.stringify(value).includes("@example.com"), false);
-  assert.equal(meta.counts.email, 2, "scrub each key exactly once");
+  assert.equal(meta.counts.email, 2, "each key is scrubbed exactly once");
   assert.deepEqual(record, before);
   assert.deepEqual(s.sanitizeLine(record, SALT), value, "event and transcript boundaries agree");
 });
@@ -45,9 +107,7 @@ test("generated keys cannot overwrite existing placeholder or suffix-shaped keys
 
 test("collision handling is recursive and works without salt or a path-shaped key", () => {
   const source = { plain: true, nested: [{ answers: {
-    "alice@example.com": "answer one",
-    "bob@example.com": "answer two",
-    "[EMAIL][key-2]": "literal",
+    "alice@example.com": "answer one", "bob@example.com": "answer two", "[EMAIL][key-2]": "literal",
   } }] };
   const { value } = s.sanitizeEventData(source, "");
   assert.equal(value.plain, true);
@@ -56,7 +116,7 @@ test("collision handling is recursive and works without salt or a path-shaped ke
 });
 
 test("secret-key context comes from original keys and all retained values are scrubbed", () => {
-  const secret = "ghp_" + "aB3dEf6hIj9kLm2nOp5qRs8tUvWxYz0AbC4dE".slice(0, 36);
+  const secret = "ghp_" + hi(36);
   const source = { env: { API_TOKEN: "not-a-pattern" }, changes: {
     [secret]: { content: "alice@example.com" },
     [secret.slice(0, -1) + "2"]: { content: "bob@example.com" },

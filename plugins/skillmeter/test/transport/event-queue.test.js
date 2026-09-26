@@ -1,63 +1,24 @@
 "use strict";
-
-/**
- * Event salvage, retry limits and queue cleanup tests.
- * Set temporary HOME/PLUGIN_DATA and retry limits before importing modules;
- * seed identity to avoid Keychain access.
- */
-
-const os = require("os");
-const fs = require("fs");
-const path = require("path");
-
-const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), "sk-dur-home-"));
-process.env.HOME = tmpHome;
-process.env.USERPROFILE = tmpHome;
+// Sealed event batches: HTTP outcome classification, atomic writes, salvage,
+// the retry cap and quarantine, stale cleanup, and transcript path collection.
+const { isolateHome, makeJwt, tempDir } = require("../../test-support/plugin.cjs");
+// Uploads need an unexpired license; without one every transfer stops at "auth".
+isolateHome({ device_id: "TEST-DEVICE", hash_salt: "deadbeef", license_jwt: makeJwt({ exp: Math.floor(Date.now() / 1000) + 3600 }) });
 delete process.env.SKILLMETER_BACKEND_URL;
-
-const tmpData = fs.mkdtempSync(path.join(os.tmpdir(), "sk-dur-data-"));
+const tmpData = tempDir("sk-dur-data");
 process.env.PLUGIN_DATA = tmpData;
 process.env.SKILLMETER_MAX_BATCH_RETRIES = "3";
 
-fs.mkdirSync(path.join(tmpHome, ".skillbench"), { recursive: true });
-
-// Uploads require a valid (non-expired) license JWT — the ingest routes sit
-// behind the meter JWT authorizer — so the queue tests below seed one. Without
-// it every transfer would short-circuit to "auth" and never reach the stubbed
-// fetch. The signature is a dummy; only the `exp` claim is read locally.
-const b64url = (obj) =>
-  Buffer.from(JSON.stringify(obj))
-    .toString("base64")
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
-const TEST_JWT = `${b64url({ alg: "none", typ: "JWT" })}.${b64url({
-  exp: Math.floor(Date.now() / 1000) + 3600,
-})}.sig`;
-
-fs.writeFileSync(
-  path.join(tmpHome, ".skillbench", "credentials.json"),
-  JSON.stringify({
-    device_id: "TEST-DEVICE",
-    hash_salt: "deadbeef",
-    license_jwt: TEST_JWT,
-  }) + "\n"
-);
-
+const fs = require("node:fs");
+const path = require("node:path");
 const { test, beforeEach, afterEach } = require("node:test");
 const assert = require("node:assert/strict");
-
-const logger = require("../scripts/logger");
+const logger = require("../../scripts/logger");
 
 const BACKEND = "https://acme.meter.skillbench.com/logs/codex";
-
-// --- helpers ---------------------------------------------------------------
-
 const realFetch = global.fetch;
 
-// Replace global.fetch with a scripted sequence of {ok,status} responses. The
-// last entry is reused once the sequence is exhausted so a retry loop has a
-// stable terminal state. Returns a calls counter.
+// Scripted {status} responses; the last entry repeats once exhausted.
 function stubFetch(sequence) {
   const calls = { count: 0 };
   global.fetch = async () => {
@@ -74,8 +35,6 @@ function freshDir(dir) {
   fs.mkdirSync(dir, { recursive: true });
 }
 
-// Seal a batch with a *recent* timestamp so the max-age give-up doesn't fire;
-// a counter keeps names unique within a run.
 let seq = 0;
 function sealedBatch(contents) {
   const p = path.join(logger.LOG_DIR, `events.jsonl.${Date.now() + seq++}`);
@@ -94,8 +53,6 @@ afterEach(() => {
   global.fetch = realFetch;
 });
 
-// --- HTTP classification ---------------------------------------------------
-
 test("isPermanentHttpStatus: 4xx permanent except 408/429; 5xx transient", () => {
   assert.equal(logger.isPermanentHttpStatus(400), true);
   assert.equal(logger.isPermanentHttpStatus(413), true);
@@ -106,15 +63,13 @@ test("isPermanentHttpStatus: 4xx permanent except 408/429; 5xx transient", () =>
   assert.equal(logger.isPermanentHttpStatus(503), false);
 });
 
-// --- atomic writes ---------------------------------------------------------
-
 test("atomicAppendLine writes one newline-terminated record per call", () => {
   const f = path.join(logger.LOG_DIR, "active.jsonl");
   logger.atomicAppendLine(f, '{"x":1}');
-  logger.atomicAppendLine(f, '{"y":2}\n'); // already terminated — not doubled
+  logger.atomicAppendLine(f, '{"y":2}\n');
   const lines = fs.readFileSync(f, "utf8").split("\n").filter(Boolean);
   assert.deepEqual(lines, ['{"x":1}', '{"y":2}']);
-  for (const l of lines) JSON.parse(l); // every line is parseable
+  for (const l of lines) JSON.parse(l);
 });
 
 test("atomicWriteFileSync replaces content and leaves no temp file behind", () => {
@@ -125,34 +80,18 @@ test("atomicWriteFileSync replaces content and leaves no temp file behind", () =
   assert.deepEqual(leftovers, []);
 });
 
-// --- partial-rejection salvage --------------------------------------------
-
-test("salvageBatch drops only invalid lines and rewrites atomically", () => {
-  const p = sealedBatch('{"a":1}\nNOT JSON\n{"b":2}\n');
-  const res = logger.salvageBatch(p);
-  assert.equal(res.rewrote, true);
-  assert.equal(res.kept, 2);
-  assert.equal(res.dropped, 1);
-  const lines = fs.readFileSync(p, "utf8").split("\n").filter(Boolean);
-  assert.deepEqual(lines, ['{"a":1}', '{"b":2}']);
+test("salvageBatch drops only invalid lines, and rewrites only when something was dropped and something kept", () => {
+  for (const [contents, expected, remaining] of [
+    ['{"a":1}\nNOT JSON\n{"b":2}\n', { rewrote: true, kept: 2, dropped: 1 }, ['{"a":1}', '{"b":2}']],
+    [VALID, { rewrote: false, kept: 2, dropped: 0 }, ['{"a":1}', '{"b":2}']],
+    ["garbage\nmore garbage\n", { rewrote: false, kept: 0, dropped: 2 }, ["garbage", "more garbage"]],
+  ]) {
+    const p = sealedBatch(contents);
+    const res = logger.salvageBatch(p);
+    assert.deepEqual({ rewrote: res.rewrote, kept: res.kept, dropped: res.dropped }, expected, contents);
+    assert.deepEqual(fs.readFileSync(p, "utf8").split("\n").filter(Boolean), remaining);
+  }
 });
-
-test("salvageBatch does not rewrite when every line is valid", () => {
-  const p = sealedBatch(VALID);
-  const res = logger.salvageBatch(p);
-  assert.equal(res.rewrote, false);
-  assert.equal(res.dropped, 0);
-});
-
-test("salvageBatch reports nothing salvageable when all lines are invalid", () => {
-  const p = sealedBatch("garbage\nmore garbage\n");
-  const res = logger.salvageBatch(p);
-  assert.equal(res.rewrote, false);
-  assert.equal(res.kept, 0);
-  assert.ok(res.dropped >= 2);
-});
-
-// --- processSealedBatch: the queue-aware wrapper ---------------------------
 
 test("processSealedBatch marks a batch .sent on 2xx and clears its meta", async () => {
   const p = sealedBatch(VALID);
@@ -168,8 +107,6 @@ test("processSealedBatch marks a batch .sent on 2xx and clears its meta", async 
 
 test("processSealedBatch salvages a partially-poisoned batch then succeeds", async () => {
   const p = sealedBatch('{"a":1}\nBROKEN\n{"b":2}\n');
-  // First POST is rejected as a permanent error; after salvage drops the bad
-  // line the retried POST succeeds.
   const calls = stubFetch([{ status: 400 }, { status: 200 }]);
 
   const outcome = await logger.processSealedBatch(p, BACKEND, 1000);
@@ -195,10 +132,7 @@ test("processSealedBatch quarantines an all-valid batch the server permanently r
 
 test("processSealedBatch retries transient failures and quarantines at the retry cap", async () => {
   const p = sealedBatch(VALID);
-  stubFetch([{ status: 503 }]); // always transient
-
-  // MAX_BATCH_RETRIES is 3 (set via env above): two retries are kept, the
-  // third attempt trips the cap and quarantines.
+  stubFetch([{ status: 503 }]);
   let outcome = await logger.processSealedBatch(p, BACKEND, 1000);
   assert.equal(outcome, "retry");
   assert.equal(logger.readBatchMeta(p).attempts, 1);
@@ -215,7 +149,6 @@ test("processSealedBatch retries transient failures and quarantines at the retry
 });
 
 test("processSealedBatch quarantines a batch older than the max age without uploading", async () => {
-  // Seal timestamp far in the past (well beyond BATCH_MAX_AGE_MS).
   const oldTs = Date.now() - (logger.BATCH_MAX_AGE_MS + 60_000);
   const p = path.join(logger.LOG_DIR, `events.jsonl.${oldTs}`);
   fs.writeFileSync(p, VALID);
@@ -227,10 +160,8 @@ test("processSealedBatch quarantines a batch older than the max age without uplo
   assert.equal(fs.existsSync(path.join(logger.POISON_DIR, path.basename(p))), true);
 });
 
-// --- cleanup ----------------------------------------------------------------
-
 test("cleanupStaleFiles prunes old .sent logs, old poison files, and orphan meta", () => {
-  const old = Date.now() / 1000 - (40 * 24 * 60 * 60); // 40 days ago (seconds)
+  const old = Date.now() / 1000 - 40 * 24 * 60 * 60;
 
   const sent = path.join(logger.LOG_DIR, "events.jsonl.1700000000020.sent");
   fs.writeFileSync(sent, VALID);
@@ -241,12 +172,10 @@ test("cleanupStaleFiles prunes old .sent logs, old poison files, and orphan meta
   fs.writeFileSync(poison, VALID);
   fs.utimesSync(poison, old, old);
 
-  // Orphan meta sidecar whose batch no longer exists.
   const orphanMeta = path.join(logger.LOG_DIR, "events.jsonl.1700000000022.meta");
   fs.writeFileSync(orphanMeta, '{"attempts":1}\n');
   fs.utimesSync(orphanMeta, old, old);
 
-  // A fresh sent log must survive.
   const freshSent = path.join(logger.LOG_DIR, "events.jsonl.1700000000023.sent");
   fs.writeFileSync(freshSent, VALID);
 
@@ -257,8 +186,6 @@ test("cleanupStaleFiles prunes old .sent logs, old poison files, and orphan meta
   assert.equal(fs.existsSync(orphanMeta), false, "orphan meta pruned");
   assert.equal(fs.existsSync(freshSent), true, "fresh .sent retained");
 });
-
-// --- transcript staging atomicity ------------------------------------------
 
 test("transcript staging without a signed-in scope retains the source and creates no queue", () => {
   const source = path.join(tmpData, "no-consent.jsonl");

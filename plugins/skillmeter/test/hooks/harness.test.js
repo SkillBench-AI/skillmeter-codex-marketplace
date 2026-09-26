@@ -1,11 +1,6 @@
 "use strict";
-
-/**
- * Filesystem harness detection using synthetic projects and homes.
- * Check readable identifiers, bounded custom skill content, excluded config
- * secrets, unknown topology, safe defaults and event sanitization.
- */
-
+// Harness detection from synthetic projects and homes: raw identifiers,
+// bounded skill bodies, no config secrets, and safe defaults.
 const os = require("os");
 const fs = require("fs");
 const path = require("path");
@@ -19,12 +14,10 @@ const {
   parseCodexConfig,
   sizeBucket,
   HARNESS_SCHEMA_VERSION,
-} = require("../scripts/harness");
-const sanitizer = require("../scripts/sanitizer");
+} = require("../../scripts/harness");
+const sanitizer = require("../../scripts/sanitizer");
 
 const SALT = "deadbeefcafe";
-
-// --- helpers ---------------------------------------------------------------
 
 function tmpDir(prefix) {
   return fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -52,14 +45,13 @@ function addSkill(root, namespaceOrName, maybeName) {
   write(path.join(root, rel), "# skill\n");
 }
 
-
 test("bare project: flat defaults, Level 2 unknown, no raw content", () => {
   const root = makeProject();
   const home = makeHome();
 
   const h = detectHarness(root, { homeDir: home, repoRoot: root, hashSalt: SALT });
 
-  assert.equal(h.harness_schema_version, "2.1");
+  assert.equal(h.harness_schema_version, HARNESS_SCHEMA_VERSION);
   assert.equal(h.agent_type, "codex");
   assert.equal(h.agent_version, "");
   assert.equal(h.has_agents_md, false);
@@ -95,13 +87,6 @@ test("bare project: flat defaults, Level 2 unknown, no raw content", () => {
   assert.equal(h.policy_version, sanitizer.POLICY_VERSION);
   assert.deepEqual(h.redactions, { hashed_count: 0, dropped_count: 0, by_type: {} });
   assert.equal(h.skill_names_hashed, undefined);
-});
-
-test("harness_schema_version matches the exported contract version", () => {
-  const root = makeProject();
-  const h = detectHarness(root, { homeDir: makeHome(), repoRoot: root, hashSalt: SALT });
-  assert.equal(h.harness_schema_version, HARNESS_SCHEMA_VERSION);
-  assert.equal(h.harness_schema_version, "2.1");
 });
 
 test("carries runtime fields (agent_type, agent_version, model, session_source, plugin_version)", () => {
@@ -367,16 +352,11 @@ test("parseCodexConfig: honours quoted keys, sandbox scalars, ignores subtables/
   assert.equal(cfg.approvalPolicy, "never");
 });
 
-test("never throws on a bogus cwd; returns safe defaults", () => {
-  const h = detectHarness("/nonexistent/path/ bad", {
-    homeDir: "/also/nonexistent",
-    repoRoot: "",
-    hashSalt: SALT,
-  });
-  assert.equal(h.harness_schema_version, "2.1");
-  assert.equal(h.skills_count, 0);
-  assert.deepEqual(h.hooks_enabled, []);
-  assert.equal(h.multi_agent, "unknown");
+test("a bogus cwd and home never throw and yield the same defaults", () => {
+  const bogus = detectHarness("/nonexistent/path/ bad", { homeDir: "/also/nonexistent", repoRoot: "", hashSalt: SALT });
+  const root = makeProject();
+  const bare = detectHarness(root, { homeDir: makeHome(), repoRoot: root, hashSalt: SALT });
+  assert.deepEqual(bogus, bare);
 });
 
 test("malformed hooks.json is ignored, not fatal", () => {
