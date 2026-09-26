@@ -29,7 +29,8 @@ every user-facing line this plugin prints.
 
 ## Open items
 
-- Write the local status record in the same shape as the Claude plugin once
-  ADR 003 is accepted, so a shared status view can read both.
+- Write the local status record in the same shape as the Claude plugin's, so
+  a shared status view can read both; until then `status` recomputes its
+  answer on every call.
 - Exit the retry daemon on a blocked state instead of running out the
   lifetime.
