@@ -36,7 +36,8 @@ are eligible for collection.
 
 The credential file is shared with SkillMeter for Claude Code. Signing out
 removes the shared license, so it affects both clients. Device identity is kept.
-Global pause retains queued data for later delivery; it does not delete it.
+Global pause retains queued data for later delivery, but sealed event batches
+are still removed 30 days after sealing, paused or not.
 
 `status` is read-only. It separates repository capture eligibility from license
 freshness and reports pending event batches and current-format transcript chunks
