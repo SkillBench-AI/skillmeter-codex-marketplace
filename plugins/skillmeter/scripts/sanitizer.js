@@ -6,9 +6,17 @@ const shared = require("./lib/sanitize");
 const { SECRET_PLACEHOLDER } = require("./lib/rules");
 
 const OPAQUE_KEYS = new Set(["command", "cmd", "patch"]);
+// A compaction reference names an already-sanitized queued record by its
+// 64-hex identifier. The identifier is not content and must survive the
+// content rules: a random hex string can look like a card number.
+const REFERENCE_TYPE = "skillmeter_compaction_reference";
+const REFERENCE_ID = /^[a-f0-9]{64}$/;
 
-function prepare(value, salt, opaque) {
-  if (Array.isArray(value)) return value.map(item => prepare(item, salt, opaque));
+// `references` collects { path, id } for every identifier replaced in this
+// pass; only those exact paths are restored, so a supplied value that looks
+// like a placeholder is never turned into a reference.
+function prepare(value, salt, opaque, references, trail = []) {
+  if (Array.isArray(value)) return value.map((item, i) => prepare(item, salt, opaque, references, [...trail, i]));
   if (!value || typeof value !== "object") return value;
   const out = {};
   for (const [key, item] of Object.entries(value)) {
@@ -17,15 +25,28 @@ function prepare(value, salt, opaque) {
         (key === "input" && value.type === "custom_tool_call"))) {
       out[key] = shared.hashHmac(item, salt);
       if (item && salt) opaque.push({ id: "codex-opaque-tool", category: "path", kind: "path", action: "hashed" });
+    } else if (key === "source_uuid" && value.type === REFERENCE_TYPE && typeof item === "string" && REFERENCE_ID.test(item)) {
+      out[key] = `skillmeter:reference:${references.length}`;
+      references.push({ path: [...trail, key], id: item });
     } else {
-      Object.defineProperty(out, key, {value: prepare(item, salt, opaque), enumerable: true, configurable: true, writable: true});
+      Object.defineProperty(out, key, {value: prepare(item, salt, opaque, references, [...trail, key]), enumerable: true, configurable: true, writable: true});
     }
   }
   return out;
 }
 
+function restoreReferences(value, references) {
+  references.forEach(({ path, id }, index) => {
+    let node = value;
+    for (const key of path.slice(0, -1)) node = node?.[key];
+    const last = path[path.length - 1];
+    if (node && typeof node === "object" && node[last] === `skillmeter:reference:${index}`) node[last] = id;
+  });
+}
+
 function sanitizeRecord(record, salt) {
   const opaque = [];
+  const references = [];
   // Codex encodes function arguments as a JSON string. Parse only this known
   // protocol field so labelled secrets and path rules see its structure.
   let input = record;
@@ -46,7 +67,8 @@ function sanitizeRecord(record, salt) {
         _codex_arguments_format:"unsupported-json-opaque" } };
     }
   }
-  const result = shared.sanitizeEventData(prepare(input, salt, opaque), salt);
+  const result = shared.sanitizeEventData(prepare(input, salt, opaque, references), salt);
+  if (references.length) restoreReferences(result.value, references);
   result.redactions.push(...opaque);
   result.meta = shared.summarizeRedactions(result.redactions);
   if (result.value && typeof result.value === "object" && !Array.isArray(result.value)) {

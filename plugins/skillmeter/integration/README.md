@@ -4,6 +4,46 @@ Run `npm run check` from the repo root for plugin-only checks. They cover chunk
 headers, scope/consent, auth containment, response loss, concurrent drains and
 SIGKILL recovery. No collector or pipeline deployment is required.
 
+## Shared consent store compatibility
+
+The shared-store component follows Claude's schema and lock protocol. It requires
+an expected revision and explicit acknowledgement before writing repository ON.
+`consent-set` writes through it, and the capture and delivery gates read through
+its strict `readPolicy` via the shared consent reader; `consent-preview` uses the
+same read path.
+
+Run against a pinned Claude plugin checkout:
+
+```sh
+node plugins/skillmeter/integration/check_shared_policy_store.cjs /path/to/claude-checkout
+```
+
+This runs the actual Claude store in isolated processes. It verifies legacy
+choices, preservation of version 2 records across unrelated old-client writes,
+stale confirmation after Claude OFF, mutual lock exclusion, and alternating and
+concurrent Claude/Codex writes.
+The unit suite additionally covers concurrent Codex confirmations and I/O failures.
+To test a Claude checkout that writes version-2 choices and implements explicit
+acknowledgement, select that contract and run the runtime checks too:
+
+```sh
+node plugins/skillmeter/integration/check_shared_policy_store.cjs /path/to/claude-checkout --v2
+node plugins/skillmeter/integration/check_shared_policy_runtime.cjs /path/to/claude-checkout
+```
+
+The runtime check uses actual Claude writes and Codex capture/delivery code. It
+covers legacy acknowledgement, local OFF precedence, queued revocation, global
+pause retention, exclusion of paused transcript text and Codex's malformed-policy
+hold. It uses synthetic credentials and an intercepted receiver; it does not
+validate Claude's capture runtime, native UI, real collector or production.
+Pin and record both checkout revisions when using these commands.
+
+Codex refuses invalid or unsupported policy and policy-file symlinks instead of
+rewriting them. It does not reclaim an old lock by age because the legacy lock
+has no owner identity. An interrupted writer may require explicit lock recovery.
+Older Claude writers can still normalize invalid policy or reclaim old locks;
+full shared-consent rollout also requires their reader and writer changes.
+
 ## Optional cross-repository contract
 
 Run with the pipeline's locked Python 3.14 environment (`moto[s3]`, boto3 and

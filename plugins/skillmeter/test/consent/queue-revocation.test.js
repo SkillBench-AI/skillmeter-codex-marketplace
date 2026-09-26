@@ -354,6 +354,34 @@ test("expired mixed batch retains held records outside quarantine", async () => 
   assert.equal(await logger.processSealedBatch(old, endpoint, 1000), "held");
 });
 
+test("held sealed events expire at the cleanup limit even while globally paused", async () => {
+  event("a"); const sealed = logger.sealEventLog(); holdA();
+  const old = path.join(logger.LOG_DIR, `events.jsonl.${Date.now() - logger.CLEANUP_MAX_AGE_MS - 60000}`);
+  fs.renameSync(sealed, old);
+  fs.writeFileSync(old + ".meta", '{"attempts":2}');
+  // A new rewrite time must not extend an immutable batch's retention.
+  fs.utimesSync(old, new Date(), new Date());
+  logger.setTelemetryGloballyDisabled(true);
+  await logger.drainQueuesOnce(endpoint, 1000);
+  assert.equal(fs.existsSync(old), false);
+  assert.equal(fs.existsSync(old + ".meta"), false);
+});
+
+test("cleanup retains fresh held events and defers an expired locked batch", () => {
+  event("a"); const fresh = logger.sealEventLog(); holdA();
+  const old = path.join(logger.LOG_DIR, `events.jsonl.${Date.now() - logger.CLEANUP_MAX_AGE_MS - 60000}`);
+  fs.copyFileSync(fresh, old);
+  const release = queue.acquireLock(old + ".lock"); assert.ok(release);
+  try {
+    logger.cleanupStaleFiles();
+    assert.equal(fs.existsSync(old), true);
+    assert.equal(fs.existsSync(fresh), true);
+  } finally { release(); }
+  logger.cleanupStaleFiles();
+  assert.equal(fs.existsSync(old), false);
+  assert.equal(fs.existsSync(fresh), true);
+});
+
 test("salvage of a rejected mixed batch never uploads held records", async () => {
   event("a"); event("b"); const sealed = logger.sealEventLog(); holdA();
   fs.appendFileSync(sealed, "broken-json\n");

@@ -14,7 +14,8 @@ const { sanitizeEventData, redactDeep } = require("./sanitizer");
 const credstore = require("./credstore");
 const transcriptQueue = require("./lib/transcript-delta");
 const { createRepositoryQueue } = require("./lib/repository-queue");
-const { readSharedGlobalPolicy, readSharedRepositoryPolicy } = require("./lib/shared-telemetry-policy");
+const { createSharedConsentReader } = require("./lib/shared-consent-reader");
+const { readTelemetryChoice } = require("./lib/settings");
 const {
   getEndpointFromToken,
   getEndpointFromTokenAllowExpired,
@@ -40,6 +41,8 @@ const PLUGIN_DATA =
 
 const LOG_DIR = path.join(PLUGIN_DATA, "logs");
 const LOG_FILE = path.join(LOG_DIR, "events.jsonl");
+const { readSharedGlobalPolicy, readSharedRepositoryPolicy } =
+  createSharedConsentReader(path.join(LOG_DIR, "shared-policy-observed"));
 const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const CODEX_SESSIONS_DIR = path.join(CODEX_HOME, "sessions");
 
@@ -325,7 +328,7 @@ const EVENT_TIMEOUT =
   parseInt(process.env.SKILLMETER_TIMEOUT || "10", 10) * 1000;
 const TRANSCRIPT_TIMEOUT = 30_000;
 
-// Retention for sent event logs, poison batches and orphaned event sidecars.
+// Retention for sealed/sent event logs, poison batches and orphaned sidecars.
 // Transcript chunks and legacy snapshots are excluded from automatic cleanup.
 const CLEANUP_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -1137,22 +1140,23 @@ async function drainPendingTranscripts(backendUrl, timeoutMs) {
   return count;
 }
 
-/**
- * Drain both durable queues once. Returns the number of queued items found
- * (pre-drain), which callers use to decide whether work remains.
- */
+// Local reconciliation only: no transmission or credential changes.
 function reconcileSharedRevocations() {
+  let complete = true;
   try {
     if (repositoryQueue.hasRevoked(LOG_FILE)) sealEventLog();
-    repositoryQueue.purgeEvents();
-  } catch { console.error("[skillmeter] Shared event revocation deferred; routing unavailable"); }
+    if (!repositoryQueue.purgeEvents()) complete = false;
+  } catch { complete = false; console.error("[skillmeter] Shared event revocation deferred; routing unavailable"); }
   for (const dir of transcriptQueue.queueDirectories(TRANSCRIPT_CHUNKS_DIR)) {
-    try { transcriptQueue.purgeRevoked(dir, repositoryQueue.revokedScope); }
-    catch { console.error("[skillmeter] Shared transcript revocation deferred; routing unavailable"); }
+    try { if (!transcriptQueue.purgeRevoked(dir, repositoryQueue.revokedScope)) complete = false; }
+    catch { complete = false; console.error("[skillmeter] Shared transcript revocation deferred; routing unavailable"); }
   }
+  return complete;
 }
 
+/** Drain both queues once; return the pre-drain count of queued items. */
 async function drainQueuesOnce(backendUrl, timeoutMs) {
+  cleanupStaleFiles();
   reconcileSharedRevocations();
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Queue drain skipped (telemetry globally disabled)`);
@@ -1336,7 +1340,7 @@ function spawnRetryDaemon() {
 // Cleanup + final-session sealing
 
 /**
- * Delete old sent event logs, poison batches and orphaned event files.
+ * Delete old sealed/sent event logs, poison batches and orphaned event files.
  * Keep transcript chunks and legacy snapshots available for selected recovery.
  */
 function cleanupStaleFiles() {
@@ -1346,6 +1350,20 @@ function cleanupStaleFiles() {
   if (fs.existsSync(LOG_DIR)) {
     try {
       for (const f of fs.readdirSync(LOG_DIR)) {
+        if (/^events\.jsonl\.\d+$/.test(f)) {
+          const batch = path.join(LOG_DIR, f);
+          // Partitioning a mixed batch rewrites its mtime. Its seal timestamp
+          // remains fixed, so a hold cannot extend retention on every retry.
+          if (now - batchSealTimeMs(batch) <= CLEANUP_MAX_AGE_MS) continue;
+          const release = transcriptQueue.acquireLock(`${batch}.lock`);
+          if (!release) continue;
+          try {
+            if (fs.existsSync(batch)) fs.unlinkSync(batch);
+            clearBatchMeta(batch);
+            console.error("[skillmeter] Expired sealed event batch after 30-day retention");
+          } finally { release(); }
+          continue;
+        }
         // Uploaded batches, plus orphaned attempt-meta sidecars whose batch has
         // already been sent or quarantined (so they never leak).
         if (/^events\.jsonl\.\d+\.sent$/.test(f)) {
@@ -1558,7 +1576,7 @@ function readStdin() {
 }
 
 // Explicit repository consent, following Claude's default-off capture rule.
-// Storage remains checkout-local until the shared policy/queue adapter lands.
+// Acknowledged shared grants replace local ON; local restrictions still apply.
 
 function telemetryCliCommand(action) {
   return `node ${JSON.stringify(path.join(PLUGIN_ROOT, "scripts", "telemetry.js"))} ${action}`;
@@ -1578,30 +1596,24 @@ function getRepositoryPolicyDecision(cwd) {
 function getTelemetryOptIn(cwd) {
   const shared = getRepositoryPolicyDecision(cwd);
   if (!shared.allowed) return shared.revoked ? false : null;
-  return getLocalTelemetryOptIn(cwd);
+  const local = getLocalTelemetryChoice(cwd);
+  if (local === "off") return false;
+  if (local === "invalid") return null;
+  if (shared.acknowledged) return true;
+  return local === "on" ? true : null;
 }
 
-function getLocalTelemetryOptIn(cwd) {
+function getLocalTelemetryChoice(cwd) {
   const root = findGitRoot(cwd) || path.resolve(cwd);
   let current = path.resolve(cwd);
-  // Preserve legacy subdirectory opt-outs; a child cannot widen root consent.
   while (current !== root) {
-    const content = readSettingsFile(current);
-    if (fs.existsSync(path.join(current, SETTINGS_RELATIVE))) {
-      if (!content || typeof content !== "object" || Array.isArray(content)) return null;
-      const settings = content.skillmeter;
-      if (settings !== undefined && (
-        !settings || typeof settings !== "object" || Array.isArray(settings) ||
-        (settings.telemetry !== undefined && typeof settings.telemetry !== "boolean")
-      )) return null;
-      if (settings?.telemetry === false) return false;
-    }
+    const choice = readTelemetryChoice(current);
+    if (choice === "off" || choice === "invalid") return choice;
     const parent = path.dirname(current);
-    if (parent === current) return null;
+    if (parent === current) return "invalid";
     current = parent;
   }
-  const choice = readSettingsFile(root)?.skillmeter?.telemetry;
-  return typeof choice === "boolean" ? choice : null;
+  return readTelemetryChoice(root);
 }
 
 function saveTelemetryOptIn(cwd, value) {
@@ -1853,6 +1865,8 @@ module.exports = {
   collectTranscriptPaths,
   stageTranscriptForUpload,
   observeTranscriptConsent,
+  observeKnownTranscriptConsent,
+  reconcileSharedRevocations,
   requestTranscriptCapture,
   stageRequestedTranscripts,
   TRANSCRIPT_CHUNKS_DIR,
@@ -1895,6 +1909,8 @@ module.exports = {
   // Cleanup
   cleanupStaleFiles,
   getTelemetryOptIn,
+  getLocalTelemetryChoice,
+  readSharedGlobalPolicy,
   getRepositoryPolicyDecision,
   saveTelemetryOptIn,
   writeTelemetryConsentFallback,
