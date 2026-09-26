@@ -8,7 +8,9 @@ SIGKILL recovery. No collector or pipeline deployment is required.
 
 The shared-store component follows Claude's schema and lock protocol. It requires
 an expected revision and explicit acknowledgement before writing repository ON.
-The consent controls and runtime gates use its strict read path.
+`consent-set` writes through it, and the capture and delivery gates read through
+its strict `readPolicy` via the shared consent reader; `consent-preview` uses the
+same read path.
 
 Run against a pinned Claude plugin checkout:
 

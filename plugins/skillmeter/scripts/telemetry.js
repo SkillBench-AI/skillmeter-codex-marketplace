@@ -152,9 +152,10 @@ switch (action) {
   case "consent-set": {
     refreshFromDisk();
     const { createSharedPolicyStore } = require("./lib/shared-policy-store");
-    const { applyRepositoryConsent, parseConsentChoiceArgs } = require("./lib/shared-consent-apply");
+    const { applyRepositoryConsent, parseConsentChoiceArgs, CONSENT_SET_USAGE } = require("./lib/shared-consent-apply");
     try {
       const options = parseConsentChoiceArgs(process.argv.slice(3));
+      if (options.help) { process.stdout.write(`${CONSENT_SET_USAGE}\n`); break; }
       const store = createSharedPolicyStore({ file: sharedPolicyFile(), observedFile: path.join(LOG_DIR, "shared-policy-observed") });
       const { reconcileSharedRevocations, observeKnownTranscriptConsent } = require("./logger.js");
       let cleaned = false;

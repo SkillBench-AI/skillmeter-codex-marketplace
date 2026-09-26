@@ -2,9 +2,11 @@
 const { buildConsentPreview } = require("./shared-consent-preview");
 const error = (code, message) => Object.assign(new Error(message), { code });
 
+const CONSENT_SET_USAGE = "Usage: consent-set <on|off> --repository github.com/org/repo --revision <number|absent> [--acknowledge-machine-scope]";
+
 function parseConsentChoiceArgs(args) {
-  const usage = "Usage: consent-set <on|off> --repository github.com/org/repo --revision <number|absent> [--acknowledge-machine-scope]";
-  const fail = () => { throw error("INVALID_ARGUMENTS", usage); };
+  if (args.length === 1 && args[0] === "--help") return { help: true };
+  const fail = () => { throw error("INVALID_ARGUMENTS", CONSENT_SET_USAGE); };
   if (!["on", "off"].includes(args[0])) fail();
   const options = { enabled: args[0] === "on", acknowledged: false };
   const seen = new Set();
@@ -51,4 +53,4 @@ function applyRepositoryConsent({ cwd, scope, store, repository, expectedRevisio
   // remain untouched, so a concurrent local OFF continues to restrict capture.
   return store.setRepositoryOverride(repository, enabled, { expectedRevision, acknowledged, onCommitted });
 }
-module.exports = { applyRepositoryConsent, parseConsentChoiceArgs };
+module.exports = { applyRepositoryConsent, parseConsentChoiceArgs, CONSENT_SET_USAGE };

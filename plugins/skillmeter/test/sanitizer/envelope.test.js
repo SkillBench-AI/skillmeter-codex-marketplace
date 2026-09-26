@@ -47,6 +47,37 @@ test("command, patch and custom tool input stay opaque while identity survives",
   assert.equal(custom.payload.call_id, "fixture");
 });
 
+test("compaction references keep their source identifier while the surrounding history is still scrubbed", () => {
+  // Contains a Luhn-valid digit run, so as content it would become [CARD].
+  const source = "e50a17dff2ebc4573704406067bd59ea299b57dc0ef957df4efee7e0b2d36129";
+  assert.notEqual(shared.redactString(source).value, source, "fixture must be one the card rule matches");
+  const out = s.sanitizeLine({ type: "response_item", payload: { type: "compacted", guardian_history: [
+    { type: "skillmeter_compaction_reference", source_uuid: source, pointer: "/payload" },
+    { type: "message", role: "user", content: `token ${SAMPLES["github-token"]} for alice@example.com` },
+    { type: "skillmeter_compaction_reference", source_uuid: "not-an-identifier alice@example.com", pointer: "/payload" },
+  ] } }, "synthetic-salt");
+  const [reference, message, malformed] = out.payload.guardian_history;
+  assert.equal(reference.source_uuid, source);
+  assert.equal(reference.pointer, "/payload");
+  assert.ok(message.content.includes("[REDACTED_SECRET]") && message.content.includes("[EMAIL]"));
+  assert.equal(malformed.source_uuid, "not-an-identifier [EMAIL]", "only well-formed identifiers are exempt");
+  assert.equal(out._sanitization.counts.card, 0);
+  assert.equal(JSON.stringify(out).includes("skillmeter:reference:"), false, "no placeholder token leaks");
+});
+
+test("a supplied value that looks like a reference placeholder is never restored as a reference", () => {
+  const source = "e50a17dff2ebc4573704406067bd59ea299b57dc0ef957df4efee7e0b2d36129";
+  const out = s.sanitizeLine({ type: "response_item", payload: { type: "compacted", guardian_history: [
+    { type: "skillmeter_compaction_reference", source_uuid: source, pointer: "/payload" },
+    { type: "skillmeter_compaction_reference", source_uuid: "skillmeter:reference:0", pointer: "/payload" },
+    { type: "message", role: "user", content: "skillmeter:reference:0" },
+  ] } }, "synthetic-salt");
+  const [reference, forged, message] = out.payload.guardian_history;
+  assert.equal(reference.source_uuid, source);
+  assert.equal(forged.source_uuid, "skillmeter:reference:0", "the supplied string stays what it was");
+  assert.equal(message.content, "skillmeter:reference:0");
+});
+
 test("unsupported tool arguments are opaque with an explicit format outcome", () => {
   for (const args of ['{"password":', '"raw argument"', "123", "null", "[]"]) {
     const out = s.sanitizeLine({ type: "response_item", payload: { type: "function_call", call_id: "fixture", arguments: args } }, "synthetic-salt");
