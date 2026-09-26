@@ -144,3 +144,13 @@ existing delivery behavior; this is not a guarantee of retroactive isolation.
 
 Run `node --test plugins/skillmeter/test/consent/queue-revocation.test.js` for mixed-batch,
 retry, cursor preservation, in-flight revocation and disable/re-enable checks.
+
+
+### Windows queue durability
+
+Queue files are synced before publication. Windows does not support syncing the
+read-only directory handle used here, so the queue skips that operation and emits
+one stderr diagnostic per process. Directory-entry persistence after a crash is
+unconfirmed. File-write, file-sync and rename failures still fail the operation;
+other platforms continue to report directory-sync errors. This does not establish
+native Windows or power-loss acceptance.
