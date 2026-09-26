@@ -3,7 +3,8 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path"), zlib = require("node:zlib");
 const { releasedCode } = require("./compatibility/released-code.cjs");
-const releases = require("./compatibility/releases.json");
+const contract = require("../../../.github/scripts/compatibility-contract.cjs").load();
+const releases = contract.upgradePaths;
 const candidate = require("../scripts/lib/transcript-delta");
 const repository = path.resolve(__dirname, "../../..");
 const scope = { owner: "fixture", deviceId: "fixture", cwd: "/synthetic", repoRoot: "/synthetic", org: "synthetic", consentStamp: "fixture-grant" };
@@ -13,7 +14,8 @@ const meta = JSON.stringify({ type: "session_meta", payload: { id: "upgrade-fixt
 const messages = files => files.flatMap(file => zlib.gunzipSync(fs.readFileSync(file)).toString().trim().split("\n").map(JSON.parse))
   .filter(record => record.type === "response_item").map(record => record.payload.content);
 
-for (const release of releases) for (const pending of [false, true]) {
+for (const release of releases) for (const queueCase of contract.requiredCases.releasedQueue) {
+  const pending = queueCase === "pending";
   test(`released ${release.version} -> candidate, ${pending ? "pending retry" : "acknowledged"} queue`, async t => {
     const previous = require(path.join(releasedCode(t, repository, release, "plugins/skillmeter"), "scripts/lib/transcript-delta"));
     assert.equal(typeof previous.observeConsent === "function", release.consentJournal);

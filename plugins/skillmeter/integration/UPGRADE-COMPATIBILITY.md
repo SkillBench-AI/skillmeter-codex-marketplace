@@ -2,7 +2,7 @@
 
 Run `node --test plugins/skillmeter/test/released-upgrades.test.js` from a checkout
 with full Git history. The test extracts immutable release commits listed in
-`test/compatibility/releases.json`; it neither downloads releases nor uses the
+`compatibility/contract.json` at the repository root; it neither downloads releases nor uses the
 installed plugin. A missing commit or manifest-version mismatch fails the test.
 
 Coverage currently includes direct upgrades from 0.6.0, 0.6.1, 0.7.0 and 0.8.0

@@ -58,6 +58,14 @@ global.fetch = async (_url, options) => { calls++; assert.equal(options.headers.
     assert.equal(current.commitRefresh(fresh, snapshot), false);
     assert.equal(current.getSignedOut(), true);
   }
+  if (scenario === "signout-signin-refresh") {
+    old.signOut(); old.markEngaged(); old.commitSignin({ jwt: token, orgs: ["fixture"] });
+    assert.equal(current.commitRefresh(fresh, snapshot), false, "a prior authentication exchange cannot cross a sign-out/sign-in cycle");
+    assert.equal(current.getLicenseTokenUncached(), token);
+    assert.deepEqual(fs.readFileSync(batch), before);
+    assert.equal(calls, 0);
+    return;
+  }
   if (scenario === "auth-rejection") global.fetch = async () => { calls++; return { ok: false, status: 401 }; };
   if (scenario === "repository-off") {
     assert.equal(calls, 0, "revoked work must never be sent");
