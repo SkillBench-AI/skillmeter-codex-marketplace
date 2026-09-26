@@ -126,8 +126,13 @@ Missing or corrupt routing fails closed without using the retry budget.
 Temporarily unauthorized rows remain queued while permitted rows are delivered.
 Acknowledgment atomically retains the held portion at the original path; salvage,
 retry exhaustion and age quarantine operate only on the deliverable portion.
-Retry counts reset when that portion changes. The existing age limit still
-applies when a held record becomes eligible again. Failed local acknowledgment
+Retry counts reset when that portion changes. The 14-day retry age still applies
+when a held record becomes eligible again. Sealed event batches are removed
+after 30 days from sealing, including held rows. Cleanup runs before the global
+pause check, uses the batch lock, and does not extend retention when a mixed
+batch is rewritten. Transcript chunks and legacy snapshots remain excluded from
+automatic expiration; their retention contract must be settled separately.
+Failed local acknowledgment
 can repeat an upload, consistent with the queue's existing at-least-once delivery.
 Authorization is checked once per directory per attempt, never cached across
 attempts. Revocation cleanup skips authorization checks and includes sent and quarantined
