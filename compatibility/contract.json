@@ -70,7 +70,11 @@
       "aged-live-writer",
       "aged-live-release",
       "dead-owner-reaper-race",
-      "aliased-dead-owner-reapers"
+      "aliased-dead-owner-reapers",
+      "broker-refresh-failure",
+      "broker-refresh-success",
+      "broker-scope-boundary",
+      "broker-fresh-signin-held"
     ]
   },
   "backendStages": [

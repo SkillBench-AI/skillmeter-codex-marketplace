@@ -22,6 +22,24 @@ function decodeJwtPayload(token) {
   }
 }
 
+// Presence is enough to exclude GitHub recovery, even for a malformed marker.
+function hasBrokerIdentity(token) {
+  const claims = decodeJwtPayload(token);
+  return claims !== null && typeof claims === "object" &&
+    Object.prototype.hasOwnProperty.call(claims, "broker_sub");
+}
+
+// Broker org.login is a tenant slug, not a GitHub organization. Only the plural
+// claim bounds licensed repositories; it cannot replace stored user scope.
+function getBrokerLicenseOrgs(token) {
+  const claims = decodeJwtPayload(token);
+  if (!claims || typeof claims !== "object") return [];
+  const raw = claims.orgs;
+  if (!Array.isArray(raw)) return [];
+  return [...new Set(raw.filter(org => typeof org === "string")
+    .map(org => org.trim().toLowerCase()).filter(Boolean))];
+}
+
 /**
  * Return true when the token's `exp` claim is already past (with a small
  * grace window). A missing/undecodable token is treated as expired to
@@ -77,6 +95,8 @@ function readEndpointClaim(token) {
 module.exports = {
   JWT_EXPIRY_GRACE_SECONDS,
   decodeJwtPayload,
+  hasBrokerIdentity,
+  getBrokerLicenseOrgs,
   isJwtExpired,
   getEndpointFromToken,
   getEndpointFromTokenAllowExpired,

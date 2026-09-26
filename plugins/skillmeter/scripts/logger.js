@@ -99,7 +99,7 @@ function setTelemetryGloballyDisabled(disabled) {
   return result;
 }
 
-// License recovery tries /refresh before GitHub activation. SessionStart and
+// License recovery tries /refresh before legacy GitHub activation. SessionStart and
 // background drains call this helper; failures leave queued data for later retry.
 
 async function tryRefreshLicense(deviceId) {
@@ -115,7 +115,7 @@ async function tryRefreshLicense(deviceId) {
   }
   // /refresh first when we have a token to rotate. refreshExpiredJwt returns
   // null on 410 (sliding window), 404 (endpoint not deployed), 401 (bad
-  // signature), or any network/parse error — falling through to gh in all cases.
+  // signature), or any network/parse error. Broker credentials cannot use gh.
   if (current) {
     const fresh = await refreshExpiredJwt(current, deviceId, expected);
     if (fresh) {

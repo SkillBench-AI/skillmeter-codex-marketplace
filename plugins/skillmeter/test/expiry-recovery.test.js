@@ -20,7 +20,7 @@ function fixture() {
   const calls = path.join(root, "calls.jsonl");
   const credentialsPath = path.join(root, ".skillbench/credentials.json");
   const start = Date.now();
-  const claims = { sub: "tenant-test", broker_sub: "person-test", org: { login: "acme" }, aud: "https://acme.meter.skillbench.ai" };
+  const claims = { sub: "tenant-test", broker_sub: "person-test", orgs: ["acme"], org: { login: "tenant-test" }, aud: "https://acme.meter.skillbench.ai" };
   const token = jwt({ ...claims, exp: Math.floor(start / 1000) + 900 });
   const credentials = { device_id: "TEST-DEVICE", hash_salt: "synthetic-salt", license_jwt: token, allowed_github_orgs: ["acme"], orgs_explicitly_set: true };
   fs.mkdirSync(path.dirname(credentialsPath), { recursive: true });

@@ -30,7 +30,7 @@ function initializeFixture() {
   execFileSync("git", ["init", "--quiet", repo]);
   execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://github.com/synthetic/repo.git"]);
   fs.mkdirSync(path.join(root, ".skillbench"));
-  const claims = { sub: "synthetic-tenant", broker_sub: "synthetic-user", aud: "https://synthetic.meter.skillbench.com", exp: 4102444800 };
+  const claims = { sub: "synthetic-tenant", broker_sub: "synthetic-user", orgs: ["synthetic"], aud: "https://synthetic.meter.skillbench.com", exp: 4102444800 };
   const jwt = "e30." + Buffer.from(JSON.stringify(claims)).toString("base64url") + ".fixture";
   fs.writeFileSync(path.join(root, ".skillbench/credentials.json"), JSON.stringify({
     device_id: "SYNTHETIC-DEVICE", hash_salt: "fixture-salt",
