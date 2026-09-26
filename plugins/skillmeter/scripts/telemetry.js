@@ -31,6 +31,7 @@ const fs = require("fs");
 const path = require("path");
 const { isJwtExpired } = require("./lib/jwt");
 const { readSharedGlobalPolicy, sharedPolicyFile } = require("./lib/shared-telemetry-policy");
+const { inventory } = require("./transcript_inventory");
 
 const cwd = process.cwd();
 const projectRoot = findGitRoot(cwd) || cwd;
@@ -88,6 +89,26 @@ function queueLines() {
   } catch {
     return ["Upload queue: unavailable; could not read local queue state"];
   }
+}
+
+function transcriptHealthLines() {
+  try {
+    const state = inventory(path.dirname(LOG_DIR));
+    const blocked = state.sessions.filter(s => s.failures.some(f => f.phase === "capture"));
+    const observed = state.sessions.filter(s => s.capture && !s.capture.unreadable &&
+      Number.isSafeInteger(s.capture.observedBytes) && Number.isSafeInteger(s.capture.capturedBytes));
+    const behind = observed.filter(s => s.capture.observedBytes > s.capture.capturedBytes);
+    const progress = observed.map(s => s.capture.lastProgressAt).filter(Boolean).sort();
+    const acknowledgments = state.sessions.map(s => s.delivery?.lastSuccessAt).filter(Boolean).sort();
+    const failures = Object.entries(state.chunkDiagnostics).map(([code, count]) => `${code}: ${count}`).join(", ");
+    return [
+      `Transcript capture (all repositories): ${blocked.length} blocked, ${behind.length} behind last observed source size, ${state.sessions.length - observed.length} without progress observations`,
+      `Last transcript capture progress: ${progress.at(-1) || "unknown"}; observations are not a live source inventory`,
+      `Transcript diagnostics: ${failures || "none recorded; hook execution and source discovery not verified"}`,
+      `Last transcript HTTP acknowledgment: ${acknowledgments.at(-1) || "unknown"}; storage completeness not verified`,
+      "Downstream analysis and report delivery: unknown",
+    ];
+  } catch { return ["Transcript capture health: unavailable; local state could not be read"]; }
 }
 
 function saveRepositoryChoice(value) {
@@ -184,7 +205,8 @@ switch (action) {
       `Capture policy: ${capturePolicyLine()}`,
       `Delivery authentication: ${authenticationLine()}`,
       ...queueLines(),
-      "Last successful upload: unknown (not tracked by this version)",
+      ...transcriptHealthLines(),
+      "Last successful event upload: unknown (not tracked by this version)",
       "An empty queue does not prove delivery or report generation.",
     ];
     for (const line of lines) process.stderr.write(`SkillMeter: ${line}\n`);

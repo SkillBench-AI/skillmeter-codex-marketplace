@@ -116,7 +116,9 @@ test("cleanup and dry-run inventory preserve old transcript copies", () => {
   const before = [pending, poison].map(f => fs.readFileSync(f));
   logger.cleanupStaleFiles();
   const result = require("../scripts/transcript_inventory").inventory(process.env.PLUGIN_DATA);
-  assert.deepEqual(result, {dryRun:true,legacyPending:1,legacyPoisonUnknownReason:1,chunkDiagnostics:{}});
+  const { sessions, ...summary } = result;
+  assert.deepEqual(summary, {dryRun:true,legacyPending:1,legacyPoisonUnknownReason:1,chunkDiagnostics:{},downstream:"unknown"});
+  assert.ok(sessions.every(s => s.failures.length === 0));
   assert.deepEqual([pending, poison].map(f => fs.readFileSync(f)), before);
 });
 
