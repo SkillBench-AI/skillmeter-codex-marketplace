@@ -158,6 +158,50 @@ class CandidateTests(unittest.TestCase):
                 ]
             )
 
+    def test_successful_child_without_stage_evidence_cannot_pass(self):
+        def execute(command, **kwargs):
+            if "--version" in command:
+                return "v22.0.0"
+            if "version" in command:
+                return "go version go1.25.5"
+            if "env" in command:
+                return "{}"
+            if "build" in command:
+                Path(command[command.index("-o") + 1]).write_bytes(b"synthetic")
+            return ""
+
+        with (
+            patch.object(candidate, "pipeline_runtime", return_value={}),
+            patch.object(candidate, "execute", side_effect=execute),
+            patch.object(candidate, "verify"),
+        ):
+            result = candidate.run(
+                self.manifest, self.roots, Path(sys.executable), "go", self.root / "result.json"
+            )
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["stages"]["build"]["status"], "pass")
+        self.assertEqual(result["stages"]["evidence"]["reason"], "incomplete-stage-evidence")
+        self.assertEqual(result["stages"]["candidate-recheck"]["status"], "not-run")
+
+    def test_import_from_a_different_checkout_is_rejected(self):
+        modules = [
+            "skillbench_preprocessor",
+            "ai_usage_analyser",
+            "skillbench_contracts",
+            "skillbench_llm_gateway",
+            "skillbench_shared",
+        ]
+        result = {
+            "python": "3.14.6",
+            "dependencies": [],
+            "origins": {name: str(self.root / "wrong" / name / "__init__.py") for name in modules},
+        }
+        with patch.object(candidate, "execute", return_value=json.dumps(result)):
+            with self.assertRaisesRegex(candidate.GateError, "pipeline-import-mismatch"):
+                candidate.pipeline_runtime(
+                    Path(sys.executable), self.roots["pipeline"], {}, self.root
+                )
+
 
 class StageTests(unittest.TestCase):
     def test_truthy_flags_and_mismatched_counts_cannot_pass_final_gate(self):
