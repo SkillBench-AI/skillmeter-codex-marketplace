@@ -26,6 +26,7 @@ Run project controls from the repository you want to configure:
 | Inspect sign-in claims and expiry (no raw token) | `node "$PLUGIN_ROOT/bin/sk-jwt"` |
 | Check capture policy, authentication and local queues | `node "$PLUGIN_ROOT/bin/sk-telemetry" status` |
 | Preview local/shared consent conflicts | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-preview` |
+| Record a shared repository choice (the `telemetry` skill guides preview, acknowledgement and apply) | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-set on\|off …` |
 | Enable / disable this project | `node "$PLUGIN_ROOT/bin/sk-telemetry" enable` / `disable` |
 | Pause / resume all Codex collection and uploads | `node "$PLUGIN_ROOT/bin/sk-telemetry" disable --global` / `enable --global` |
 | Sign out | `node "$PLUGIN_ROOT/bin/signout"` |
