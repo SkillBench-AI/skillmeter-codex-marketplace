@@ -19,6 +19,13 @@ function error(code, message) {
   return Object.assign(new Error(message), { code });
 }
 
+// Temp files are uniquely named and never read back. Their cleanup is best
+// effort: a failure here must not replace the outcome of the write it follows,
+// which has already committed or already failed with its own error.
+function discard(temp) {
+  try { fs.unlinkSync(temp); } catch {}
+}
+
 function validatePolicy(policy) {
   if (!object(policy) || policy.schema_version !== 1 || !integer(policy.revision) ||
       Object.keys(policy).some(key => !FIELDS.includes(key)) || !record(policy.global) ||
@@ -55,7 +62,7 @@ function createSharedPolicyStore({ file, observedFile }) {
         } catch (err) { if (err.code !== "EEXIST") throw err; }
         finally {
           if (fd !== undefined) fs.closeSync(fd);
-          try { fs.unlinkSync(temp); } catch (err) { if (err.code !== "ENOENT") throw err; }
+          discard(temp);
         }
       }
       if (!fs.lstatSync(observedFile).isFile() || fs.readFileSync(observedFile, "utf8") !== "1\n") throw new Error("invalid marker");
@@ -160,7 +167,7 @@ function createSharedPolicyStore({ file, observedFile }) {
         throw err;
       } finally {
         if (fd !== undefined) fs.closeSync(fd);
-        try { fs.unlinkSync(temp); } catch (err) { if (err.code !== "ENOENT") throw err; }
+        discard(temp);
       }
       return policy;
     });

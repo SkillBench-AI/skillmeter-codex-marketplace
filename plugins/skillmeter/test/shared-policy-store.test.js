@@ -267,3 +267,28 @@ test("failed first write preserves an observation marker replaced by another obs
   assert.equal(fs.readFileSync(f.observedFile, "utf8"), "1\n");
   assert.throws(() => f.store.readPolicy(), { code: "POLICY_MISSING" });
 });
+
+function failTempCleanup(t) {
+  const unlink = fs.unlinkSync;
+  t.mock.method(fs, "unlinkSync", (target, ...rest) => {
+    if (/\.tmp(?:\.|$)/.test(String(target))) throw Object.assign(new Error("synthetic cleanup failure"), { code: "EACCES" });
+    return unlink(target, ...rest);
+  });
+}
+
+test("a failed marker temp cleanup does not block observation", t => {
+  const f = fixture(t); failTempCleanup(t);
+  assert.equal(f.store.readPolicy().revision, 4);
+  assert.equal(fs.readFileSync(f.observedFile, "utf8"), "1\n");
+});
+
+test("a failed temp cleanup neither hides a committed write nor replaces the original error", t => {
+  const f = fixture(t); failTempCleanup(t);
+  assert.equal(f.store.setGlobalEnabled(false, { expectedRevision: 4 }).revision, 5);
+  assert.equal(JSON.parse(fs.readFileSync(f.file, "utf8")).global.enabled, false);
+  assert.equal(fs.existsSync(`${f.file}.lock`), false);
+  t.mock.method(fs, "renameSync", () => { throw Object.assign(new Error("disk"), { code: "EIO" }); });
+  assert.throws(() => f.store.setGlobalEnabled(true, { expectedRevision: 5 }), { code: "EIO" });
+  assert.equal(JSON.parse(fs.readFileSync(f.file, "utf8")).revision, 5);
+  assert.equal(fs.existsSync(`${f.file}.lock`), false);
+});
