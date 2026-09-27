@@ -1,7 +1,7 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { rulesets, preflight, inspect, promote, compareVersions } = require("../../../.github/scripts/stable-channel.cjs");
+const { rulesets, githubApi, preflight, inspect, promote, compareVersions } = require("../../../.github/scripts/stable-channel.cjs");
 const A = "a".repeat(40), B = "b".repeat(40), C = "c".repeat(40);
 function fixture() {
   const repo = "example/plugin", root = `repos/${repo}`, writes = [];
@@ -146,6 +146,39 @@ test("workflow validates before approval and serializes only protected promotion
   assert.match(protectedJob,/concurrency:\n      group: stable-promotion\n      cancel-in-progress: false/);
   assert.ok(protectedJob.indexOf("stable-channel.cjs check") < protectedJob.indexOf("Create repository-scoped publisher token"));
   assert.match(protectedJob,/stable-channel\.cjs promote/);
+});
+
+test("missing bypass metadata never counts as an empty bypass list",()=>{
+  for(const [id,error] of [[1,/missing-stable-promotion/],[2,/missing-stable-integrity/],[3,/immutable-release-tags/]]){
+    const f=fixture();delete f.data[`${f.root}/rulesets/${id}`].bypass_actors;
+    assert.throws(()=>promote(f.env,f.api),error);assert.equal(f.writes.length,0);
+  }
+});
+test("ruleset reads use the audit credential, other reads and writes stay separate",()=>{
+  const keys=["GH_TOKEN","RULESET_AUDIT_TOKEN","STABLE_PUBLISH_TOKEN"];
+  const before=Object.fromEntries(keys.map(k=>[k,process.env[k]]));
+  try {
+    Object.assign(process.env,{GH_TOKEN:"read-fixture",RULESET_AUDIT_TOKEN:"audit-fixture",STABLE_PUBLISH_TOKEN:"publisher-fixture"});
+    for (const [route,method,token] of [
+      ["rulesets?per_page=100","GET","audit-fixture"],["rulesets/1","GET","audit-fixture"],
+      ["git/ref/heads/main","GET","read-fixture"],["git/refs/heads/stable","PATCH","publisher-fixture"]
+    ]) githubApi(`repos/example/plugin/${route}`,method,undefined,(command,args,options)=>{
+      assert.equal(command,"gh");assert.equal(options.env.GH_TOKEN,token);
+      assert.equal(options.env.RULESET_AUDIT_TOKEN,undefined);assert.equal(options.env.STABLE_PUBLISH_TOKEN,undefined);
+      return "{}";
+    });
+    delete process.env.RULESET_AUDIT_TOKEN;
+    assert.throws(()=>githubApi("repos/example/plugin/rulesets/1","GET",undefined,()=>{assert.fail("must not fall back")}),/ruleset-audit-token-required/);
+  } finally {for(const k of keys)if(before[k]===undefined)delete process.env[k];else process.env[k]=before[k]}
+});
+test("protected job pins reviewed helper code independently from release inputs",()=>{
+  const fs=require("node:fs"),path=require("node:path");
+  const workflow=fs.readFileSync(path.join(__dirname,"../../../.github/workflows/promote-stable.yml"),"utf8");
+  const job=workflow.split("  promote:\n")[1];
+  assert.match(job,/ref: \$\{\{ vars\.STABLE_PROMOTION_CODE_SHA \}\}/);
+  assert.doesNotMatch(job,/ref: \$\{\{ (github\.sha|inputs\.)/);
+  assert.match(job,/Require reviewed promotion-code revision/);
+  assert.equal((job.match(/RULESET_AUDIT_TOKEN: \$\{\{ secrets\.RULESET_AUDIT_TOKEN \}\}/g)||[]).length,2);
 });
 
 // Opt-in host integration: uses only a temporary home and a synthetic Git repo.

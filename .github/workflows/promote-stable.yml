@@ -63,9 +63,13 @@ jobs:
       group: stable-promotion
       cancel-in-progress: false
     steps:
+      - name: Require reviewed promotion-code revision
+        env:
+          PROMOTION_CODE_SHA: ${{ vars.STABLE_PROMOTION_CODE_SHA }}
+        run: node -e 'if (!/^[0-9a-f]{40}$/.test(process.env.PROMOTION_CODE_SHA || "")) process.exit(1)'
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.sha }}
+          ref: ${{ vars.STABLE_PROMOTION_CODE_SHA }}
           persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -73,6 +77,7 @@ jobs:
       - name: Check release, branch and publisher protections
         env:
           GH_TOKEN: ${{ github.token }}
+          RULESET_AUDIT_TOKEN: ${{ secrets.RULESET_AUDIT_TOKEN }}
           RELEASE_APP_ID: ${{ vars.RELEASE_APP_ID }}
         run: node .github/scripts/stable-channel.cjs check
       - name: Create repository-scoped publisher token
@@ -87,6 +92,7 @@ jobs:
       - name: Recheck and promote exact release commit
         env:
           GH_TOKEN: ${{ github.token }}
+          RULESET_AUDIT_TOKEN: ${{ secrets.RULESET_AUDIT_TOKEN }}
           STABLE_PUBLISH_TOKEN: ${{ steps.publisher.outputs.token }}
           RELEASE_APP_ID: ${{ vars.RELEASE_APP_ID }}
         run: node .github/scripts/stable-channel.cjs promote

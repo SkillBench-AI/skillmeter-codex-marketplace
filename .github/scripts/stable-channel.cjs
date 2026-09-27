@@ -23,14 +23,14 @@ function checkProtections(allRules, environment, branches, appId) {
   const has = (expected) => allRules.some(r => r.enforcement === "active" && r.target === expected.target &&
     r.conditions?.ref_name?.include?.length === 1 && r.conditions.ref_name.include[0] === "refs/heads/stable" &&
     r.conditions.ref_name.exclude?.length === 0 &&
-    (r.bypass_actors ?? []).length === expected.bypass_actors.length &&
+    Array.isArray(r.bypass_actors) && r.bypass_actors.length === expected.bypass_actors.length &&
     expected.bypass_actors.every(e => r.bypass_actors.some(a => a.actor_id === e.actor_id && a.actor_type === e.actor_type && a.bypass_mode === e.bypass_mode)) &&
     expected.rules.every(e => r.rules?.some(a => a.type === e.type &&
       (e.type !== "update" || a.parameters?.update_allows_fetch_and_merge === false))));
   for (const rule of rulesets(appId)) requireThat(has(rule), `missing-${rule.name}-protection`);
   requireThat(allRules.some(r => r.enforcement === "active" && r.target === "tag" &&
     r.conditions?.ref_name?.include?.length === 1 && r.conditions.ref_name.include[0] === "refs/tags/v*" &&
-    r.conditions.ref_name.exclude?.length === 0 && (r.bypass_actors ?? []).length === 0 &&
+    r.conditions.ref_name.exclude?.length === 0 && Array.isArray(r.bypass_actors) && r.bypass_actors.length === 0 &&
     ["update", "deletion"].every(type => r.rules?.some(a => a.type === type))), "immutable-release-tags-required");
   requireThat(environment.can_admins_bypass === false && environment.deployment_branch_policy?.custom_branch_policies === true &&
     environment.deployment_branch_policy.protected_branches === false &&
@@ -52,7 +52,7 @@ function inputs(env) {
     /^(actions\/runs\/[1-9]\d*|pull\/[1-9]\d*#issuecomment-\d+|issues\/[1-9]\d*#issuecomment-\d+)$/.test(env.SMOKE_EVIDENCE_URL.slice(prefix.length)), "smoke-evidence-link-required");
   return { repo, tag: env.RELEASE_TAG, sha: env.RELEASE_SHA, previous: env.EXPECTED_STABLE, runId: env.RELEASE_RUN_ID, evidence: env.SMOKE_EVIDENCE_URL };
 }
-function githubApi(path, method = "GET", body) {
+function githubApi(path, method = "GET", body, run = execFileSync) {
   const args = ["api", path, "--method", method];
   if (body !== undefined) args.push("--input", "-");
   const env = { ...process.env };
@@ -60,8 +60,13 @@ function githubApi(path, method = "GET", body) {
     requireThat(Boolean(env.STABLE_PUBLISH_TOKEN), "publisher-token-required");
     env.GH_TOKEN = env.STABLE_PUBLISH_TOKEN;
   }
+  if (method === "GET" && /^repos\/[^/]+\/[^/]+\/rulesets(?:[/?]|$)/.test(path)) {
+    requireThat(Boolean(env.RULESET_AUDIT_TOKEN), "ruleset-audit-token-required");
+    env.GH_TOKEN = env.RULESET_AUDIT_TOKEN;
+  }
+  delete env.RULESET_AUDIT_TOKEN;
   delete env.STABLE_PUBLISH_TOKEN;
-  return JSON.parse(execFileSync("gh", args, { env, input: body === undefined ? undefined : JSON.stringify(body), encoding: "utf8", maxBuffer: 8 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] }));
+  return JSON.parse(run("gh", args, { env, input: body === undefined ? undefined : JSON.stringify(body), encoding: "utf8", maxBuffer: 8 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] }));
 }
 function inspect(env, api = githubApi) {
   const c = inputs(env), root = `repos/${c.repo}`, appId = Number(env.RELEASE_APP_ID);
@@ -124,7 +129,7 @@ function promote(env, api = githubApi) {
   requireThat(api(`${root}/git/ref/heads/stable`).object.sha === c.sha, "promotion-not-observed");
   return { ...c, status: "promoted" };
 }
-module.exports = { compareVersions, rulesets, checkProtections, inputs, preflight, inspect, promote };
+module.exports = { compareVersions, rulesets, checkProtections, inputs, githubApi, preflight, inspect, promote };
 if (require.main === module) {
   try {
     const command = process.argv[2];

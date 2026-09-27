@@ -21,6 +21,18 @@ performed. The main-based installation instructions remain valid meanwhile.
    disable administrator bypass, and allow only branch `main`. Store
    `RELEASE_APP_ID` and `RELEASE_APP_PRIVATE_KEY` there. Reuse the release
    publisher identity; do not introduce a developer token or second publisher.
+   Set environment variable `STABLE_PROMOTION_CODE_SHA` to the full independently
+   reviewed commit containing this helper. Protected steps check out that fixed
+   revision, independently of the release candidate. Updating it requires a
+   separate maintainer review; a dispatch input cannot select helper code.
+
+   Configure a separate repository-scoped `RULESET_AUDIT_TOKEN` environment secret
+   whose identity can inspect complete ruleset bypass metadata. GitHub requires
+   ruleset write access to disclose that field. The helper uses this credential
+   only for ruleset GET requests, never for ref writes, and rejects missing
+   bypass data. Do not give the contents-write publisher administration access.
+   Provisioning this additional credential requires security/maintainer review;
+   without it, promotion holds. See [GitHub ruleset API](https://docs.github.com/en/rest/repos/rules#get-a-repository-ruleset).
 3. Retain immutable `v*` tags with no update/deletion bypass. Render two additive
    stable rulesets with the publisher's App ID, inspect them, then apply through
    the GitHub ruleset API or UI:
@@ -60,9 +72,9 @@ Promotion verifies tag/manifest equality, published release/archive existence,
 release-run identity, main ancestry, publisher/branch/tag protections and the
 expected old stable value. Existing stable requires a greater version and a
 fast-forward. Retrying an already-promoted commit is read-only. Missing metadata
-or permissions hold promotion. The candidate's code is not executed with the
-publisher token. Only ref mutations receive the scoped write token; metadata
-reads use the workflow's read token.
+or permissions hold promotion. The selected release candidate's code is not checked out for promotion. The
+reviewed workflow and pinned helper form the publisher's trusted code boundary. Only ref mutations receive the scoped write token; metadata
+reads use the workflow's read token except the isolated ruleset audit reads.
 
 A read-only preflight validates release evidence and the expected stable ref before
 requesting approval. It needs no publisher credentials. Only successful preflights
