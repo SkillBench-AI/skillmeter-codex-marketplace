@@ -63,3 +63,40 @@ test("CLI refuses an existing receipt without replacing its bytes", t => {
   const r=cp.spawnSync(process.execPath,[path.join(__dirname,"acceptance.cjs"),repo,repo,"legacy",options.codexHead,options.claudeHead,out],{encoding:"utf8"});
   assert.notEqual(r.status,0);assert.equal(fs.readFileSync(out,"utf8"),"keep");assert.match(r.stderr,/EEXIST/);
 });
+
+test("inherited Git redirection cannot hide a dirty candidate", t => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "acceptance-redirect-"));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const clean = path.join(parent, "clean"), dirty = path.join(parent, "dirty");
+  for (const root of [clean, dirty]) {
+    fs.mkdirSync(root);
+    for (const args of [["init", "-q"], ["-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.invalid", "commit", "--allow-empty", "-qm", path.basename(root)]]) {
+      const result = cp.spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
+      assert.equal(result.status, 0, result.stderr);
+    }
+  }
+  fs.writeFileSync(path.join(dirty, "untracked"), "must be detected");
+  const expected = inspect(dirty);
+  const result = cp.spawnSync(process.execPath, ["-e",
+    "console.log(JSON.stringify(require(process.argv[1]).inspect(process.argv[2])))",
+    path.join(__dirname, "acceptance.cjs"), dirty], {
+    encoding: "utf8", env: { ...process.env, GIT_DIR: path.join(clean, ".git"), GIT_WORK_TREE: clean,
+      GIT_INDEX_FILE: path.join(clean, ".git", "index") },
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), expected);
+  assert.equal(expected.dirty, true);
+});
+
+test("inspection rejects nested directories but accepts linked worktree roots", t => {
+  const parent = fs.mkdtempSync(path.join(os.tmpdir(), "acceptance-root-"));
+  t.after(() => fs.rmSync(parent, { recursive: true, force: true }));
+  const root = path.join(parent, "repo"), linked = path.join(parent, "linked");fs.mkdirSync(root);
+  for (const args of [["init", "-q"], ["-c", "user.name=Synthetic", "-c", "user.email=synthetic@example.invalid", "commit", "--allow-empty", "-qm", "fixture"], ["worktree", "add", "--detach", linked]]) {
+    const result = cp.spawnSync("git", ["-C", root, ...args], { encoding: "utf8" });
+    assert.equal(result.status, 0, result.stderr);
+  }
+  const nested = path.join(root, "nested");fs.mkdirSync(nested);
+  assert.throws(() => inspect(nested), /candidate_unavailable/);
+  assert.deepEqual(inspect(linked), inspect(root));
+});

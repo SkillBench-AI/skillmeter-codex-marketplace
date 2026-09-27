@@ -4,11 +4,15 @@ const cp = require("node:child_process"), crypto = require("node:crypto");
 const runnerRoot = path.resolve(__dirname, "../..");
 
 function inspect(root) {
+  // Inspect the same checkout as the isolated checks, ignoring caller Git overrides.
+  const env = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot,
+    GIT_CONFIG_NOSYSTEM: "1", GIT_CONFIG_GLOBAL: os.devNull };
   const git = args => {
-    const r = cp.spawnSync("git", ["-C", root, ...args], { encoding: "utf8", timeout: 10000 });
+    const r = cp.spawnSync("git", ["-C", root, ...args], { env, encoding: "utf8", timeout: 10000 });
     if (r.status !== 0) throw Error("candidate_unavailable");
     return r.stdout.trim();
   };
+  if (fs.realpathSync(git(["rev-parse", "--show-toplevel"])) !== fs.realpathSync(root)) throw Error("candidate_unavailable");
   return { head: git(["rev-parse", "HEAD"]), dirty: !!git(["status", "--porcelain", "--untracked-files=normal"]) };
 }
 
