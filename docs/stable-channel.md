@@ -64,7 +64,10 @@ or permissions hold promotion. The candidate's code is not executed with the
 publisher token. Only ref mutations receive the scoped write token; metadata
 reads use the workflow's read token.
 
-Promotions are serialized, rechecked after approval, and use server-enforced
+A read-only preflight validates release evidence and the expected stable ref before
+requesting approval. It needs no publisher credentials. Only successful preflights
+enter the serialized approval queue. Publisher protections and all release metadata
+are checked again after approval. Promotions use server-enforced
 non-force updates. A competing creation/update or unexpected observed result
 fails the run. GitHub does not provide a transaction spanning all these reads
 and the ref update; protected refs and the single publisher are required.

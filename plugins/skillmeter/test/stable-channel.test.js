@@ -1,7 +1,7 @@
 "use strict";
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { rulesets, inspect, promote, compareVersions } = require("../../../.github/scripts/stable-channel.cjs");
+const { rulesets, preflight, inspect, promote, compareVersions } = require("../../../.github/scripts/stable-channel.cjs");
 const A = "a".repeat(40), B = "b".repeat(40), C = "c".repeat(40);
 function fixture() {
   const repo = "example/plugin", root = `repos/${repo}`, writes = [];
@@ -113,6 +113,39 @@ test("version order is numeric including large components",()=>{
   assert.equal(compareVersions("0.11.0","0.9.9"),1);
   assert.equal(compareVersions("0.9007199254740993.0","0.9007199254740992.0"),1);
   assert.throws(()=>compareVersions("0.11.0-rc1","0.10.0"),/invalid-version/);
+});
+
+test("preflight validates a release without publisher credentials",()=>{
+  const f=fixture();delete f.env.RELEASE_APP_ID;
+  assert.equal(preflight(f.env,f.api).sha,B);assert.equal(f.writes.length,0);
+});
+for (const [name,modify,error] of failures.filter(([name])=> ![
+  "shared Actions publisher","unprotected stable","additional bypass","publisher can force push",
+  "mutable release tags","self approval","admin bypass","publisher branch wildcard"
+].includes(name))) test(`preflight rejects before approval: ${name}`,()=>{
+  const f=fixture();delete f.env.RELEASE_APP_ID;modify(f);
+  assert.throws(()=>preflight(f.env,f.api),error);assert.equal(f.writes.length,0);
+});
+test("protected promotion rechecks policy and stable after successful preflight",()=>{
+  for (const [name,modify,error] of failures) {
+    const f=fixture();preflight(f.env,f.api);modify(f);
+    assert.throws(()=>promote(f.env,f.api),error,name);assert.equal(f.writes.length,0,name);
+  }
+});
+test("workflow validates before approval and serializes only protected promotion",()=>{
+  const fs=require("node:fs"),path=require("node:path");
+  const workflow=fs.readFileSync(path.join(__dirname,"../../../.github/workflows/promote-stable.yml"),"utf8");
+  assert.doesNotMatch(workflow,/^concurrency:/m);
+  const pre=workflow.split("  preflight:\n")[1]?.split("  promote:\n")[0];
+  assert.ok(pre,"unprotected prerequisite job required");
+  assert.doesNotMatch(pre,/environment:|secrets\.|create-github-app-token|concurrency:/);
+  assert.match(pre,/stable-channel\.cjs preflight/);
+  const protectedJob=workflow.split("  promote:\n")[1];
+  assert.match(protectedJob,/needs: preflight/);
+  assert.match(protectedJob,/environment: release-publisher/);
+  assert.match(protectedJob,/concurrency:\n      group: stable-promotion\n      cancel-in-progress: false/);
+  assert.ok(protectedJob.indexOf("stable-channel.cjs check") < protectedJob.indexOf("Create repository-scoped publisher token"));
+  assert.match(protectedJob,/stable-channel\.cjs promote/);
 });
 
 // Opt-in host integration: uses only a temporary home and a synthetic Git repo.

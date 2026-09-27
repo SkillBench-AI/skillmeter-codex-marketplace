@@ -50,9 +50,7 @@ function inputs(env) {
   const prefix = `https://github.com/${repo}/`;
   requireThat(typeof env.SMOKE_EVIDENCE_URL === "string" && env.SMOKE_EVIDENCE_URL.startsWith(prefix) &&
     /^(actions\/runs\/[1-9]\d*|pull\/[1-9]\d*#issuecomment-\d+|issues\/[1-9]\d*#issuecomment-\d+)$/.test(env.SMOKE_EVIDENCE_URL.slice(prefix.length)), "smoke-evidence-link-required");
-  const appId = Number(env.RELEASE_APP_ID);
-  rulesets(appId);
-  return { repo, tag: env.RELEASE_TAG, sha: env.RELEASE_SHA, previous: env.EXPECTED_STABLE, runId: env.RELEASE_RUN_ID, appId, evidence: env.SMOKE_EVIDENCE_URL };
+  return { repo, tag: env.RELEASE_TAG, sha: env.RELEASE_SHA, previous: env.EXPECTED_STABLE, runId: env.RELEASE_RUN_ID, evidence: env.SMOKE_EVIDENCE_URL };
 }
 function githubApi(path, method = "GET", body) {
   const args = ["api", path, "--method", method];
@@ -66,7 +64,8 @@ function githubApi(path, method = "GET", body) {
   return JSON.parse(execFileSync("gh", args, { env, input: body === undefined ? undefined : JSON.stringify(body), encoding: "utf8", maxBuffer: 8 * 1024 * 1024, stdio: ["pipe", "pipe", "pipe"] }));
 }
 function inspect(env, api = githubApi) {
-  const c = inputs(env), root = `repos/${c.repo}`;
+  const c = inputs(env), root = `repos/${c.repo}`, appId = Number(env.RELEASE_APP_ID);
+  rulesets(appId);
   const details = [];
   for (let page = 1; ; page++) {
     const list = api(`${root}/rulesets?includes_parents=true&per_page=100&page=${page}`);
@@ -77,7 +76,12 @@ function inspect(env, api = githubApi) {
     }
     if (list.length < 100) break;
   }
-  checkProtections(details, api(`${root}/environments/release-publisher`), api(`${root}/environments/release-publisher/deployment-branch-policies?per_page=100`), c.appId);
+  checkProtections(details, api(`${root}/environments/release-publisher`), api(`${root}/environments/release-publisher/deployment-branch-policies?per_page=100`), appId);
+  return { ...preflight(env, api), appId };
+}
+function preflight(env, api = githubApi) {
+  // Read-only release validation needs no protected environment or publisher ID.
+  const c = inputs(env), root = `repos/${c.repo}`;
   let object = api(`${root}/git/ref/tags/${c.tag}`).object;
   for (let depth = 0; object.type === "tag" && depth < 4; depth++) object = api(`${root}/git/tags/${object.sha}`).object;
   requireThat(object.type === "commit" && object.sha === c.sha, "tag-candidate-mismatch");
@@ -120,13 +124,13 @@ function promote(env, api = githubApi) {
   requireThat(api(`${root}/git/ref/heads/stable`).object.sha === c.sha, "promotion-not-observed");
   return { ...c, status: "promoted" };
 }
-module.exports = { compareVersions, rulesets, checkProtections, inputs, inspect, promote };
+module.exports = { compareVersions, rulesets, checkProtections, inputs, preflight, inspect, promote };
 if (require.main === module) {
   try {
     const command = process.argv[2];
     const result = command === "rules" ? rulesets(Number(process.argv[3])) :
-      command === "check" ? inspect(process.env) : command === "promote" ? promote(process.env) : null;
-    requireThat(result, "usage: stable-channel.cjs rules APP_ID | check | promote");
+      command === "preflight" ? preflight(process.env) : command === "check" ? inspect(process.env) : command === "promote" ? promote(process.env) : null;
+    requireThat(result, "usage: stable-channel.cjs rules APP_ID | preflight | check | promote");
     console.log(JSON.stringify(result, null, 2));
   } catch (error) { console.error(`stable-channel: ${error.message}`); process.exitCode = 1; }
 }
