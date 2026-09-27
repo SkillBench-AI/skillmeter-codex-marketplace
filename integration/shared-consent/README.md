@@ -240,3 +240,40 @@ upload began only after Stop, the result is inconclusive and cannot pass.
 Receipts are private, under `verification/`; retire after inspection. Use a fresh
 prepared run after failure. This is native dispatch into an intercepted receiver,
 not production collector acceptance.
+
+## Pinned consent acceptance rehearsal
+
+Run the counter/queue regressions, an unseen OFF/ON written by the actual Claude
+store, and the existing subprocess rehearsal with one command:
+
+```sh
+node integration/shared-consent/acceptance.cjs \
+  /absolute/codex-candidate /absolute/claude-candidate legacy \
+  FULL_CODEX_COMMIT_SHA FULL_CLAUDE_COMMIT_SHA /absolute/new-receipt.json
+```
+
+Use `legacy` for a writer that omits revocation counters, or `counters` for a
+writer that initializes and increments both counters. Contract mismatches fail;
+the runner never selects a contract from the observed result. The Codex candidate
+must include the counter regression suite and existing shared-consent harness.
+For both writer versions, use separate pinned checkouts or switch a clean Claude
+checkout between runs; use a new receipt path each time.
+
+The runner, Codex candidate and Claude candidate must be clean Git checkouts.
+Full 40-character expected candidate SHAs are required. Their revisions are checked
+again afterward. Receipts must be outside all three checkouts and cannot overwrite
+an existing file. Keep them outside Git. They contain revisions, runtime, check
+outcomes and output digests, without raw logs, transcripts or credentials.
+
+`local_pass` means these synthetic subprocess checks passed. The receipt always
+leaves native dispatch, Claude capture runtime, live collector and weekly report
+acceptance unverified. Ambiguous queue migration and transcript expiry/reset remain
+explicit decision gates; event-retention tests do not establish transcript expiry.
+A failed command or timeout exits nonzero; dirty, mismatched or changed candidates
+produce a blocked result. Failure details can be reproduced by running the named
+check directly. Existing rehearsal failures retain isolated synthetic artifacts.
+
+This command uses isolated test homes and intercepted delivery. It does not arm
+installed hooks, submit desktop prompts, change real consent, authenticate to a
+service, fetch dependencies, schedule jobs or run a live collector canary. Existing
+`prepare.cjs` and `verify-turn.cjs` remain the native path after candidate review.
