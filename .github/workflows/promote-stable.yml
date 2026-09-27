@@ -1,0 +1,76 @@
+name: Promote stable
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Published release tag (vMAJOR.MINOR.PATCH)
+        required: true
+        type: string
+      release_sha:
+        description: Full tested release commit SHA
+        required: true
+        type: string
+      expected_stable:
+        description: Current full stable SHA, or absent for first promotion
+        required: true
+        type: string
+      release_run_id:
+        description: Successful Release workflow run for this exact commit
+        required: true
+        type: string
+      smoke_evidence_url:
+        description: Same-repository run or issue/PR comment recording installed smoke evidence
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  actions: read
+
+# One stable promotion at a time, including the wait for independent review.
+concurrency:
+  group: stable-promotion
+  cancel-in-progress: false
+
+env:
+  RELEASE_TAG: ${{ inputs.tag }}
+  RELEASE_SHA: ${{ inputs.release_sha }}
+  EXPECTED_STABLE: ${{ inputs.expected_stable }}
+  RELEASE_RUN_ID: ${{ inputs.release_run_id }}
+  SMOKE_EVIDENCE_URL: ${{ inputs.smoke_evidence_url }}
+
+jobs:
+  promote:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: release-publisher
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Check release, branch and publisher protections
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_APP_ID: ${{ vars.RELEASE_APP_ID }}
+        run: node .github/scripts/stable-channel.cjs check
+      - name: Create repository-scoped publisher token
+        id: publisher
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: ${{ github.event.repository.name }}
+          permission-contents: write
+      - name: Recheck and promote exact release commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STABLE_PUBLISH_TOKEN: ${{ steps.publisher.outputs.token }}
+          RELEASE_APP_ID: ${{ vars.RELEASE_APP_ID }}
+        run: node .github/scripts/stable-channel.cjs promote
