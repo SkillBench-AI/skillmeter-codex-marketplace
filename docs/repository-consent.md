@@ -98,11 +98,15 @@ stricter rejection of empty/unreadable `commondir`; long-lived processes reload
 remote-resolution configuration so a changed alias is not cached as permission.
 
 Organization and repository records may carry a non-negative safe integer
-`revocations` counter; absence means zero. Every repository OFF write increments
+`revocations` counter. Every repository OFF write increments
 its counter, including repeated OFF; ON preserves it. A counter increase purges
 previously authorized payloads even if the client missed the OFF/ON transition.
-Equal counters permit delivery after timestamp reaffirmation. Lower counters
-hold capture and delivery until they catch up. Invalid counters hold without
+When both records explicitly carry counters, equal counters permit delivery after
+timestamp reaffirmation. Older writers omit counters, so those records retain
+the timestamp-based queue hold. Switching between legacy and counter-aware
+records also holds the previous queue generation; missing counters do not prove
+a zero revocation history. An unchanged legacy policy still permits delivery.
+Lower counters hold capture and delivery until they catch up. Invalid counters hold without
 rewriting the policy. Global pause does not increment a revocation counter.
 
 Queue generations retain the counters observed at capture in the private routing

@@ -23,6 +23,7 @@ function createRepositoryQueue(root, salt, allowed, sharedPolicy = () => null) {
           (state.sharedDeliveryToken !== undefined && typeof state.sharedDeliveryToken !== "string") ||
           (state.sharedRepoKey !== undefined && typeof state.sharedRepoKey !== "string")) throw new Error("invalid-shared-policy-routing");
       if ((state.revocationsSeen !== undefined && !validCounters(state.revocationsSeen)) ||
+          (state.sharedCountersExplicit !== undefined && typeof state.sharedCountersExplicit !== "boolean") ||
           (state.sharedCounterHeld !== undefined && typeof state.sharedCounterHeld !== "boolean") ||
           (state.sharedRevoked !== undefined && typeof state.sharedRevoked !== "boolean") ||
           (state.sharedAcknowledgement !== undefined && typeof state.sharedAcknowledgement !== "string")) throw new Error("invalid-counter-routing");
@@ -56,12 +57,17 @@ function createRepositoryQueue(root, salt, allowed, sharedPolicy = () => null) {
       }
       const changedRepository = effective.key && effective.key !== state.sharedRepoKey;
       const counters = effective.revocations;
+      const explicitCounters = validCounters(counters);
+      const changedCounterMode = state.sharedCountersExplicit !== undefined && state.sharedCountersExplicit !== explicitCounters;
+      const changedLegacyStamp = state.sharedStamp !== effective.stamp &&
+        (!explicitCounters || state.sharedCountersExplicit !== true);
       const comparison = validCounters(counters) && validCounters(state.revocationsSeen)
         ? compareCounters(counters, state.revocationsSeen) : null;
       const adoptCounters = validCounters(counters) && !validCounters(state.revocationsSeen);
       const acknowledgement = effective.acknowledgement ?? "[null,null]";
       const changedAcknowledgement = state.sharedAcknowledgement !== undefined && state.sharedAcknowledgement !== acknowledgement;
-      if (!state.sharedDeliveryToken || changedRepository || adoptCounters || changedAcknowledgement || comparison === "higher" ||
+      if (!state.sharedDeliveryToken || changedRepository || adoptCounters || changedAcknowledgement ||
+          changedCounterMode || changedLegacyStamp || comparison === "higher" ||
           (effective.revoked === true && !state.sharedRevoked)) {
         // Old random-token rows lack a proven counter. Keep their attribution
         // held rather than silently interpreting them as zero on upgrade.
@@ -90,8 +96,11 @@ function createRepositoryQueue(root, salt, allowed, sharedPolicy = () => null) {
       }
       if (state.sharedAcknowledgement !== acknowledgement) { state.sharedAcknowledgement = acknowledgement; changed = true; }
       if (state.sharedRevoked !== Boolean(effective.revoked)) { state.sharedRevoked = Boolean(effective.revoked); changed = true; }
-      const held = validCounters(counters) && validCounters(state.revocationsSeen) &&
-        (counters.org < state.revocationsSeen.org || counters.repo < state.revocationsSeen.repo);
+      if (state.sharedCountersExplicit !== explicitCounters) { state.sharedCountersExplicit = explicitCounters; changed = true; }
+      // Losing the counter fields cannot prove that an existing rollback caught up.
+      const held = explicitCounters && validCounters(state.revocationsSeen)
+        ? counters.org < state.revocationsSeen.org || counters.repo < state.revocationsSeen.repo
+        : state.sharedCounterHeld === true;
       if (state.sharedCounterHeld !== held) { state.sharedCounterHeld = held; changed = true; }
       if (state.sharedStamp !== effective.stamp) { state.sharedStamp = effective.stamp; changed = true; }
     }

@@ -67,13 +67,14 @@ for (const scope of ["organizations", "repositories"]) {
     `);
   });
 
-  test(`${scope}: an absent legacy counter equals explicit zero`, t => {
+  test(`${scope}: legacy queues stay held when counters are first introduced`, t => {
     fixture(t).run(setup + `
       const legacy=structuredClone(initial); delete legacy.${scope}['${key}'].revocations;
       writePolicy(legacy); const queued=capture();
       writePolicy({...initial,revision:2,${scope}:{'${key}':{...initial.${scope}['${key}'],decided_at:2}}});
       await deliver(queued);
-      assert.equal(calls,2,'legacy zero survives an ON reaffirmation');
+      assert.equal(calls,0,'missing counters do not prove an unchanged revocation history');
+      assert.ok(fs.existsSync(queued.chunk));assert.ok(fs.existsSync(queued.event));
     `);
   });
 
@@ -104,6 +105,77 @@ for (const scope of ["organizations", "repositories"]) {
     });
   }
 }
+
+for (const missingScope of ['organizations', 'repositories', 'both']) {
+  for (const changedScope of ['organizations', 'repositories']) {
+    test(`legacy ${missingScope} counters: unseen ${changedScope} OFF/ON holds old queues`, t => {
+      fixture(t).run(setup + `
+        const legacy=structuredClone(initial);
+        if ('${missingScope}' !== 'repositories') delete legacy.organizations.acme.revocations;
+        if ('${missingScope}' !== 'organizations') delete legacy.repositories['github.com/acme/widgets'].revocations;
+        writePolicy(legacy);const old=capture();
+        const before=[old.chunk,old.event].map(file=>fs.readFileSync(file));
+        // Released writers leave only the final timestamp when Codex missed OFF.
+        const key='${changedScope}'==='organizations'?'acme':'github.com/acme/widgets';
+        legacy.${changedScope}[key].decided_at=2;legacy.revision=3;writePolicy(legacy);
+        await deliver(old);assert.equal(calls,0,'no transport for ambiguous pre-OFF data');
+        [old.chunk,old.event].forEach((file,i)=>assert.deepEqual(fs.readFileSync(file),before[i]));
+        const fresh=capture();await deliver(fresh);assert.equal(calls,2,'new authorized data can deliver');
+        await deliver(old);assert.equal(calls,2,'new capture must not release old queues');
+      `);
+    });
+  }
+}
+
+test('unchanged legacy policy delivers stamped queues across a process restart', t => {
+  const f=fixture(t);
+  f.run(setup + `
+    writePolicy(policy);const queued=capture();
+    fs.writeFileSync(source+'.queued',JSON.stringify(queued));
+  `);
+  f.run(setup + `
+    await deliver(JSON.parse(fs.readFileSync(source+'.queued')));assert.equal(calls,2);
+  `);
+});
+
+test('a legacy writer between counter-aware observations cannot release its old queue on upgrade', t => {
+  fixture(t).run(setup + `
+    writePolicy(initial);const first=capture();
+    const legacy=structuredClone(initial);delete legacy.repositories['github.com/acme/widgets'].revocations;
+    writePolicy(legacy);await deliver(first);assert.equal(calls,0,'losing counters preserves a hold even with the same timestamp');
+    const old=capture();
+    initial.repositories['github.com/acme/widgets'].decided_at=3;writePolicy(initial);
+    await deliver(old);assert.equal(calls,0,'restored zero cannot prove absence of an intervening legacy OFF');
+    assert.ok(fs.existsSync(old.chunk));assert.ok(fs.existsSync(old.event));
+    const fresh=capture();await deliver(fresh);assert.equal(calls,2);
+  `);
+});
+
+test('a legacy timestamp hold survives restart and returning to the original timestamp', t => {
+  const f=fixture(t);
+  f.run(setup + `
+    writePolicy(policy);const queued=capture();fs.writeFileSync(source+'.queued',JSON.stringify(queued));
+    policy.repositories['github.com/acme/widgets'].decided_at=2;writePolicy(policy);
+    await deliver(queued);assert.equal(calls,0);
+  `);
+  f.run(setup + `
+    writePolicy(policy);
+    const queued=JSON.parse(fs.readFileSync(source+'.queued'));
+    await deliver(queued);assert.equal(calls,0);
+    assert.ok(fs.existsSync(queued.chunk));assert.ok(fs.existsSync(queued.event));
+  `);
+});
+
+test('losing counter fields cannot lift an existing rollback capture hold', t => {
+  fixture(t).run(setup + `
+    initial.repositories['github.com/acme/widgets'].revocations=2;writePolicy(initial);capture();
+    const lower=structuredClone(initial);lower.repositories['github.com/acme/widgets'].revocations=1;
+    writePolicy(lower);assert.equal(logger.getTelemetryOptIn(repo),null);
+    delete lower.repositories['github.com/acme/widgets'].revocations;writePolicy(lower);
+    assert.equal(logger.getTelemetryOptIn(repo),null,'missing counters cannot prove catch-up');
+    writePolicy(initial);assert.equal(logger.getTelemetryOptIn(repo),true);
+  `);
+});
 
 for (const enabled of [false, true]) {
   test(`repository writer ${enabled ? 'ON preserves' : 'OFF increments'} its counter`, t => {

@@ -62,8 +62,11 @@ function evaluateSharedRepositoryPolicy(scope, shared) {
     key,
     allowed: !revoked,
     revoked,
-    revocations: valid(organization) && valid(repository)
-      ? { org: organization.revocations ?? 0, repo: repository.revocations ?? 0 } : null,
+    // A released writer can cycle OFF/ON without ever writing a counter.
+    // Missing fields require the legacy timestamp boundary, not numeric zero.
+    revocations: valid(organization) && valid(repository) &&
+      validCount(organization.revocations) && validCount(repository.revocations)
+      ? { org: organization.revocations, repo: repository.revocations } : null,
     acknowledgement: JSON.stringify([organization?.consent_version ?? null, repository?.consent_version ?? null]),
     acknowledged: !revoked && organization?.consent_version === 2 && repository?.consent_version === 2,
     reason: revoked ? "shared_opt_out" : "enabled",
