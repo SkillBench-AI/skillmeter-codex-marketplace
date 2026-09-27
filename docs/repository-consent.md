@@ -118,8 +118,8 @@ identity and scope acknowledgement changes still create separate generations.
 Explicit OFF remains a revocation even for writers that omit counters. Payload
 removal preserves cursors, so revoked content cannot return in a reset.
 
-Existing random-token queues without a counter observation remain held on
-upgrade. They are not silently assigned zero, and a later counter increase alone
+Adopting counters holds existing random-token queues without a counter
+observation. They are not silently assigned zero, and a later counter increase alone
 cannot prove which data they revoke. An explicit OFF still purges them. Automatic
 migration of these ambiguous queues remains unresolved. Queues created by the
 counter-aware client before the first shared policy do have a zero observation

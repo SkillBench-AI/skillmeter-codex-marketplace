@@ -127,10 +127,15 @@ for (const missingScope of ['organizations', 'repositories', 'both']) {
   }
 }
 
-test('unchanged legacy policy delivers stamped queues across a process restart', t => {
+test('unchanged legacy policy delivers released-client queues across upgrade and restart', t => {
   const f=fixture(t);
   f.run(setup + `
     writePolicy(policy);const queued=capture();
+    // Released routing indexes have no counter observations or writer-mode flag.
+    const routingFile=path.join(logger.LOG_DIR,'repository-routing',logger.hashHmac(repo,'fixture-salt')+'.json');
+    const routing=JSON.parse(fs.readFileSync(routingFile));
+    delete routing.revocationsSeen;delete routing.sharedCountersExplicit;
+    fs.writeFileSync(routingFile,JSON.stringify(routing));
     fs.writeFileSync(source+'.queued',JSON.stringify(queued));
   `);
   f.run(setup + `
