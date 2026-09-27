@@ -4,6 +4,7 @@ const assert = require("node:assert/strict"), path = require("node:path");
 const [codexRoot, claudeRoot, contract] = process.argv.slice(2);
 assert.ok(codexRoot && claudeRoot && ["legacy", "counters"].includes(contract), "Specify both checkouts and the writer contract");
 const { fixture } = require(path.join(path.resolve(codexRoot), "test-support/shared-policy.cjs"));
+const bootstrap = path.join(path.resolve(claudeRoot), "testing/bootstrap.js");
 const store = path.join(path.resolve(claudeRoot), "skillmeter/scripts/lib/telemetry-store.js");
 for (const scope of ["organization", "repository"]) {
   const cleanup = [];
@@ -11,7 +12,7 @@ for (const scope of ["organization", "repository"]) {
     fixture({ after: fn => cleanup.push(fn) }).run(`
       const claude = code => {
         const r = require('node:child_process').spawnSync(process.execPath, ['-e',
-          'const store=require('+${JSON.stringify(JSON.stringify(store))}+');'+code], {
+          'require('+${JSON.stringify(JSON.stringify(bootstrap))}+');const store=require('+${JSON.stringify(JSON.stringify(store))}+');'+code], {
           cwd:repo, encoding:'utf8', timeout:10000, env:{...process.env,
             CLAUDE_PLUGIN_DATA:path.join(process.env.HOME,'claude-data'),SKILLMETER_DISABLE_KEYCHAIN:'1'} });
         assert.equal(r.status,0,r.stderr || r.error?.message);
