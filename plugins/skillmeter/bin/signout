@@ -1,14 +1,10 @@
 #!/usr/bin/env node
 /**
- * Remove the shared license and pause uploads. Usage: node bin/signout.
+ * Sign this plugin out and revoke its session. Usage: node bin/signout.
  */
 const path = require("path");
 
-const PLUGIN_ROOT =
-  process.env.PLUGIN_ROOT ||
-  process.env.CLAUDE_PLUGIN_ROOT ||
-  path.resolve(__dirname, "..");
+const PLUGIN_ROOT = process.env.PLUGIN_ROOT || path.resolve(__dirname, "..");
 process.env.PLUGIN_ROOT = PLUGIN_ROOT;
-process.env.CLAUDE_PLUGIN_ROOT = PLUGIN_ROOT;
 
 require(path.join(PLUGIN_ROOT, "scripts", "signout.js"));

@@ -6,11 +6,7 @@
  */
 const path = require("path");
 
-const PLUGIN_ROOT =
-  process.env.PLUGIN_ROOT ||
-  process.env.CLAUDE_PLUGIN_ROOT ||
-  path.resolve(__dirname, "..");
+const PLUGIN_ROOT = process.env.PLUGIN_ROOT || path.resolve(__dirname, "..");
 process.env.PLUGIN_ROOT = PLUGIN_ROOT;
-process.env.CLAUDE_PLUGIN_ROOT = PLUGIN_ROOT;
 
 require(path.join(PLUGIN_ROOT, "scripts", "telemetry.js"));

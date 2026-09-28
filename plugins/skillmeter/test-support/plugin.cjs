@@ -7,8 +7,8 @@ const path = require("node:path");
 const zlib = require("node:zlib");
 const { spawnSync } = require("node:child_process");
 
-// The logger falls back to CLAUDE_PLUGIN_DATA, which a shell inside Claude Code
-// inherits; tests must never write queues into a real plugin's directory.
+// A shell inside Claude Code inherits CLAUDE_PLUGIN_DATA. The runtime ignores
+// it; clearing it keeps a regression from writing into a real plugin's directory.
 delete process.env.CLAUDE_PLUGIN_DATA;
 
 const PLUGIN_ROOT = path.resolve(__dirname, "..");
