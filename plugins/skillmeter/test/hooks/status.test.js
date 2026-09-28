@@ -13,7 +13,7 @@ const { license, writeCredentials, sessionFileIn, grantConsent } = require("../.
 
 // `consent` writes acknowledged organization and repository ON to Codex's
 // consent record; `choice` is the local setting, which can only restrict.
-function status({ terminal = null, seconds = 3600, credentials = {}, consent = true, choice = true, malformedChoice = false, queue = false, rejected = false, transcript = false, corrupt = false, blockedCapture = false } = {}) {
+function status({ cutoverPending = false, terminal = null, seconds = 3600, credentials = {}, consent = true, choice = true, malformedChoice = false, queue = false, rejected = false, transcript = false, corrupt = false, blockedCapture = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-"));
   roots.push(root);
   const repo = path.join(root, "repo"), data = path.join(root, "data"), state = path.join(root, ".skillbench");
@@ -21,13 +21,19 @@ function status({ terminal = null, seconds = 3600, credentials = {}, consent = t
   fs.writeFileSync(path.join(repo, ".git/config"), '[remote "origin"]\nurl = https://github.com/acme/widgets.git\n');
   const token = license({ exp: Math.floor(Date.now() / 1000) + seconds });
   writeCredentials(root, { device_id: "synthetic-device", hash_salt: "synthetic-salt", license_jwt: token, refresh_token: "synthetic-refresh", ...credentials }, { stateDir: state });
+  if (cutoverPending) {
+    const file = sessionFileIn(state);
+    const session = JSON.parse(fs.readFileSync(file));
+    delete session.event_cutover;
+    fs.writeFileSync(file, JSON.stringify(session));
+  }
   if (consent) grantConsent(state, "github.com/acme/widgets");
   if (choice !== null || malformedChoice) {
     fs.mkdirSync(path.join(repo, ".codex"));
     fs.writeFileSync(path.join(repo, ".codex/settings.local.json"), malformedChoice ? "invalid json" : JSON.stringify({ skillmeter: { telemetry: choice } }));
   }
   if (terminal) {
-    fs.writeFileSync(sessionFileIn(state), JSON.stringify({ ...(terminal === "revoked" ? {} : { license_jwt: token, refresh_token: "synthetic-refresh" }), auth_generation: "g1" }));
+    fs.writeFileSync(sessionFileIn(state), JSON.stringify({ event_cutover: 1, ...(terminal === "revoked" ? {} : { license_jwt: token, refresh_token: "synthetic-refresh" }), auth_generation: "g1" }));
     fs.writeFileSync(path.join(path.dirname(sessionFileIn(state)), "license-status.json"), JSON.stringify({ failures: 0, next_retry_at: null, terminal: { reason: terminal, at: 1 }, generation: "g1" }));
   }
   const logs = path.join(data, "logs");
@@ -170,4 +176,11 @@ test("explicit consent does not override organization scope", () => {
   const text = status({ credentials: { license_jwt: license({ orgs: ["other-org"] }) } });
   assert.match(text, /Capture policy: excluded/);
   assert.doesNotMatch(text, /Capture policy: eligible/);
+});
+
+
+test("status reports incomplete cutover without modifying or silently adopting the session", () => {
+  const text = status({ cutoverPending: true, queue: true });
+  assert.match(text, /Delivery authentication: upgrade held; event queue cutover incomplete/);
+  assert.doesNotMatch(text, /Delivery authentication: (license locally valid|not signed in)/);
 });

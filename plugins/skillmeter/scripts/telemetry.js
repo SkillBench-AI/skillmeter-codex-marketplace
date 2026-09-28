@@ -28,6 +28,7 @@ const {
 } = require("./logger.js");
 const {
   getLicenseToken,
+  isEventCutoverComplete,
   isLicenseTokenExpired,
   getSignedOut,
   getAllowedGitHubOrgs,
@@ -47,6 +48,7 @@ const action = process.argv[2];
 const isGlobal = process.argv.slice(3).includes("--global");
 
 function authenticationLine() {
+  if (!isEventCutoverComplete()) return "upgrade held; event queue cutover incomplete; close older sessions and retry; preserve the queue if the hold persists";
   if (getSignedOut()) return "signed out; run the signin skill";
   const terminal = licenseActivation.readStatus().terminal;
   if (terminal?.reason === licenseActivation.TERMINAL.REVOKED) {
