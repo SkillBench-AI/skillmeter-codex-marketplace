@@ -120,6 +120,8 @@ function currentSignin() {
 }
 
 async function main() {
+  const { prepareSession, CUTOVER_HOLD } = require("./session_start");
+  if (!prepareSession()) throw new Error(CUTOVER_HOLD);
   if (currentSignin()) {
     say(welcomeBanner(credstore.getAllowedGitHubOrgs()));
     return;

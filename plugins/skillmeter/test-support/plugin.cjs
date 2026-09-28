@@ -54,9 +54,9 @@ function grantConsent(stateDir, repoKeys, { revision = 1 } = {}) {
 }
 
 // Write a device the way the plugin stores it. The session file is always
-// written, so the first-run cutover does not run in tests that did not ask for it.
+// written with completed cutover; migration tests explicitly remove that marker.
 function writeCredentials(home, credentials, { stateDir = path.join(home, ".skillbench") } = {}) {
-  const identity = {}, session = {};
+  const identity = {}, session = { event_cutover: 1 };
   for (const [key, value] of Object.entries(credentials)) (SESSION_FIELDS.includes(key) ? session : identity)[key] = value;
   fs.mkdirSync(stateDir, { recursive: true });
   const file = path.join(stateDir, "credentials.json");

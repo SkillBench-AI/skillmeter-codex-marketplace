@@ -145,6 +145,13 @@ function purgeEventLogs() {
   return complete;
 }
 
+// Sent artifacts cannot be replayed. Pending files, including empty active
+// files, conservatively require review for an already-created broker session.
+function eventQueueEmpty() {
+  return !fs.existsSync(LOG_DIR) || !fs.readdirSync(LOG_DIR)
+    .some(name => /^events\.jsonl(?:\.\d+)?$/.test(name));
+}
+
 // Per-cwd settings
 
 // Project settings live under skillmeter in .codex/settings.local.json.
@@ -1829,6 +1836,7 @@ module.exports = {
   setTelemetryGloballyDisabled,
   tryRefreshLicense,
   purgeEventLogs,
+  eventQueueEmpty,
   hashHmac,
   sanitizeToolData,
   getTimestamp,
