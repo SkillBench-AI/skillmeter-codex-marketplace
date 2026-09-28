@@ -20,7 +20,8 @@ export PLUGIN_ROOT="/absolute/path/to/installed/skillmeter"
 
 Commands use the same local queue as hooks: `PLUGIN_DATA` when set, otherwise
 the Codex data directory for that installation
-(`~/.codex/plugins/data/skillmeter-<marketplace>`). Queues are never kept
+(`~/.codex/plugins/data/skillmeter-<marketplace>`, created with owner-only access if
+Codex has not made it yet). Queues are never kept
 inside the versioned installation, which an update replaces. From a source
 checkout, set `PLUGIN_DATA` explicitly; without it the command stops with
 `persistent-plugin-data-unavailable`. If an older installation still holds
