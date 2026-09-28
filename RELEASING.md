@@ -1,7 +1,17 @@
 # Releasing SkillMeter for Codex
 
-The marketplace serves `main`: merged changes reach users when they update.
-Version tags separately publish GitHub Releases and source archives.
+The stable marketplace serves `main`, which moves only at releases. Pull requests
+target `next`; the internal channel follows `next` (see below). Version tags
+publish GitHub Releases and source archives.
+
+## Branches
+
+- `next`: the development branch and the base of feature pull requests.
+- `main`: what customers install. A release bumps the version on `next`, then
+  opens a pull request from `next` to `main`. Merge it with a merge commit, not a
+  squash, so `main` and `next` keep one history.
+- A hotfix goes to `main` in its own release pull request and is merged back
+  into `next` right after, so the two never diverge.
 
 ## Version and tag
 
@@ -66,9 +76,11 @@ contain only information users need to update and use the plugin.
 ## Internal channel
 
 No release step is needed for the internal channel. The `Internal channel`
-workflow rebuilds the `internal` branch after CI passes on each `main` push,
-using `.github/scripts/make-internal-channel.mjs`. Never commit
-`plugins/skillmeter/channel.json` to `main`; a test fails if it is present.
+workflow rebuilds the `internal` branch after CI passes on each `next` push,
+using `.github/scripts/make-internal-channel.mjs --build <run number>`. The
+build's version is `<next patch>-internal.<run number>`; `next` and `main`
+always keep a release version. Never commit `plugins/skillmeter/channel.json`;
+a test fails if it is present.
 
 ## Checks
 
