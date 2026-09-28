@@ -172,18 +172,16 @@ preservation; otherwise, later batches remain content-only.
 | Symptom | Check |
 | --- | --- |
 | Reinstall still shows an old version | For a local marketplace, update the source checkout first; for a Git marketplace, run `marketplace upgrade`. |
-| Collection is paused or the repository is excluded | Check project/global settings and the signed-in GitHub identities. |
+| Collection is paused or the repository is excluded | Check project/global settings and the license's GitHub organizations (`sk-jwt`). |
 | Uploads fail with 401/403 | Credentials and queued uploads are retained; background recovery requests a refreshed license. Check sign-in status if failures persist. |
 | Transcript delivery needs investigation | Use the [read-only inventory and recovery guide](integration/README.md#queue-and-recovery). |
 
 Token refresh is automatic during active retry-monitor sweeps and at session
-start. Delivery waits for a valid token. Silent GitHub reactivation requires a
-working GitHub CLI login with access to organization memberships; if recovery
-fails, invoke sign-in explicitly.
+start. Delivery waits for a valid token. Renewal uses the sign-in service's
+refresh token; when the service ends the session, sign in again.
 
 Current limitations:
 
-- Full compatibility with Claude's latest broker authentication is not complete.
 - Historical transcripts are not automatically replayed.
 - Multi-day transcript continuity depends on the collector's missing-baseline
   recovery support. See the [transport guide](integration/README.md).
@@ -194,7 +192,7 @@ Current limitations:
 
 | Skill | Purpose |
 | --- | --- |
-| [signin](skills/signin/SKILL.md) | Authenticate with GitHub and choose organization scope |
+| [signin](skills/signin/SKILL.md) | Sign in through the SkillBench sign-in service and choose a workspace |
 | [signout](skills/signout/SKILL.md) | End this plugin's session and stop uploads |
 | [telemetry](skills/telemetry/SKILL.md) | Show collection status; enable, disable, pause or resume collection |
 | [check-repo-scope](skills/check-repo-scope/SKILL.md) | Check whether the current repository is eligible |

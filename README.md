@@ -29,14 +29,14 @@ codex plugin add skillmeter@skillbench
 Restart Codex and start a new session. Review and enable the plugin's hooks if
 Codex prompts you. Then ask Codex:
 
-> Use SkillMeter's signin skill to sign me in with GitHub, scoped to my organization.
+> Use SkillMeter's signin skill to sign me in.
 
 Then review the collection notice and explicitly enable telemetry for the
 repository you want to capture using the [project controls](plugins/skillmeter/README.md#sign-in-and-controls).
 
-Already signed in with a shared GitHub-based SkillMeter credential? You can
-reuse it. Compatibility with Claude's latest broker sign-in remains follow-up
-work. See [sign-in and collection controls](plugins/skillmeter/README.md).
+Sign-in opens the SkillBench sign-in service, where you pick your workspace.
+This plugin keeps its own session, separate from SkillMeter for Claude Code. See
+[sign-in and collection controls](plugins/skillmeter/README.md#sign-in-and-controls).
 
 ## Update
 

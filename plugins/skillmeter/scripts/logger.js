@@ -27,18 +27,15 @@ const { resolveOrgScope } = require("./lib/org-scope");
 const { sharedPolicyFile } = require("./lib/shared-telemetry-policy");
 const canonicalScope = require("./lib/repo-scope");
 
-// Codex sets PLUGIN_ROOT for plugin-bundled hooks and also exports
-// CLAUDE_PLUGIN_ROOT for compatibility with existing plugin hook scripts.
-const PLUGIN_ROOT =
-  process.env.PLUGIN_ROOT ||
-  process.env.CLAUDE_PLUGIN_ROOT ||
-  path.resolve(__dirname, "..");
+// Codex sets PLUGIN_ROOT and PLUGIN_DATA for plugin hooks. The CLAUDE_PLUGIN_*
+// copies it also exports are ignored: a shell inside Claude Code inherits
+// Claude's values, and Codex state must never land in Claude's directories.
+const PLUGIN_ROOT = process.env.PLUGIN_ROOT || path.resolve(__dirname, "..");
 
 // PLUGIN_DATA is a writable per-plugin directory Codex provides. We keep the
 // rotating event log there when available so installed plugins remain
 // read-only on disk.
-const PLUGIN_DATA =
-  process.env.PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA || PLUGIN_ROOT;
+const PLUGIN_DATA = process.env.PLUGIN_DATA || PLUGIN_ROOT;
 
 const LOG_DIR = path.join(PLUGIN_DATA, "logs");
 const LOG_FILE = path.join(LOG_DIR, "events.jsonl");
