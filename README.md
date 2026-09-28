@@ -54,6 +54,24 @@ the installed SkillMeter version.
 `codex plugin add skillmeter@skillbench`. `marketplace upgrade` only refreshes
 Git marketplaces; it does not pull a locally registered repository.
 
+## Internal channel
+
+SkillBench developers can dogfood the latest `main` against the dev environment.
+The `internal` branch is rebuilt from every `main` commit that passes CI; it has
+the same code, defaults to the dev sign-in service, license server and
+`~/.skillbench-dev` state, and is published as the `skillbench-internal`
+marketplace so its installation and queues stay apart from the stable one.
+
+```sh
+codex plugin marketplace add SkillBench-AI/skillmeter-codex-marketplace --ref internal
+codex plugin add skillmeter@skillbench-internal
+```
+
+Sign in with a dev workspace account. Remove the stable plugin first
+(`codex plugin remove skillmeter@skillbench`), or both would record the same
+sessions. Status cards show `internal (dev)` in the title. To update, run
+`codex plugin marketplace upgrade skillbench-internal` and add the plugin again.
+
 ## Using SkillMeter
 
 - [Sign in, pause collection, or sign out](plugins/skillmeter/README.md#sign-in-and-controls)

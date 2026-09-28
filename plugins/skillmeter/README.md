@@ -217,7 +217,7 @@ Production routing normally needs no manual configuration. Development overrides
 
 | Variable | Purpose |
 | --- | --- |
-| `SKILLMETER_ENV=dev` | Use the dev sign-in service, license server and `~/.skillbench-dev` state together |
+| `SKILLMETER_ENV=dev` or `prod` | Use that environment's sign-in service, license server and state directory (`~/.skillbench-dev` or `~/.skillbench`) together. Without it, the internal channel build uses dev and the stable build uses prod |
 | `SKILLMETER_BROKER_URL` | Sign-in service (HTTPS on skillbench.ai/.com, or loopback) |
 | `SKILLMETER_ACTIVATE_URL` | License server `/activate` (same restriction) |
 | `SKILLMETER_STATE_DIR` | State directory holding the device identity and this plugin's session and consent record |

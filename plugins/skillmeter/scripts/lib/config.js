@@ -3,16 +3,19 @@
 /**
  * Where this plugin keeps state and which services it signs in against.
  *
- * SKILLMETER_ENV=dev switches everything together: the broker, the license
- * server and the state directory. SKILLMETER_STATE_DIR, SKILLMETER_BROKER_URL
- * and SKILLMETER_ACTIVATE_URL override one each. Project settings files cannot
- * redirect credentials: a repository you open must not be able to send your
- * sign-in to another host.
+ * The environment switches everything together: the broker, the license
+ * server and the state directory. It is SKILLMETER_ENV when set, otherwise the
+ * installation's channel file (`channel.json` at the plugin root, present only
+ * in the internal channel build), otherwise prod. SKILLMETER_STATE_DIR,
+ * SKILLMETER_BROKER_URL and SKILLMETER_ACTIVATE_URL override one each. Project
+ * settings files cannot redirect credentials: a repository you open must not
+ * be able to send your sign-in to another host.
  *
  * Resolved on every call, so a process (or a test) that changes its
  * environment sees the change.
  */
 
+const fs = require("fs");
 const os = require("os");
 const path = require("path");
 
@@ -25,7 +28,27 @@ const OAUTH_CLIENT_ID = "skillmeter-plugin";
 // `openid` for the ID token /activate verifies; `offline` for the refresh token.
 const OAUTH_SCOPE = "openid offline";
 
-const isDev = () => process.env.SKILLMETER_ENV === "dev";
+const CHANNEL_FILE = path.join(__dirname, "..", "..", "channel.json");
+const ENVS = ["prod", "dev"];
+
+// The release channel this installation was built for. Only the exact shape
+// the internal build writes is honoured; anything else is the stable channel.
+function channel(file = CHANNEL_FILE) {
+  try {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (value && typeof value.channel === "string" && /^[a-z]+$/.test(value.channel) && ENVS.includes(value.env)) {
+      return { channel: value.channel, env: value.env };
+    }
+  } catch {}
+  return { channel: "stable", env: "prod" };
+}
+
+function environment() {
+  const explicit = process.env.SKILLMETER_ENV;
+  return ENVS.includes(explicit) ? explicit : channel().env;
+}
+
+const isDev = () => environment() === "dev";
 const defaults = () => (isDev() ? DEV : PROD);
 
 // Credentials go only to HTTPS on skillbench.ai or skillbench.com, or to
@@ -61,6 +84,9 @@ const activateUrl = () => trustedEndpoint(process.env.SKILLMETER_ACTIVATE_URL, d
 module.exports = {
   OAUTH_CLIENT_ID,
   OAUTH_SCOPE,
+  CHANNEL_FILE,
+  channel,
+  environment,
   isDev,
   stateDir,
   credentialsFile,
