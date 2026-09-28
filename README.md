@@ -19,7 +19,7 @@ capture, and choices made in SkillMeter for Claude Code do not apply here. See
 
 ## Install
 
-Requires Codex with plugin support, Node.js 20 or later, and a SkillMeter license.
+Requires Codex with plugin support, Node.js 22 or later, and a SkillMeter license.
 
 ```sh
 codex plugin marketplace add SkillBench-AI/skillmeter-codex-marketplace --ref main
