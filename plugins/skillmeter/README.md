@@ -22,24 +22,35 @@ Run project controls from the repository you want to configure:
 
 | Task | Command |
 | --- | --- |
-| Sign in and limit scope to your organization | `node "$PLUGIN_ROOT/bin/signin" --org your-github-org` |
+| Sign in | `node "$PLUGIN_ROOT/bin/signin"` |
 | Inspect sign-in claims and expiry (no raw token) | `node "$PLUGIN_ROOT/bin/sk-jwt"` |
 | Check capture policy, authentication and local queues | `node "$PLUGIN_ROOT/bin/sk-telemetry" status` |
 | Preview local/shared consent conflicts | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-preview` |
 | Record a shared repository choice (the `telemetry` skill guides preview, acknowledgement and apply) | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-set on\|off …` |
 | Enable / disable this project | `node "$PLUGIN_ROOT/bin/sk-telemetry" enable` / `disable` |
-| Pause / resume all Codex collection and uploads | `node "$PLUGIN_ROOT/bin/sk-telemetry" disable --global` / `enable --global` |
+| Pause / resume collection and uploads for every SkillMeter client | `node "$PLUGIN_ROOT/bin/sk-telemetry" disable --global` / `enable --global` |
 | Sign out | `node "$PLUGIN_ROOT/bin/signout"` |
 
-Sign-in uses your authenticated GitHub CLI when available, otherwise a GitHub
-device-login flow. `--org` limits which of your GitHub identities are stored;
-it is repeatable. Without narrowing, your login and organization memberships
-are eligible for collection.
+Sign-in is a device flow through the SkillBench sign-in service: open the URL
+it prints, approve, and pick the workspace when asked. Repository capture is
+limited to the GitHub organizations that workspace has connected (the license's
+`orgs`); `SKILLMETER_REPO_SCOPE_ORGS` and `skillmeter.repoScopeOrgs` can
+narrow that further but never widen it.
 
-The credential file is shared with SkillMeter for Claude Code. Signing out
-removes the shared license, so it affects both clients. Device identity is kept.
-Global pause retains queued data for later delivery, but sealed event batches
+The session is this plugin's own (`~/.skillbench/clients/codex/session.json`):
+the sign-in service's refresh token renews the license, and signing in or out
+of SkillMeter for Claude Code does not affect it. Signing out ends the session,
+revokes it at the sign-in service, and deletes event batches not yet sent. When
+the workspace stops licensing you, the session ends the same way at the next
+renewal. The device identity and consent choices are shared by every SkillMeter
+client and kept.
+
+The global pause is the shared policy's and covers every SkillMeter client on
+the machine. It retains queued data for later delivery, but sealed event batches
 are still removed 30 days after sealing, paused or not.
+
+Upgrading from a version that signed in with GitHub starts signed out: nothing
+is carried over, and event batches recorded under the old sign-in are dropped.
 
 `status` is read-only. It separates repository capture eligibility from license
 freshness and reports pending event batches and current-format transcript chunks
@@ -139,7 +150,9 @@ Names, addresses and confidential free text may remain readable. Stage-2
 sanitization is separate; this plugin does not guarantee complete PII removal.
 See the [shared policy and Codex adapter](../../docs/sanitizer-parity.md).
 
-Credentials, device ID and hash salt live in `~/.skillbench/credentials.json`.
+The device ID and hash salt live in `~/.skillbench/credentials.json`, shared with
+other SkillMeter clients; this plugin's session lives in
+`~/.skillbench/clients/codex/`.
 Queued telemetry lives under the plugin data directory's `logs/` folder.
 SkillMeter sends authenticated data to the tenant endpoint in the license's
 `aud` claim. Events go to the event pipeline; transcripts go to object storage
@@ -182,7 +195,7 @@ Current limitations:
 | Skill | Purpose |
 | --- | --- |
 | [signin](skills/signin/SKILL.md) | Authenticate with GitHub and choose organization scope |
-| [signout](skills/signout/SKILL.md) | Remove the shared license and stop uploads |
+| [signout](skills/signout/SKILL.md) | End this plugin's session and stop uploads |
 | [telemetry](skills/telemetry/SKILL.md) | Show collection status; enable, disable, pause or resume collection |
 | [check-repo-scope](skills/check-repo-scope/SKILL.md) | Check whether the current repository is eligible |
 | [collect-export](skills/collect-export/SKILL.md) | Prepare a sanitized export for a one-off review |
@@ -194,14 +207,16 @@ Production routing normally needs no manual configuration. Development overrides
 
 | Variable | Purpose |
 | --- | --- |
-| `SKILLMETER_ACTIVATE_URL` | Activation host; also used to derive the refresh URL |
-| `SKILLMETER_GITHUB_CLIENT_ID` | GitHub OAuth application for device sign-in |
+| `SKILLMETER_ENV=dev` | Use the dev sign-in service, license server and `~/.skillbench-dev` state together |
+| `SKILLMETER_BROKER_URL` | Sign-in service (HTTPS on skillbench.ai/.com, or loopback) |
+| `SKILLMETER_ACTIVATE_URL` | License server `/activate` (same restriction) |
+| `SKILLMETER_STATE_DIR` | State directory holding the device identity, shared policy and session |
 | `SKILLMETER_BACKEND_URL` | Trusted ingest URL override; uploads still require a valid license |
 | `SKILLMETER_HARNESS_HASH_SKILL_NAMES=1` | Hash skill names in harness metadata |
 
-`activate_url` and `github_client_id` also accept values under `skillmeter` in
-`.codex/settings.local.json`; environment variables take precedence. There is no
-`backendUrl` project setting.
+Project settings cannot redirect sign-in or uploads: a repository you open must
+not be able to send your credentials elsewhere. There is no `backendUrl` project
+setting.
 
 For implementation details, see the [hook definitions](hooks/hooks.json),
 [upload code](scripts/logger.js), [sanitizer](scripts/sanitizer.js), and

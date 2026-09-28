@@ -1,29 +1,34 @@
 "use strict";
 // Token-expiry recovery through the real Stop hook and drain worker with a
-// frozen clock; the fetch stub refuses any upload carrying an expired token.
+// frozen clock. The fetch stub plays the broker's refresh token grant and
+// /activate, and refuses any upload carrying an expired token.
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { sandbox, makeJwt } = require("../../test-support/plugin.cjs");
+const { sandbox, makeJwt, sessionFileIn } = require("../../test-support/plugin.cjs");
 
 function expiry(t) {
   const start = Date.now();
-  const claims = { sub: "tenant-test", broker_sub: "person-test", org: { login: "acme" }, aud: "https://acme.meter.skillbench.ai" };
+  const claims = { sub: "tenant-test", broker_sub: "person-test", org: { login: "acme" }, orgs: ["acme"], aud: "https://acme.meter.skillbench.ai" };
   const jwt = extra => makeJwt({ ...claims, ...extra });
   const token = jwt({ exp: Math.floor(start / 1000) + 900 });
-  const credentials = { device_id: "TEST-DEVICE", hash_salt: "synthetic-salt", license_jwt: token, allowed_github_orgs: ["acme"], orgs_explicitly_set: true };
+  const credentials = { device_id: "TEST-DEVICE", hash_salt: "synthetic-salt", license_jwt: token, refresh_token: "synthetic-refresh" };
   const box = sandbox(t, { prefix: "codex-expiry", telemetry: true, credentials, preload: `
 const fs = require("fs"), cp = require("child_process");
 Date.now = () => Number(process.env.TEST_NOW);
 const record = value => fs.appendFileSync(process.env.TEST_CALLS, JSON.stringify(value) + "\\n");
 cp.spawn = (file, args) => { record({ spawn: args }); return { pid: 999999, unref() {} }; };
-cp.execSync = () => { throw new Error("No GitHub CLI in this fixture"); };
+cp.execSync = () => { throw new Error("No shell in this fixture"); };
 global.fetch = async (url, options) => {
   record({ url: String(url) });
-  if (String(url) === "https://api.skillbench.ai/refresh") {
+  if (String(url) === "https://id.skillbench.ai/oauth2/token") {
     const status = Number(process.env.TEST_REFRESH_STATUS || 200);
-    return { ok: status === 200, status, json: async () => ({ token: process.env.TEST_FRESH }), text: async () => "synthetic failure" };
+    const body = JSON.stringify(status === 200 ? { id_token: "synthetic-id", refresh_token: "synthetic-refresh" } : { error: "temporarily_unavailable" });
+    return { ok: status === 200, status, text: async () => body };
+  }
+  if (String(url) === "https://api.skillbench.ai/activate") {
+    return { ok: true, status: 200, json: async () => ({ token: process.env.TEST_FRESH }), text: async () => "" };
   }
   if (!String(url).startsWith("https://acme.meter.skillbench.ai/")) throw new Error("Unexpected URL");
   const token = options.headers.Authorization.replace(/^Bearer /, "");
@@ -44,7 +49,7 @@ global.fetch = async (url, options) => {
     assert.equal(result.status, 0, result.stderr || String(result.error));
     return result;
   }
-  return { data: box.data, repo: box.repo, credentials, credentialsPath: box.credentialFile, token,
+  return { data: box.data, repo: box.repo, credentials, sessionPath: box.sessionFile, token,
     hook: minute => run("stop.js", minute),
     drain: (minute, extra) => run("drain_once.js", minute, extra),
     records: () => fs.existsSync(calls) ? fs.readFileSync(calls, "utf8").trim().split("\n").filter(Boolean).map(JSON.parse) : [],
@@ -57,12 +62,13 @@ test("active turns deliver exactly once across two token lifetimes with no monit
     assert.match(f.hook(minute).stderr, /logged/);
     f.drain(minute);
   }
-  assert.equal(f.records().filter(r => r.url?.endsWith("/refresh")).length, 3);
+  assert.equal(f.records().filter(r => r.url?.endsWith("/oauth2/token")).length, 3);
+  assert.equal(f.records().filter(r => r.url?.endsWith("/activate")).length, 3);
   assert.deepEqual(f.records().flatMap(r => r.uploaded || []), Array(18).fill("Stop"));
   assert.deepEqual(f.records().flatMap(r => r.messages || []), Array.from({ length: 18 }, (_, i) => `synthetic turn ${i * 2}`));
 });
 
-test("a failed expired refresh preserves the sealed event until later recovery", t => {
+test("a failed renewal preserves the sealed event until later recovery", t => {
   const f = expiry(t);
   f.hook(16);
   const logs = path.join(f.data, "logs");
@@ -76,14 +82,14 @@ test("a failed expired refresh preserves the sealed event until later recovery",
   assert.deepEqual(f.records().flatMap(r => r.uploaded || []), ["Stop"]);
 });
 
-test("signout after a hook blocks a pending worker from refreshing or sending", t => {
+test("signout after a hook blocks a pending worker from renewing or sending", t => {
   const f = expiry(t);
   f.hook(16);
-  const { license_jwt, ...rest } = f.credentials;
-  fs.writeFileSync(f.credentialsPath, JSON.stringify({ ...rest, signed_out: true, telemetry_disabled: true }));
+  fs.writeFileSync(f.sessionPath, JSON.stringify({ signed_out: true, auth_generation: "after-signout" }));
   f.drain(16);
   assert.equal(f.records().filter(r => r.url).length, 0);
-  assert.match(f.hook(17).stderr, /globally disabled/);
+  // A signed-out session covers no organization.
+  assert.match(f.hook(17).stderr, /skipped \(repository out of scope\)/);
 });
 
 test("project opt-out suppresses new capture and worker launch", t => {

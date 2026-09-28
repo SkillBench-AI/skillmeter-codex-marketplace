@@ -1,30 +1,24 @@
 ---
 name: signin
-description: Sign in to SkillMeter with GitHub so Codex telemetry is authenticated and routed to your tenant.
+description: Sign in to SkillMeter through the SkillBench sign-in service so Codex telemetry is authenticated and routed to your workspace.
 ---
 
-Run GitHub sign-in when the user wants to authenticate SkillMeter or recover
-rejected uploads:
+Run sign-in when the user wants to authenticate SkillMeter, when SkillMeter
+reports that sign-in is required, or to recover rejected uploads:
 
 ```sh
 node "$PLUGIN_ROOT/scripts/signin.js"
 ```
 
-To narrow collection to selected GitHub organizations, pass `--org` (repeatable
-or comma-separated). It intersects with actual memberships; on an existing
-sign-in it updates stored scope without repeating authentication:
+The script starts a device sign-in. Relay the code and the verification URL
+verbatim, tell the user to approve in their browser (choosing the workspace
+there when asked), and re-run sign-in to confirm.
 
-```sh
-node "$PLUGIN_ROOT/scripts/signin.js" --org your-github-org
-```
-
-The script uses the authenticated GitHub CLI when available, otherwise a device
-flow. Relay the device code and verification URL verbatim. When prompted,
-tell the user to approve in their browser and re-run sign-in to confirm.
-
-Successful sign-in stores the license and organization scope in the shared
-`~/.skillbench/credentials.json` and clears the global telemetry pause.
-Uploads use the license's `aud` claim for tenant routing.
+Successful sign-in stores this plugin's session (the license and the sign-in
+service's refresh token) in `~/.skillbench/clients/codex/`. It is not shared
+with other SkillMeter clients. Repository capture is limited to the GitHub
+organizations the workspace has connected; uploads are routed by the license's
+`aud` claim.
 
 Sign-in does not create repository consent. Existing acknowledged shared consent
 may allow capture once authentication recovers. Check `sk-telemetry status` and

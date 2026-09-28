@@ -8,7 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 const zlib = require("node:zlib");
 const { execFileSync } = require("node:child_process");
-const { makeJwt, transcriptLine: line } = require("../../test-support/plugin.cjs");
+const { license, writeCredentials, transcriptLine: line } = require("../../test-support/plugin.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-revocation-"));
 process.env.HOME = root;
@@ -17,14 +17,12 @@ process.env.PLUGIN_DATA = path.join(root, "data");
 process.env.SKILLMETER_MAX_BATCH_RETRIES = "3";
 delete process.env.SKILLMETER_REPO_SCOPE_ORGS;
 delete process.env.SKILLMETER_BACKEND_URL;
-const store = path.join(root, ".skillbench/credentials.json");
-fs.mkdirSync(path.dirname(store), { recursive: true });
-const token = makeJwt({ sub: "synthetic-tenant", github_id: "synthetic-user", exp: 4102444800, aud: "https://synthetic.meter.skillbench.com" });
+const licensed = orgs => license({ sub: "synthetic-tenant", broker_sub: "synthetic-user", org: { login: "synthetic" }, orgs, aud: "https://synthetic.meter.skillbench.com" });
 const credentials = {
-  device_id: "SYNTHETIC", hash_salt: "synthetic-salt", license_jwt: token,
-  allowed_github_orgs: ["synthetic"],
+  device_id: "SYNTHETIC", hash_salt: "synthetic-salt", license_jwt: licensed(["synthetic"]), refresh_token: "synthetic-refresh",
 };
-fs.writeFileSync(store, JSON.stringify(credentials));
+const save = (patch = {}) => writeCredentials(root, { ...credentials, ...patch });
+save();
 const logger = require("../../scripts/logger");
 const queue = require("../../scripts/lib/transcript-delta");
 const realFetch = global.fetch;
@@ -60,7 +58,9 @@ function event(name) {
 }
 
 beforeEach(() => {
-  fs.writeFileSync(store, JSON.stringify(credentials));
+  // A global pause creates the shared policy; start each test without one.
+  fs.rmSync(path.join(root, ".skillbench/telemetry-policy.json"), { force: true });
+  save();
   fs.rmSync(logger.LOG_DIR, { recursive: true, force: true });
   for (const name of ["a", "b"]) {
     logger.saveTelemetryOptIn(repos[name], true);
@@ -280,13 +280,13 @@ test("a hook at the disable settings-write boundary cannot inherit the revoked g
 
 test("temporary missing organization authorization retains events for recovery", async () => {
   event("a"); const sealed = logger.sealEventLog(), bytes = fs.readFileSync(sealed);
-  fs.writeFileSync(store, JSON.stringify({ ...credentials, allowed_github_orgs: [] }));
+  save({ license_jwt: licensed([]) });
   let blockedCalls = 0;
   global.fetch = async () => { blockedCalls++; return { ok: false, status: 503 }; };
   assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "held");
   assert.equal(blockedCalls, 0);
   assert.deepEqual(fs.readFileSync(sealed), bytes);
-  fs.writeFileSync(store, JSON.stringify(credentials));
+  save();
   let calls = 0;
   global.fetch = async () => { calls++; return { ok: true }; };
   assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "sent");
@@ -295,7 +295,7 @@ test("temporary missing organization authorization retains events for recovery",
 
 test("missing credentials retain queued events without an upload or retry charge", async () => {
   event("a"); const sealed = logger.sealEventLog(), bytes = fs.readFileSync(sealed);
-  fs.writeFileSync(store, JSON.stringify({ device_id: credentials.device_id, hash_salt: credentials.hash_salt }));
+  save({ license_jwt: undefined, refresh_token: undefined });
   let calls = 0;
   global.fetch = async () => { calls++; return { ok: false, status: 503 }; };
   assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "auth");
@@ -494,7 +494,8 @@ test("global pause during rejection leaves salvage queued rather than quarantine
     logger.setTelemetryGloballyDisabled(true);
     return { ok: false, status: 400 };
   };
-  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "skip");
+  // The shared pause holds the salvage at the consent recheck.
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "held");
   assert.equal(calls, 1);
   assert.deepEqual(sessions(sealed), ["synthetic-b"]);
   assert.equal(fs.existsSync(path.join(logger.LOG_DIR, "poison", path.basename(sealed))), false);

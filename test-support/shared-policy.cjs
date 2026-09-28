@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const plugin = path.resolve(__dirname, "../plugins/skillmeter");
+const { writeCredentials, license } = require(path.join(plugin, "test-support/plugin.cjs"));
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-shared-policy-"));
@@ -14,11 +15,8 @@ function fixture(t) {
   fs.writeFileSync(path.join(repo, ".git/config"), '[remote "origin"]\nurl = https://github.com/acme/widgets.git\n');
   fs.mkdirSync(path.join(repo, ".codex"));
   fs.writeFileSync(path.join(repo, ".codex/settings.local.json"), '{"skillmeter":{"telemetry":true}}');
-  fs.mkdirSync(state);
-  fs.writeFileSync(path.join(state, "credentials.json"), JSON.stringify({
-    device_id: "SYNTHETIC", hash_salt: "fixture-salt", allowed_github_orgs: ["acme"],
-    license_jwt: "e30." + Buffer.from(JSON.stringify({ sub: "tenant", github_id: "synthetic", exp: 4102444800, aud: "https://acme.meter.skillbench.ai" })).toString("base64url") + ".fixture",
-  }));
+  writeCredentials(root, { device_id: "SYNTHETIC", hash_salt: "fixture-salt",
+    license_jwt: license({ broker_sub: "synthetic" }), refresh_token: "synthetic-refresh" }, { stateDir: state });
   const policyFile = path.join(state, "telemetry-policy.json");
   const policy = (enabled = true, extra = {}) => ({ schema_version: 1, revision: 1,
     global: { enabled, decided_at: 1, source: "user" }, organizations: { acme: { enabled: true } },

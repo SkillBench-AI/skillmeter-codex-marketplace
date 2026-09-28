@@ -1,7 +1,7 @@
 "use strict";
 // Repository consent: the in-process gate, and the boundary as the real hook
 // and control scripts enforce it from a checkout.
-const { isolateHome, sandbox, tempDir, STRICT_PRELOAD } = require("../../test-support/plugin.cjs");
+const { isolateHome, sandbox, tempDir, license, STRICT_PRELOAD } = require("../../test-support/plugin.cjs");
 isolateHome();
 
 const { test } = require("node:test");
@@ -128,9 +128,16 @@ test("parent consent does not enable an unselected nested repository", t => {
 test("the global pause and scope exclusion override an explicit repository enable", t => {
   const f = checkout(t);
   f.control("enable");
-  f.saveCredentials({ telemetry_disabled: true }); f.hook();
+  const global = action => assert.equal(f.script("telemetry.js", { args: [action, "--global"], cwd: f.repo }).status, 0);
+  // The pause creates the shared policy, after which the repository needs a
+  // shared choice; record one so the pause is the only change.
+  fs.writeFileSync(path.join(f.state, "telemetry-policy.json"), JSON.stringify({ schema_version: 1, revision: 1,
+    global: { enabled: true, decided_at: 1, source: "user" }, organizations: { acme: { enabled: true } },
+    repositories: { "github.com/acme/widgets": { enabled: true } } }));
+  global("disable"); f.hook();
   assert.deepEqual(f.events(), []);
-  f.saveCredentials({ allowed_github_orgs: ["another"] }); f.hook();
+  global("enable");
+  f.saveCredentials({ license_jwt: license({ orgs: ["another"] }) }); f.hook();
   assert.deepEqual(f.events(), []);
   f.saveCredentials({}); f.hook();
   assert.equal(f.events().length, 1);
@@ -178,7 +185,7 @@ test("SessionStart asks for a choice in an unselected repository without startin
 test("SessionStart does not start monitors for an opted-in repository that is out of scope", t => {
   const f = checkout(t);
   f.control("enable");
-  f.saveCredentials({ allowed_github_orgs: ["another"] });
+  f.saveCredentials({ license_jwt: license({ orgs: ["another"] }) });
   const result = f.script("session_start.js", { input: { ...EVENT, cwd: f.repo } });
   assert.equal(result.status, 0, result.stderr);
   assert.match(result.stderr, /repository out of scope/);

@@ -1,7 +1,7 @@
 "use strict";
-// Repository eligibility: signed-in organizations, org-scope narrowing, and
-// linked worktrees. Scope can only narrow what sign-in stored.
-const { isolateHome, makeRepo, writeSettings, tempDir } = require("../../test-support/plugin.cjs");
+// Repository eligibility: the license's organizations, org-scope narrowing,
+// and linked worktrees. Scope can only narrow what the license covers.
+const { isolateHome, makeRepo, writeSettings, tempDir, license } = require("../../test-support/plugin.cjs");
 isolateHome({ device_id: "TEST-DEVICE", hash_salt: "deadbeef" });
 delete process.env.SKILLMETER_REPO_SCOPE_ORGS;
 
@@ -12,11 +12,11 @@ const path = require("node:path");
 const { execFileSync } = require("node:child_process");
 const credstore = require("../../scripts/credstore");
 const logger = require("../../scripts/logger");
-const { normalizeOrgList, resolveOrgScope, narrowOrgsToScope } = require("../../scripts/lib/org-scope");
+const { normalizeOrgList, resolveOrgScope } = require("../../scripts/lib/org-scope");
 
 function signInWithOrgs(orgs) {
-  credstore.markEngaged();
-  assert.equal(credstore.commitSignin({ jwt: "a.b.c", orgs }), true);
+  const generation = credstore.markEngaged();
+  assert.notEqual(credstore.commitSignin({ jwt: license({ orgs }), refreshToken: "synthetic-refresh", generation }), false);
 }
 const repo = remote => makeRepo({ remote, prefix: "sk-scope-repo" });
 function project(skillmeter) {
@@ -38,12 +38,7 @@ test("resolveOrgScope returns null when nothing is configured", () => {
   assert.equal(resolveOrgScope({ cwd: project(null) }), null);
 });
 
-test("resolveOrgScope: CLI orgs win over env, env wins over settings", () => {
-  withEnvFilter("from-env", () => {
-    const cwd = project({ repoScopeOrgs: ["from-settings"] });
-    assert.deepEqual(resolveOrgScope({ cwd, cliOrgs: ["SkillBench-AI", "x"] }), ["skillbench-ai", "x"]);
-    assert.deepEqual(resolveOrgScope({ cwd, cliOrgs: [] }), ["from-env"], "empty CLI orgs fall through");
-  });
+test("resolveOrgScope: env wins over settings", () => {
   withEnvFilter("SkillBench-AI, octocat", () => {
     assert.deepEqual(resolveOrgScope({ cwd: project({ repoScopeOrgs: ["from-settings"] }) }), ["skillbench-ai", "octocat"]);
   });
@@ -52,19 +47,6 @@ test("resolveOrgScope: CLI orgs win over env, env wins over settings", () => {
 test("resolveOrgScope: per-project setting as array or string", () => {
   assert.deepEqual(resolveOrgScope({ cwd: project({ repoScopeOrgs: ["SkillBench-AI"] }) }), ["skillbench-ai"]);
   assert.deepEqual(resolveOrgScope({ cwd: project({ repoScopeOrgs: "skillbench-ai, acme" }) }), ["skillbench-ai", "acme"]);
-});
-
-test("narrowOrgsToScope only narrows: no scope keeps everything, an unjoined org yields nothing", () => {
-  const untouched = narrowOrgsToScope(["acme", "skillbench-ai", "octocat"], null);
-  assert.equal(untouched.applied, false);
-  assert.deepEqual(untouched.orgs, ["acme", "skillbench-ai", "octocat"]);
-  assert.deepEqual(untouched.excluded, []);
-  const narrowed = narrowOrgsToScope(["acme", "skillbench-ai", "octocat"], ["skillbench-ai"]);
-  assert.equal(narrowed.applied, true);
-  assert.deepEqual(narrowed.orgs, ["skillbench-ai"]);
-  assert.deepEqual(narrowed.excluded, ["acme", "octocat"]);
-  const empty = narrowOrgsToScope(["acme"], ["skillbench-ai"]);
-  assert.deepEqual([empty.applied, empty.orgs, empty.excluded], [true, [], ["acme"]]);
 });
 
 test("no signed-in organizations means not_activated, even in an allowed-looking repository", () => {

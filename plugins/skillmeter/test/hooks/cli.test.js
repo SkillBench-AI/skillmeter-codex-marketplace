@@ -5,19 +5,26 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-const { PLUGIN_ROOT, tempDir, writeCredentials, makeJwt } = require("../../test-support/plugin.cjs");
+const { PLUGIN_ROOT, tempDir, writeCredentials, makeJwt, license, sessionFileIn } = require("../../test-support/plugin.cjs");
 
 function home(credentials) {
   const dir = tempDir("sk-bin-home");
   writeCredentials(dir, credentials);
   return dir;
 }
+// The broker points at a closed loopback port: sign-out's revoke fails fast
+// instead of reaching the real sign-in service.
 function run(tool, args, dir) {
   return spawnSync(process.execPath, [path.join(PLUGIN_ROOT, "bin", tool), ...args], {
-    encoding: "utf8", env: { ...process.env, HOME: dir, USERPROFILE: dir },
+    encoding: "utf8", timeout: 10000,
+    env: { ...process.env, HOME: dir, USERPROFILE: dir, PLUGIN_DATA: path.join(dir, "data"),
+      SKILLMETER_STATE_DIR: "", SKILLMETER_ENV: "", SKILLMETER_BROKER_URL: "http://127.0.0.1:9" },
   });
 }
-const readCredentials = dir => JSON.parse(fs.readFileSync(path.join(dir, ".skillbench", "credentials.json"), "utf8"));
+const readJson = file => JSON.parse(fs.readFileSync(file, "utf8"));
+const readCredentials = dir => readJson(path.join(dir, ".skillbench", "credentials.json"));
+const readSession = dir => readJson(sessionFileIn(path.join(dir, ".skillbench")));
+const readPolicy = dir => readJson(path.join(dir, ".skillbench", "telemetry-policy.json"));
 const now = () => Math.floor(Date.now() / 1000);
 
 test("sk-jwt reports no stored license when unauthenticated", () => {
@@ -28,11 +35,14 @@ test("sk-jwt reports no stored license when unauthenticated", () => {
 });
 
 test("sk-jwt renders claims for a valid token without leaking the raw token", () => {
-  const jwt = makeJwt({ sub: "user-1", org: { id: "42", login: "acme", url: "https://github.com/acme" }, github_id: "99",
+  const jwt = license({ sub: "tenant-1", broker_sub: "person-9", org: { login: "acme" }, orgs: ["acme", "beta"],
     aud: "https://acme.meter.skillbench.com", iat: now(), exp: now() + 3600 });
   const result = run("sk-jwt", [], home({ device_id: "DEV-1", hash_salt: "abcd", license_jwt: jwt }));
   assert.equal(result.status, 0);
-  assert.match(result.stdout, /Org login\s+acme/);
+  assert.match(result.stdout, /Tenant \(sub\)\s+tenant-1/);
+  assert.match(result.stdout, /Workspace\s+acme/);
+  assert.match(result.stdout, /User \(broker_sub\)\s+person-9/);
+  assert.match(result.stdout, /GitHub orgs\s+acme, beta/);
   assert.match(result.stdout, /Telemetry endpoint\s+https:\/\/acme\.meter\.skillbench\.com/);
   assert.match(result.stdout, /Status\s+valid/);
   assert.equal(result.stdout.includes(jwt), false, "raw JWT must not be printed");
@@ -43,22 +53,25 @@ test("sk-jwt flags an expired token", () => {
   assert.match(run("sk-jwt", [], home({ device_id: "DEV-1", hash_salt: "abcd", license_jwt: jwt })).stdout, /EXPIRED/i);
 });
 
-test("sk-telemetry disable --global sets the machine-wide pause and enable --global clears it", () => {
+// The pause is the shared policy's, so it covers every SkillMeter client.
+test("sk-telemetry disable --global pauses through the shared policy and enable --global resumes", () => {
   const dir = home({ device_id: "DEV-1", hash_salt: "abcd" });
   assert.equal(run("sk-telemetry", ["disable", "--global"], dir).status, 0);
-  assert.equal(readCredentials(dir).telemetry_disabled, true);
+  assert.equal(readPolicy(dir).global.enabled, false);
+  assert.equal("telemetry_disabled" in readCredentials(dir), false);
   assert.equal(run("sk-telemetry", ["enable", "--global"], dir).status, 0);
-  assert.equal(readCredentials(dir).telemetry_disabled, undefined, "resume removes the flag");
+  assert.equal(readPolicy(dir).global.enabled, true);
 });
 
-test("signout drops the license and organizations, sets the global pause, and keeps the device identity", () => {
-  const dir = home({ device_id: "DEV-1", hash_salt: "abcd", license_jwt: makeJwt({ sub: "u", exp: now() + 3600 }), allowed_github_orgs: ["acme"] });
-  assert.equal(run("signout", [], dir).status, 0);
-  const credentials = readCredentials(dir);
-  assert.equal(credentials.license_jwt, undefined);
-  assert.equal(credentials.allowed_github_orgs, undefined);
-  assert.equal(credentials.signed_out, true);
-  assert.equal(credentials.telemetry_disabled, true);
-  assert.equal(credentials.device_id, "DEV-1");
-  assert.equal(credentials.hash_salt, "abcd");
+test("signout ends this client's session, keeps the device identity and pauses nothing globally", () => {
+  const dir = home({ device_id: "DEV-1", hash_salt: "abcd", license_jwt: license(), refresh_token: "synthetic-refresh" });
+  const result = run("signout", [], dir);
+  assert.equal(result.status, 0, result.stderr);
+  const session = readSession(dir);
+  assert.equal(session.license_jwt, undefined);
+  assert.equal(session.refresh_token, undefined);
+  assert.equal(session.signed_out, true);
+  assert.deepEqual(readCredentials(dir), { device_id: "DEV-1", hash_salt: "abcd" });
+  assert.equal(fs.existsSync(path.join(dir, ".skillbench", "telemetry-policy.json")), false, "not a global pause");
+  assert.equal((result.stdout + result.stderr).includes("synthetic-refresh"), false, "the refresh token is never printed");
 });

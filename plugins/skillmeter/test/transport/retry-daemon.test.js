@@ -1,11 +1,10 @@
 "use strict";
-// The retry monitor: proactive license refresh inside a sweep, failure
+// The retry monitor: proactive license renewal inside a sweep, failure
 // isolation, and self-termination of the real daemon once queues stay idle.
 const { isolateHome, tempDir, writeCredentials, makeJwt, SCRIPTS } = require("../../test-support/plugin.cjs");
 isolateHome({ device_id: "TEST-DEVICE", hash_salt: "deadbeef" });
 process.env.PLUGIN_DATA = tempDir("sk-daemon-data");
-delete process.env.SKILLMETER_BACKEND_URL;
-delete process.env.SKILLMETER_ACTIVATE_URL;
+for (const name of ["SKILLMETER_BACKEND_URL", "SKILLMETER_ACTIVATE_URL", "SKILLMETER_BROKER_URL", "SKILLMETER_ENV"]) delete process.env[name];
 
 const path = require("node:path");
 const { execFile } = require("node:child_process");
@@ -14,6 +13,7 @@ const assert = require("node:assert/strict");
 const logger = require("../../scripts/logger");
 const credstore = require("../../scripts/credstore");
 const daemon = require("../../scripts/monitors/retry_daemon");
+const licenseActivation = require("../../scripts/lib/license-activation");
 
 const DAEMON_PATH = path.join(SCRIPTS, "monitors", "retry_daemon.js");
 
@@ -31,56 +31,64 @@ afterEach(() => {
   logger.drainQueuesOnce = realDrain;
 });
 
-test("maybeRefreshLicense rotates an expiring token via the awaited /refresh", async () => {
-  credstore.setLicenseToken(makeJwt({ exp: nowSec() - 60 }));
-  const fresh = makeJwt({ exp: nowSec() + 3600 });
+function setToken(token) {
+  credstore.mutateSession(session => Object.assign(session, { license_jwt: token, refresh_token: "synthetic-refresh" }));
+  licenseActivation.clearStatus();
+}
 
-  let calls = 0;
-  global.fetch = async () => {
-    calls += 1;
-    return { ok: true, status: 200, json: async () => ({ token: fresh }), text: async () => "" };
+// The broker's refresh token grant, then /activate issuing `issue()`.
+function serve(issue) {
+  const calls = [];
+  global.fetch = async url => {
+    calls.push(new URL(url).pathname);
+    const body = url.endsWith("/oauth2/token") ? { id_token: "synthetic-id", refresh_token: "synthetic-refresh" } : { token: issue() };
+    return { ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) };
   };
+  return calls;
+}
+
+test("maybeRefreshLicense renews an expiring license through the broker", async () => {
+  setToken(makeJwt({ exp: nowSec() - 60 }));
+  const fresh = makeJwt({ exp: nowSec() + 3600 });
+  const calls = serve(() => fresh);
 
   await daemon.maybeRefreshLicense();
 
-  assert.equal(calls, 1, "an expiring token triggers exactly one /refresh");
-  assert.equal(credstore.getLicenseToken(), fresh, "the rotated token is persisted");
+  assert.deepEqual(calls, ["/oauth2/token", "/activate"], "an expiring license renews exactly once");
+  assert.equal(credstore.getLicenseToken(), fresh, "the renewed license is persisted");
   assert.equal(credstore.isLicenseTokenExpired(fresh), false);
 });
 
 test("maybeRefreshLicense makes no network call when the token is comfortably valid", async () => {
   const valid = makeJwt({ exp: nowSec() + 3600 });
-  credstore.setLicenseToken(valid);
-
-  let fetchCalled = false;
-  global.fetch = async () => {
-    fetchCalled = true;
-    return { ok: true, status: 200, json: async () => ({ token: "x" }), text: async () => "" };
-  };
+  setToken(valid);
+  const calls = serve(() => "x");
 
   await daemon.maybeRefreshLicense();
 
-  assert.equal(fetchCalled, false, "a valid token short-circuits before any network");
+  assert.deepEqual(calls, [], "a valid token short-circuits before any network");
   assert.equal(credstore.getLicenseToken(), valid, "the valid token is left untouched");
 });
 
-test("successive sweeps keep refreshing a token that is still expired", async () => {
+test("a failed renewal backs off instead of calling the broker every sweep", async () => {
   const expired = makeJwt({ exp: nowSec() - 60 });
-  credstore.setLicenseToken(expired);
-  let calls = 0;
-  global.fetch = async () => {
-    calls += 1;
-    return { ok: true, status: 200, json: async () => ({ token: makeJwt({ exp: nowSec() - 60, jti: calls }) }), text: async () => "" };
-  };
+  setToken(expired);
+  // /activate answers with a license that is already expired: unusable.
+  const calls = serve(() => makeJwt({ exp: nowSec() - 60 }));
   logger.refreshRetryDaemonLock();
   logger.drainQueuesOnce = async () => 0;
+  const original = console.error;
+  console.error = () => {};
   try {
     await daemon.sweep();
     await daemon.sweep();
   } finally {
+    console.error = original;
     logger.clearRetryDaemonLock();
   }
-  assert.equal(calls, 2, "each sweep refreshes the still-expired token");
+  assert.deepEqual(calls, ["/oauth2/token", "/activate"], "the second sweep waits out the backoff");
+  assert.equal(credstore.getLicenseToken(), expired, "the unusable license is not stored");
+  assert.ok(licenseActivation.readStatus().next_retry_at > Date.now());
 });
 
 test("a refresh failure is logged and never aborts the sweep's drain", async () => {

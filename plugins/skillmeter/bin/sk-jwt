@@ -48,12 +48,11 @@ function line(label, value) {
 
 process.stdout.write("SkillMeter license JWT\n");
 process.stdout.write("─".repeat(56) + "\n");
-line("Subject (sub)", payload.sub);
+line("Tenant (sub)", payload.sub);
+line("Workspace", payload.org && payload.org.login);
+line("User (broker_sub)", payload.broker_sub);
+line("GitHub orgs", Array.isArray(payload.orgs) ? payload.orgs.join(", ") || "(none)" : undefined);
 line("Issuer (iss)", payload.iss);
-line("Org id", payload.org && payload.org.id);
-line("Org login", payload.org && payload.org.login);
-line("Org URL", payload.org && payload.org.url);
-line("GitHub user id", payload.github_id);
 line("Telemetry endpoint", getEndpointFromToken(token) || payload.aud);
 if (typeof payload.iat === "number") {
   line("Issued at", new Date(payload.iat * 1000).toISOString());

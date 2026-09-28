@@ -3,10 +3,11 @@
  * checkmark are assumed to occupy one terminal column each.
  */
 
+// `orgs` are the GitHub accounts the license covers.
 function welcomeBanner(orgs) {
   const identity = Array.isArray(orgs) && orgs.length
     ? `@${orgs.join(", @")}`
-    : "(no GitHub identities cached)";
+    : "(this workspace has no GitHub organizations connected)";
 
   return [
     "",
