@@ -10,6 +10,10 @@ with no compatibility path.
 the global pause moved from the shared `<state>/telemetry-policy.json` to
 `<state>/clients/codex/telemetry-policy.json`. The file table and the global
 pause section below describe the state before that change.
+**Amended 2026-09-28 (internal channel, #116):** `SKILLMETER_ENV` no longer
+selects the environment. The installation's channel does: the internal build
+uses dev, the stable build prod. Mentions of `SKILLMETER_ENV=dev` below are
+historical.
 
 ## Why a cutover, not a migration
 

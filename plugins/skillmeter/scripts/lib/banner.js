@@ -8,13 +8,10 @@ let version = "";
 try { version = require(path.join(__dirname, "..", "..", ".codex-plugin", "plugin.json")).version || ""; }
 catch { /* An unreadable manifest only drops the version from the title. */ }
 
-// Names a non-default channel or environment so the destination is visible.
+// Names a non-stable channel and its environment so the destination is visible.
 function channelLabel() {
-  const config = require("./config");
-  const { channel } = config.channel();
-  const env = config.environment();
-  if (channel !== "stable") return ` · ${channel} (${env})`;
-  return env === "prod" ? "" : ` · ${env}`;
+  const { channel, env } = require("./config").channel();
+  return channel === "stable" ? "" : ` · ${channel} (${env})`;
 }
 
 // Content-sized card with a titled top border, as in the Claude plugin.

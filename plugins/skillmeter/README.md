@@ -216,11 +216,13 @@ Current limitations:
 
 ## Development settings
 
-Production routing normally needs no manual configuration. Development overrides:
+The environment is fixed by the installation: the internal channel uses dev
+(`~/.skillbench-dev`), the stable channel prod. No environment variable switches
+it. These overrides point one endpoint or directory elsewhere, for a local stack
+or isolated tests:
 
 | Variable | Purpose |
 | --- | --- |
-| `SKILLMETER_ENV=dev` or `prod` | Use that environment's sign-in service, license server and state directory (`~/.skillbench-dev` or `~/.skillbench`) together. Without it, the internal channel build uses dev and the stable build uses prod |
 | `SKILLMETER_BROKER_URL` | Sign-in service (HTTPS on skillbench.ai/.com, or loopback) |
 | `SKILLMETER_ACTIVATE_URL` | License server `/activate` (same restriction) |
 | `SKILLMETER_STATE_DIR` | State directory holding the device identity and this plugin's session and consent record |

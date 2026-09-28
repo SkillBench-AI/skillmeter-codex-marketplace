@@ -61,8 +61,8 @@ leave no transition evidence; those unobserved cycles cannot be detected.
 ## Consent record
 
 Codex reads and writes schema version 1 at `clients/codex/telemetry-policy.json`
-under `SKILLMETER_STATE_DIR`, or `~/.skillbench` (`~/.skillbench-dev` when
-`SKILLMETER_ENV=dev`). The schema matches the Claude plugin's record so the two
+under `SKILLMETER_STATE_DIR`, or `~/.skillbench` (`~/.skillbench-dev` in the internal
+channel build). The schema matches the Claude plugin's record so the two
 stay easy to compare; neither client reads the other's file. Global OFF retains
 queues. Organization/repository OFF purges indexed payloads while retaining
 privacy cursors.

@@ -3,7 +3,7 @@
 // endpoint trust, and authenticated uploads against a loopback server.
 const { isolateHome, makeJwt, license, sessionFileIn, consentPolicyFileIn, tempDir, writeSettings } = require("../../test-support/plugin.cjs");
 const tmpHome = isolateHome({ device_id: "TEST-DEVICE", hash_salt: "deadbeef" });
-for (const name of ["SKILLMETER_BACKEND_URL", "SKILLMETER_ACTIVATE_URL", "SKILLMETER_BROKER_URL", "SKILLMETER_ENV", "SKILLMETER_STATE_DIR"]) {
+for (const name of ["SKILLMETER_BACKEND_URL", "SKILLMETER_ACTIVATE_URL", "SKILLMETER_BROKER_URL", "SKILLMETER_STATE_DIR"]) {
   delete process.env[name];
 }
 
@@ -204,12 +204,12 @@ test("sign-in and renewal default to the prod skillbench.ai services", () => {
   assert.equal(config.stateDir(), path.join(tmpHome, ".skillbench"));
 });
 
-test("SKILLMETER_ENV=dev switches the broker, the license server and the state directory together", () => {
+test("an environment variable cannot switch a stable install to dev", () => {
   process.env.SKILLMETER_ENV = "dev";
   try {
-    assert.equal(config.brokerUrl(), "https://id.dev.skillbench.com");
-    assert.equal(config.activateUrl(), "https://api.dev.skillbench.com/activate");
-    assert.equal(config.stateDir(), path.join(tmpHome, ".skillbench-dev"));
+    assert.equal(config.brokerUrl(), "https://id.skillbench.ai");
+    assert.equal(config.activateUrl(), "https://api.skillbench.ai/activate");
+    assert.equal(config.stateDir(), path.join(tmpHome, ".skillbench"));
   } finally {
     delete process.env.SKILLMETER_ENV;
   }
