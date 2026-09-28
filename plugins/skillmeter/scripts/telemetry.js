@@ -3,7 +3,7 @@
  * Codex consent controls: organization and repository choices and the global
  * pause in Codex's consent record, and local restrictions in
  * .codex/settings.local.json.
- * Usage: node scripts/telemetry.js <enable|disable|status> [--global],
+ * Usage: node scripts/telemetry.js <enable|disable> [--global], status [--details],
  * or node scripts/telemetry.js consent-preview [--json]; consent-set --help prints choice arguments.
  */
 
@@ -83,34 +83,44 @@ function sharedPauseLine() {
   return null;
 }
 
-function capturePolicyLine() {
+// `state` picks the status card; `text` is the detailed capture policy line.
+function captureState() {
+  const result = (state, text) => ({ state, text });
   const shared = sharedPauseLine();
-  if (shared) return shared;
-  if (getTelemetryGloballyDisabled()) return "globally disabled";
+  if (shared) return result("paused", shared);
+  if (getTelemetryGloballyDisabled()) return result("paused", "globally disabled");
   const scope = getRepoScopeDecision(cwd);
   const sharedRepository = getRepositoryPolicyDecision(cwd);
-  if (sharedRepository.reason === "shared_policy_missing") return "paused; previously observed consent record is missing";
-  if (scope.allowed && sharedRepository.revoked) return "disabled by the organization or repository choice";
-  if (scope.allowed && sharedRepository.reason === "absent") return "disabled; organization and repository consent required (run consent-preview)";
-  if (scope.allowed && !sharedRepository.allowed) return "disabled; organization and repository choices must both be recorded and enabled";
+  if (sharedRepository.reason === "shared_policy_missing") return result("paused", "paused; previously observed consent record is missing");
+  if (scope.allowed && sharedRepository.revoked) return result("off", "disabled by the organization or repository choice");
+  if (scope.allowed && sharedRepository.reason === "absent") return result("consent", "disabled; organization and repository consent required (run consent-preview)");
+  if (scope.allowed && !sharedRepository.allowed) return result("consent", "disabled; organization and repository choices must both be recorded and enabled");
   const gate = resolveTelemetryGate(getTelemetryOptIn(cwd), scope.allowed);
-  if (gate.mode === "opted_out") return "disabled for this project";
-  if (!scope.allowed) return `excluded (${scope.classification})`;
-  if (getLocalTelemetryChoice(cwd) === "invalid") return "paused; invalid local consent settings; repair them before capture";
-  if (!gate.capture) return "disabled; organization and repository ON must be recorded with the scope acknowledgement";
-  return "eligible for this repository; hook execution not verified";
+  if (gate.mode === "opted_out") return result("off", "disabled for this project");
+  if (!scope.allowed) return result(scope.classification === "not_activated" ? "signin" : "scope", `excluded (${scope.classification})`);
+  if (getLocalTelemetryChoice(cwd) === "invalid") return result("paused", "paused; invalid local consent settings; repair them before capture");
+  if (!gate.capture) return result("consent", "disabled; organization and repository ON must be recorded with the scope acknowledgement");
+  return result("on", "eligible for this repository; hook execution not verified");
+}
+
+function capturePolicyLine() {
+  return captureState().text;
+}
+
+function queueCounts() {
+  let entries = [];
+  try { entries = fs.readdirSync(LOG_DIR); }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  const batches = entries.filter(name => /^events\.jsonl\.\d+$/.test(name) && fs.statSync(path.join(LOG_DIR, name)).isFile()).length;
+  let active = false;
+  try { active = fs.statSync(LOG_FILE).size > 0; }
+  catch (error) { if (error.code !== "ENOENT") throw error; }
+  return { batches, chunks: listPendingTranscripts().length, active };
 }
 
 function queueLines() {
   try {
-    let entries = [];
-    try { entries = fs.readdirSync(LOG_DIR); }
-    catch (error) { if (error.code !== "ENOENT") throw error; }
-    const batches = entries.filter(name => /^events\.jsonl\.\d+$/.test(name) && fs.statSync(path.join(LOG_DIR, name)).isFile()).length;
-    const chunks = listPendingTranscripts().length;
-    let active = false;
-    try { active = fs.statSync(LOG_FILE).size > 0; }
-    catch (error) { if (error.code !== "ENOENT") throw error; }
+    const { batches, chunks, active } = queueCounts();
     return [
       `Upload queue (all repositories): ${batches} sealed event ${batches === 1 ? "batch" : "batches"}, ${chunks} transcript chunks`,
       `Unsealed event data: ${active ? "present" : "none"}`,
@@ -118,6 +128,27 @@ function queueLines() {
   } catch {
     return ["Upload queue: unavailable; could not read local queue state"];
   }
+}
+
+function queueSummary() {
+  try {
+    const { batches, chunks } = queueCounts();
+    return `${batches} event ${batches === 1 ? "batch" : "batches"} · ${chunks} transcript ${chunks === 1 ? "chunk" : "chunks"} pending`;
+  } catch { return "unavailable"; }
+}
+
+// The card shows the repository as org/repo and sign-in as OK when nothing
+// stands in the way; anything else keeps the detailed text.
+function statusCard() {
+  const { statusBanner } = require("./lib/banner");
+  const scope = getRepoScopeDecision(cwd);
+  const auth = authenticationLine();
+  return statusBanner({
+    capture: captureState(),
+    repository: scope.repoKey ? scope.repoKey.replace(/^github\.com\//, "") : null,
+    signIn: auth.startsWith("license locally valid") ? "OK" : auth,
+    queue: queueSummary(),
+  });
 }
 
 function transcriptHealthLines() {
@@ -192,14 +223,17 @@ switch (action) {
       } else {
         policy = applyRepositoryConsent({ cwd, scope: getRepoScopeDecision(cwd), store, ...options, onCommitted });
       }
-      const kind = options.organization !== undefined ? "Organization" : "Repository";
-      process.stdout.write(`${kind} choice saved: ${options.enabled ? "ON" : "OFF"} (revision ${policy.revision}).\n`);
-      process.stdout.write(cleaned ? "Known local queue revocations checked.\n" : "Some local queue cleanup is deferred; delivery still rechecks consent.\n");
-      if (policy.durability === "unconfirmed") {
-        process.stdout.write("This platform cannot confirm the saved choice survives a crash; after a restart, run consent-preview to check it.\n");
-      }
-      process.stdout.write("Local restrictions are unchanged. Capture needs both the organization and the repository ON; authentication, the pause and other restrictions still apply.\n");
-      process.stdout.write("This does not verify hook execution, delivery or report generation.\n");
+      const { consentSavedBanner } = require("./lib/banner");
+      const isOrganization = options.organization !== undefined;
+      process.stdout.write(consentSavedBanner({
+        kind: isOrganization ? "organization" : "repository",
+        target: isOrganization ? `@${options.organization.trim().toLowerCase()}` : options.repository.replace(/^github\.com\//, ""),
+        enabled: options.enabled,
+        revision: policy.revision,
+        capture: captureState(),
+        cleanupDeferred: !cleaned,
+        durabilityUnconfirmed: policy.durability === "unconfirmed",
+      }));
     } catch (error) {
       process.stderr.write(`SkillMeter: ${error.code || "CONSENT_UPDATE_FAILED"}: ${error.message}\n`);
       process.exitCode = 1;
@@ -232,8 +266,12 @@ switch (action) {
     }
     break;
   case "status": {
-    // Status reads state only; it never changes the session or shared state.
+    // Status reads state only; it never changes the session or consent record.
     refreshFromDisk();
+    if (!process.argv.includes("--details")) {
+      process.stderr.write(statusCard());
+      break;
+    }
     const lines = [
       `Capture policy: ${capturePolicyLine()}`,
       `Delivery authentication: ${authenticationLine()}`,
@@ -246,6 +284,6 @@ switch (action) {
     break;
   }
   default:
-    process.stderr.write("Usage: node telemetry.js <enable|disable|status> [--global] | consent-preview [--json] | consent-set <on|off> (--organization <org> | --repository <key>) --revision <number|absent> [--acknowledge-machine-scope]\n");
+    process.stderr.write("Usage: node telemetry.js <enable|disable> [--global] | status [--details] | consent-preview [--json] | consent-set <on|off> (--organization <org> | --repository <key>) --revision <number|absent> [--acknowledge-machine-scope]\n");
     process.exit(1);
 }

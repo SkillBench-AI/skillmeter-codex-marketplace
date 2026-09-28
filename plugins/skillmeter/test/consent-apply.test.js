@@ -93,7 +93,7 @@ test("CLI shared OFF revokes known payloads while paused without changing creden
     assert.deepEqual(fs.readFileSync(credentials),before);
     assert.equal(fs.existsSync(path.join(path.dirname(path.dirname(chunk)),'consent.json')),true);
   `);
-  assert.match(result.stdout,/Repository choice saved: OFF/);
+  assert.match(result.stdout,/\[ REPOSITORY OFF \]/);
   assert.doesNotMatch(result.stdout,/delivered|report generated/i);
 });
 
@@ -199,8 +199,8 @@ test("busy payload cleanup is reported as deferred after the choice is saved", t
     assert.equal(fs.existsSync(chunk),true);
     fs.unlinkSync(lock);logger.reconcileSharedRevocations();assert.equal(fs.existsSync(chunk),false);
   `);
-  assert.match(result.stdout,/choice saved: OFF/);
-  assert.match(result.stdout,/cleanup is deferred/);
+  assert.match(result.stdout,/\[ REPOSITORY OFF \]/);
+  assert.match(result.stdout,/cleanup deferred/);
 });
 
 test("post-commit observer failure reports that consent was saved and does not roll it back", t => fixture(t).run(setup + `
@@ -251,9 +251,9 @@ test("CLI records organization then repository consent from no record and enable
     assert.equal(logger.getTelemetryOptIn(repo),false);
     assert.equal(fs.existsSync(legacyPolicyFile),false);
   `);
-  assert.match(result.stdout,/Organization choice saved: ON \(revision 1\)/);
-  assert.match(result.stdout,/Repository choice saved: ON \(revision 2\)/);
-  assert.match(result.stdout,/Organization choice saved: OFF \(revision 3\)/);
+  assert.match(result.stdout,/\[ ORGANIZATION ON \][\s\S]*Revision +1/);
+  assert.match(result.stdout,/\[ TELEMETRY ON \][\s\S]*Revision +2/);
+  assert.match(result.stdout,/\[ ORGANIZATION OFF \][\s\S]*Revision +3/);
 });
 
 test("CLI rejects an organization the license does not cover", t => {

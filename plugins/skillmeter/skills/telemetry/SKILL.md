@@ -17,10 +17,12 @@ keeps its own consent choices and is not affected.
 node "$PLUGIN_ROOT/scripts/telemetry.js" status
 ```
 
-`status` is read-only and changes no credentials or settings. It reports the
-capture policy for this repository, delivery authentication, and the local
-upload queue across repositories. It does not verify hook execution, server
-acceptance or report generation; do not claim delivery from an empty queue.
+`status` is read-only and changes no credentials or settings. It prints a short
+card: the capture state for this repository, the reason when capture is not on,
+sign-in, and the local upload queue. Show the card as is. Run
+`status --details` only when the user asks for diagnostics; it adds transcript
+health and delivery lines. Neither verifies hook execution, server acceptance or
+report generation; do not claim delivery from an empty queue.
 
 ## Record consent for this repository
 
@@ -74,7 +76,8 @@ README) before asking.
    node "$PLUGIN_ROOT/scripts/telemetry.js" consent-set off --organization ORG --revision REVISION
    ```
 
-   Report the output verbatim in a fenced code block.
+   Each command prints a short result card. Show it verbatim in a fenced code
+   block and add nothing it does not say.
 
 If the command fails, relay the code and message, then act on it:
 

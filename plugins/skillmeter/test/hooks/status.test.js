@@ -62,7 +62,7 @@ cp.spawn = cp.execSync = () => { throw Error("status must not spawn or read Keyc
 `);
   const files = [path.join(state, "credentials.json"), sessionFileIn(state)];
   const before = files.map(file => fs.readFileSync(file, "utf8"));
-  const result = spawnSync(process.execPath, ["--require", preload, path.join(plugin, "scripts/telemetry.js"), "status"], {
+  const result = spawnSync(process.execPath, ["--require", preload, path.join(plugin, "scripts/telemetry.js"), "status", "--details"], {
     cwd: repo, encoding: "utf8", timeout: 5000,
     env: { ...process.env, HOME: root, USERPROFILE: root, PLUGIN_DATA: data, PLUGIN_ROOT: plugin,
       SKILLMETER_STATE_DIR: state, SKILLMETER_REPO_SCOPE_ORGS: "", NODE_OPTIONS: "" },
