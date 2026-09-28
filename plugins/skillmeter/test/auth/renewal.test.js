@@ -18,7 +18,7 @@ process.env.HOME = root;
 process.env.USERPROFILE = root;
 process.env.PLUGIN_DATA = path.join(root, "data");
 process.env.SKILLMETER_STATE_DIR = stateDir;
-for (const name of ["SKILLMETER_ENV", "SKILLMETER_BROKER_URL", "SKILLMETER_ACTIVATE_URL"]) delete process.env[name];
+for (const name of ["SKILLMETER_BROKER_URL", "SKILLMETER_ACTIVATE_URL"]) delete process.env[name];
 
 const sessionFile = sessionFileIn(stateDir);
 const now = () => Math.floor(Date.now() / 1000);

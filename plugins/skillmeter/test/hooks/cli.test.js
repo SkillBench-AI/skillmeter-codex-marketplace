@@ -18,7 +18,7 @@ function run(tool, args, dir) {
   return spawnSync(process.execPath, [path.join(PLUGIN_ROOT, "bin", tool), ...args], {
     encoding: "utf8", timeout: 10000,
     env: { ...process.env, HOME: dir, USERPROFILE: dir, PLUGIN_DATA: path.join(dir, "data"),
-      SKILLMETER_STATE_DIR: "", SKILLMETER_ENV: "", SKILLMETER_BROKER_URL: "http://127.0.0.1:9" },
+      SKILLMETER_STATE_DIR: "", SKILLMETER_BROKER_URL: "http://127.0.0.1:9" },
   });
 }
 const readJson = file => JSON.parse(fs.readFileSync(file, "utf8"));
