@@ -29,7 +29,7 @@ function prepare(destination, claudeRepo) {
   }
   fs.mkdirSync(base, { recursive: true, mode: 0o700 });
   const write = (file, data) => fs.writeFileSync(path.join(base, file), data, { mode: 0o600 });
-  for (const dir of ["home", "home/.skillbench", "data", "bindings", "received", "attempts", "templates"])
+  for (const dir of ["home", "home/.skillbench", "home/.skillbench/clients/codex", "data", "bindings", "received", "attempts", "templates"])
     fs.mkdirSync(path.join(base, dir), { recursive: true, mode: 0o700 });
   snapshot(codexRepo, heads.codex, "plugins/skillmeter", path.join(base, "codex"));
   snapshot(claudeRepo, heads.claude, "skillmeter", path.join(base, "claude"));
@@ -54,9 +54,12 @@ function prepare(destination, claudeRepo) {
   write("config.json", JSON.stringify({ base, heads, harness, workspaces, expiresAt: 0 }, null, 2));
   write("disabled", "Prepared, not armed.\n");
   write("receiver.json", '{"status":503}');
-  const claims = { sub: "synthetic-tenant", github_id: "synthetic-user", exp: 4102444800, aud: "https://consent-canary.meter.dev" };
-  write("home/.skillbench/credentials.json", JSON.stringify({ device_id: "SYNTHETIC", hash_salt: "synthetic-salt",
-    allowed_github_orgs: ["acme"], license_jwt: "e30." + Buffer.from(JSON.stringify(claims)).toString("base64url") + ".fixture" }));
+  // The shared device identity, and this plugin's own session (ADR 005).
+  const claims = { sub: "synthetic-tenant", broker_sub: "synthetic-user", org: { login: "acme" }, orgs: ["acme"],
+    exp: 4102444800, aud: "https://consent-canary.meter.dev" };
+  write("home/.skillbench/credentials.json", JSON.stringify({ device_id: "SYNTHETIC", hash_salt: "synthetic-salt" }));
+  write("home/.skillbench/clients/codex/session.json", JSON.stringify({ refresh_token: "synthetic-refresh",
+    license_jwt: "e30." + Buffer.from(JSON.stringify(claims)).toString("base64url") + ".fixture" }));
   write("home/.skillbench/telemetry-policy.json", JSON.stringify({ schema_version: 1, revision: 0,
     global: { enabled: true }, organizations: {}, repositories: {} }));
   const quote = value => "'" + value.replace(/'/g, "'\\''") + "'";

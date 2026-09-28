@@ -1,21 +1,22 @@
 #!/usr/bin/env node
 /**
- * Sign in with the GitHub CLI or device flow, then persist the license and scope.
- * Without a TTY, device polling runs in a detached child so the code can be shown
- * before the runner exits. Usage: node scripts/signin.js [--org org].
+ * Sign in through the SkillBench sign-in service (ADR 005): the device flow,
+ * then an exchange of its ID token for a license. The broker's refresh token is
+ * kept with the license and renews it from then on. Without a TTY, polling runs
+ * in a detached child so the code can be shown before the runner exits.
+ * Usage: node scripts/signin.js.
  */
 
 const credstore = require("./credstore.js");
+const config = require("./lib/config");
 const licenseActivation = require("./lib/license-activation");
-const { fetchUserGitHubOrgs } = require("./lib/github-api");
+const { requestDeviceCode, pollDeviceToken } = require("./lib/broker");
+const { exchangeIdToken } = require("./lib/license-exchange");
 const { welcomeBanner } = require("./lib/banner.js");
 const { startSpinner } = require("./lib/spinner.js");
-const { getSkillmeterStringSetting } = require("./lib/settings");
-const { resolveOrgScope, narrowOrgsToScope } = require("./lib/org-scope");
 const { spawnSync, spawn } = require("child_process");
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
 
 // On POSIX, stdout/stderr writes to a pipe (e.g. when a non-interactive runner
 // captures us) are async and block-buffered. Forcing the streams to blocking
@@ -29,23 +30,7 @@ for (const stream of [process.stdout, process.stderr]) {
   } catch {}
 }
 
-// Default points at the prod SkillMeter GitHub OAuth App (registered under the
-// SkillBench-AI org). Devs/agents override via SKILLMETER_GITHUB_CLIENT_ID
-// (e.g. the dev OAuth App's client_id) or a `skillmeter.github_client_id`
-// entry in the project's .codex/settings.local.json.
-const DEFAULT_GITHUB_CLIENT_ID = "Ov23ct86rS80kpl7o2Xg";
-
-function getGitHubClientId() {
-  if (process.env.SKILLMETER_GITHUB_CLIENT_ID) return process.env.SKILLMETER_GITHUB_CLIENT_ID;
-  const fromSettings = getSkillmeterStringSetting(process.cwd(), "github_client_id");
-  if (fromSettings) return fromSettings;
-  return DEFAULT_GITHUB_CLIENT_ID;
-}
-const DEVICE_CODE_URL = "https://github.com/login/device/code";
-const TOKEN_URL = "https://github.com/login/oauth/access_token";
-const SCOPE = "read:user read:org";
-
-const BACKGROUND_LOG = path.join(os.homedir(), ".skillbench", "activate-poll.log");
+const backgroundLog = () => path.join(config.sessionDir(), "signin-poll.log");
 
 function log(msg) {
   process.stderr.write(msg + "\n");
@@ -53,63 +38,6 @@ function log(msg) {
 
 function say(msg) {
   process.stdout.write(msg + "\n");
-}
-
-// Parse `--org skillbench-ai`, `--org=a,b`, repeated `--org` flags, or the
-// `--orgs` alias, into a normalized list. Lets the user scope sign-in to
-// specific GitHub orgs (e.g. only @skillbench-ai) instead of enrolling every
-// org their account belongs to.
-function parseOrgArgs(argv) {
-  const orgs = [];
-  let hadExplicitOrgFlag = false;
-  for (let i = 0; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === "--org" || a === "--orgs") {
-      hadExplicitOrgFlag = true;
-      const v = argv[i + 1];
-      if (v && !v.startsWith("--")) {
-        orgs.push(...v.split(/[,\s]+/));
-        i++;
-      }
-    } else if (a.startsWith("--org=") || a.startsWith("--orgs=")) {
-      hadExplicitOrgFlag = true;
-      orgs.push(...a.slice(a.indexOf("=") + 1).split(/[,\s]+/));
-    }
-  }
-  // Filter out empty strings from the split result
-  const filtered = orgs.filter((o) => o.trim().length > 0);
-
-  // If --org or --orgs was explicitly provided but resulted in no valid orgs,
-  // treat it as a usage error rather than silently falling back to defaults.
-  if (hadExplicitOrgFlag && filtered.length === 0) {
-    log("Error: --org or --orgs was provided but no valid organization names were found.");
-    log("Usage: signin.js --org <org-name> [--org <org-name> ...]");
-    log("Example: signin.js --org skillbench-ai");
-    process.exit(1);
-  }
-
-  return filtered;
-}
-
-// Narrow the fetched memberships to the configured scope (CLI > env > setting)
-// and persist atomically. Logs what was kept/excluded so the user can see the
-// scope took effect. Returns the kept org list (for the welcome banner).
-function scopeAndCommit(licenseJwt, orgs, cliOrgs, { sayFn = log } = {}) {
-  const scope = resolveOrgScope({ cliOrgs });
-  const { orgs: scopedOrgs, excluded, applied } = narrowOrgsToScope(orgs, scope);
-  if (applied) {
-    sayFn(
-      `Org scope applied: keeping [${scopedOrgs.join(", ") || "none"}]` +
-        (excluded.length ? `, excluded [${excluded.join(", ")}]` : "")
-    );
-    if (scopedOrgs.length === 0) {
-      sayFn(
-        "WARNING: the org scope matched none of your memberships — no repos will be in scope."
-      );
-    }
-  }
-  const committed = credstore.commitSignin({ jwt: licenseJwt, orgs: scopedOrgs });
-  return { committed, scopedOrgs };
 }
 
 // copyToClipboard tries platform-native clipboard tools. Returns true on
@@ -136,104 +64,33 @@ function copyToClipboard(text) {
   return false;
 }
 
-async function postForm(url, params) {
-  const body = new URLSearchParams(params).toString();
-  const res = await fetch(url, {
-    method: "POST",
-    headers: {
-      "Accept": "application/json",
-      "Content-Type": "application/x-www-form-urlencoded",
-    },
-    body,
-    signal: AbortSignal.timeout(10_000),
-  });
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`${url} returned ${res.status}: ${text}`);
+async function exchangeForLicense(idToken, deviceId) {
+  const result = await exchangeIdToken(idToken, deviceId);
+  if (result.outcome === "issued") return result.token;
+  if (result.status === 402) {
+    throw new Error("No active SkillMeter license found for your workspaces.");
   }
-  return res.json();
+  throw new Error(`Activation failed (${result.status ? `HTTP ${result.status}` : result.message})`);
 }
 
-async function requestDeviceCode() {
-  return postForm(DEVICE_CODE_URL, { client_id: getGitHubClientId(), scope: SCOPE });
+// Approve, exchange and commit for one sign-in intent. A newer sign-in or a
+// sign-out meanwhile makes the commit a no-op.
+async function completeSignin(deviceId, deviceCode, interval, generation) {
+  const { idToken, refreshToken } = await pollDeviceToken(deviceCode, interval);
+  const licenseJwt = await exchangeForLicense(idToken, deviceId);
+  if (!refreshToken) throw new Error("Sign-in returned no refresh token; the offline scope was not granted.");
+  const committed = credstore.commitSignin({ jwt: licenseJwt, refreshToken, generation });
+  return committed ? licenseJwt : null;
 }
 
-async function pollForToken(deviceCode, initialInterval) {
-  let interval = initialInterval;
-  while (true) {
-    await new Promise((r) => setTimeout(r, interval * 1000));
-
-    const payload = await postForm(TOKEN_URL, {
-      client_id: getGitHubClientId(),
-      device_code: deviceCode,
-      grant_type: "urn:ietf:params:oauth:grant-type:device_code",
-    });
-
-    if (payload.access_token) return payload.access_token;
-
-    switch (payload.error) {
-      case "authorization_pending":
-        continue;
-      case "slow_down":
-        interval += 5;
-        continue;
-      case "expired_token":
-        throw new Error("The device code expired. Run the sign-in flow again.");
-      case "access_denied":
-        throw new Error("Access was denied on GitHub. Aborting.");
-      default:
-        throw new Error(`GitHub returned: ${payload.error || "unknown error"}`);
-    }
-  }
-}
-
-async function exchangeForLicense(githubToken, deviceId) {
-  const res = await fetch(licenseActivation.getActivateUrl(), {
-    method: "POST",
-    headers: {
-      "Authorization": `Bearer ${githubToken}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({ device_id: deviceId }),
-    signal: AbortSignal.timeout(10_000),
-  });
-
-  if (res.status === 402) {
-    throw new Error("No active SkillMeter license found for your GitHub organizations.");
-  }
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(`Activation failed (HTTP ${res.status}): ${text}`);
-  }
-
-  const payload = await res.json();
-  if (!payload?.token) throw new Error("Activation response missing token.");
-  return payload.token;
-}
-
-// Background phase: invoked when the script is re-spawned with
-// `--background-poll`. Polls GitHub for the access token, exchanges it for a
-// license, fetches the user's GitHub identities, and persists everything in
-// credstore. Output goes to BACKGROUND_LOG (already redirected by the parent's
-// spawn() stdio config) so it can be inspected if activation silently fails.
-async function runBackgroundPoll(deviceId, deviceCode, interval, cliOrgs) {
-  log(`[${new Date().toISOString()}] background poll started (device_id=${deviceId})`);
+// Background phase: re-spawned with `--background-poll`. Output goes to the
+// background log (redirected by the parent's spawn()), so a silent failure can
+// be inspected.
+async function runBackgroundPoll(deviceId, deviceCode, interval, generation) {
+  log(`[${new Date().toISOString()}] background poll started`);
   try {
-    const githubToken = await pollForToken(deviceCode, interval);
-    log(`[${new Date().toISOString()}] github approval received`);
-
-    const licenseJwt = await exchangeForLicense(githubToken, deviceId);
-    log(`[${new Date().toISOString()}] license issued`);
-
-    const orgs = await fetchUserGitHubOrgs(githubToken);
-    log(`[${new Date().toISOString()}] orgs fetched: ${orgs.length} org(s)`);
-
-    const { committed, scopedOrgs } = scopeAndCommit(licenseJwt, orgs, cliOrgs);
-    if (!committed) {
-      log(`[${new Date().toISOString()}] sign-in discarded: signed out during poll`);
-      process.exit(0);
-    }
-    log(`[${new Date().toISOString()}] activation complete (${scopedOrgs.length} org(s) persisted)`);
+    const token = await completeSignin(deviceId, deviceCode, interval, generation);
+    log(`[${new Date().toISOString()}] ${token ? "signed in" : "sign-in discarded: signed out or signed in again meanwhile"}`);
     process.exit(0);
   } catch (err) {
     log(`[${new Date().toISOString()}] background poll failed: ${err.message}`);
@@ -241,84 +98,52 @@ async function runBackgroundPoll(deviceId, deviceCode, interval, cliOrgs) {
   }
 }
 
-function spawnBackgroundPoll(deviceId, deviceCode, interval, cliOrgs) {
-  fs.mkdirSync(path.dirname(BACKGROUND_LOG), { recursive: true, mode: 0o700 });
-  const logFd = fs.openSync(BACKGROUND_LOG, "a", 0o600);
-  // Forward the explicit --org selection to the detached child (env/setting
-  // scope is inherited via process.env). "-" means no CLI orgs.
-  const orgArg = cliOrgs && cliOrgs.length ? cliOrgs.join(",") : "-";
+function spawnBackgroundPoll(deviceId, deviceCode, interval, generation) {
+  fs.mkdirSync(path.dirname(backgroundLog()), { recursive: true, mode: 0o700 });
+  const logFd = fs.openSync(backgroundLog(), "a", 0o600);
   const child = spawn(
     process.execPath,
-    [__filename, "--background-poll", deviceId, deviceCode, String(interval), orgArg],
-    {
-      detached: true,
-      stdio: ["ignore", logFd, logFd],
-    }
+    [__filename, "--background-poll", deviceId, deviceCode, String(interval), generation],
+    { detached: true, stdio: ["ignore", logFd, logFd] }
   );
   child.unref();
   fs.closeSync(logFd);
 }
 
+// A valid license whose session the sign-in service already ended is not a
+// sign-in to keep.
+function currentSignin() {
+  const token = credstore.getLicenseToken();
+  if (!token || credstore.isLicenseTokenExpired(token)) return null;
+  if (licenseActivation.readStatus().terminal) return null;
+  return token;
+}
+
 async function main() {
-  const cliOrgs = parseOrgArgs(process.argv.slice(2));
-
-  // An explicit sign-in re-arms everything in one atomic write: clears the
-  // signed-out sentinel so a user who just fixed their `gh auth` scopes or who
-  // signed out earlier isn't bounced.
-  credstore.markEngaged();
-
-  const existingToken = credstore.getLicenseToken();
-  const existingOrgs = credstore.getAllowedGitHubOrgs();
-  const hasExplicitScope = credstore.hasExplicitOrgScope();
-  if (
-    existingToken &&
-    !credstore.isLicenseTokenExpired(existingToken) &&
-    (existingOrgs.length > 0 || hasExplicitScope)
-  ) {
-    // Already signed in. An explicit `--org` lets the user re-scope the stored
-    // org list in place (intersection with what's already there) without a full
-    // re-auth — the fast fix for "gh logged me into all my orgs". Re-expanding
-    // beyond the stored set requires signout + signin (which re-fetches).
-    if (cliOrgs.length > 0) {
-      const scope = resolveOrgScope({ cliOrgs });
-      const { orgs: scopedOrgs, excluded, applied } = narrowOrgsToScope(existingOrgs, scope);
-      if (applied && excluded.length) {
-        if (credstore.commitSignin({ jwt: existingToken, orgs: scopedOrgs })) {
-          log(`Re-scoped existing sign-in: keeping [${scopedOrgs.join(", ") || "none"}], excluded [${excluded.join(", ")}]`);
-          say(welcomeBanner(scopedOrgs));
-          return;
-        }
-      }
-    }
-    say(welcomeBanner(existingOrgs));
-    return;
-  }
-  if (existingToken) {
-    log("License expired or orgs missing — refreshing...");
-  }
-
-  const deviceId = credstore.getDeviceId();
-  if (!deviceId) {
-    log("Activation failed: unable to determine device ID.");
-    process.exit(1);
-  }
-
-  log("Trying gh CLI first...");
-  const silentJwt = await licenseActivation.trySilentGhActivate(deviceId, { orgScope: cliOrgs });
-  if (silentJwt) {
+  if (currentSignin()) {
     say(welcomeBanner(credstore.getAllowedGitHubOrgs()));
     return;
   }
 
-  log("gh activation did not succeed; starting GitHub device flow.");
+  const deviceId = credstore.getDeviceId();
+  if (!deviceId) {
+    log("Sign-in failed: unable to determine the device ID.");
+    process.exit(1);
+  }
+
+  // A new intent: clears the sign-out and supersedes any older pending poll.
+  const generation = credstore.markEngaged();
   const device = await requestDeviceCode();
 
   const expiresMin = Math.round(device.expires_in / 60);
   const clipboardCopied = copyToClipboard(device.user_code);
+  // verification_uri_complete already carries the code; it is optional in
+  // RFC 8628, hence the fallback.
+  const verifyUrl = device.verification_uri_complete || device.verification_uri;
 
   say("");
   say("============================================================");
-  say(" GitHub device login required");
+  say(" SkillBench sign-in required");
   say("============================================================");
   say("");
   say(`  1. Copy this code:`);
@@ -327,57 +152,49 @@ async function main() {
     say("       (already copied to your clipboard)");
   }
   say("");
-  say(`  2. Open in your browser and paste it:`);
-  say(`       ${device.verification_uri}`);
+  say(device.verification_uri_complete ? `  2. Open in your browser and confirm:` : `  2. Open in your browser and paste it:`);
+  say(`       ${verifyUrl}`);
   say("");
   say(`  Code expires in ${expiresMin} minutes.`);
   say("============================================================");
   say("");
 
-  // In a real terminal, poll inline with a live spinner so the user sees
-  // progress while they're approving on GitHub. In a non-TTY runner (output
-  // buffered until exit), fall back to a detached background poll and let the
-  // user re-invoke the sign-in flow to confirm.
+  // In a real terminal, poll inline with a spinner. In a non-TTY runner
+  // (output buffered until exit), poll in a detached child and let the user
+  // re-run the sign-in flow to confirm.
   if (process.stdout.isTTY) {
-    await runForegroundPoll(deviceId, device, cliOrgs);
-  } else {
-    spawnBackgroundPoll(deviceId, device.device_code, device.interval || 5, cliOrgs);
-    say("Polling for approval in the background.");
-    say("After approving on GitHub, run the sign-in flow again to confirm.");
-    say(`(background log: ${BACKGROUND_LOG})`);
-  }
-}
-
-async function runForegroundPoll(deviceId, device, cliOrgs) {
-  const stop = startSpinner("Waiting for GitHub approval");
-  try {
-    const githubToken = await pollForToken(device.device_code, device.interval || 5);
-    const licenseJwt = await exchangeForLicense(githubToken, deviceId);
-    const orgs = await fetchUserGitHubOrgs(githubToken);
-    stop();
-    const { committed, scopedOrgs } = scopeAndCommit(licenseJwt, orgs, cliOrgs, { sayFn: say });
-    if (!committed) {
-      say("Sign-in discarded: signed out during issuance.");
-      process.exit(0);
+    const stop = startSpinner("Waiting for approval");
+    try {
+      const token = await completeSignin(deviceId, device.device_code, device.interval || 5, generation);
+      stop();
+      if (!token) {
+        say("Sign-in discarded: signed out or signed in again meanwhile.");
+        process.exit(0);
+      }
+      say(welcomeBanner(credstore.getAllowedGitHubOrgs()));
+    } catch (err) {
+      stop();
+      say(`Sign-in failed: ${err.message}`);
+      process.exit(1);
     }
-    say(welcomeBanner(scopedOrgs));
-  } catch (err) {
-    stop();
-    say(`Sign-in failed: ${err.message}`);
-    process.exit(1);
+  } else {
+    spawnBackgroundPoll(deviceId, device.device_code, device.interval || 5, generation);
+    say("Polling for approval in the background.");
+    say("After approving in your browser, run the sign-in flow again to confirm.");
+    say(`(background log: ${backgroundLog()})`);
   }
 }
 
 if (process.argv[2] === "--background-poll") {
-  const deviceId = process.argv[3];
-  const deviceCode = process.argv[4];
-  const interval = Number(process.argv[5]) || 5;
-  const orgArg = process.argv[6];
-  const cliOrgs = orgArg && orgArg !== "-" ? orgArg.split(/[,\s]+/) : [];
-  runBackgroundPoll(deviceId, deviceCode, interval, cliOrgs);
+  const [deviceId, deviceCode, interval, generation] = process.argv.slice(3);
+  if (!generation) {
+    log("Sign-in intent missing; run the sign-in flow again.");
+    process.exit(1);
+  }
+  runBackgroundPoll(deviceId, deviceCode, Number(interval) || 5, generation);
 } else {
   main().catch((err) => {
-    say(`Activation failed: ${err.message}`);
+    say(`Sign-in failed: ${err.message}`);
     process.exit(1);
   });
 }

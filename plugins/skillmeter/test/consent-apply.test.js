@@ -84,8 +84,10 @@ test("CLI shared OFF revokes known payloads while paused without changing creden
     fs.writeFileSync(source,'');logger.observeTranscriptConsent(source,repo);
     fs.appendFileSync(source,line('authorized'));const chunk=stage();assert.ok(chunk);
     logger.setTelemetryGloballyDisabled(true);
+    // The pause is a shared policy write, so the choice names the revision after it.
+    const revision=String(JSON.parse(fs.readFileSync(policyFile,'utf8')).revision);
     const credentials=path.join(${JSON.stringify(f.state)},'credentials.json'),before=fs.readFileSync(credentials);
-    process.argv=['node','telemetry.js','consent-set','off','--repository',key,'--revision','1'];
+    process.argv=['node','telemetry.js','consent-set','off','--repository',key,'--revision',revision];
     require(${JSON.stringify(path.resolve(__dirname, "../scripts/telemetry.js"))});
     assert.equal(fs.existsSync(chunk),false);
     assert.deepEqual(fs.readFileSync(credentials),before);

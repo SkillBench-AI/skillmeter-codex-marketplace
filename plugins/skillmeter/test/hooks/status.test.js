@@ -9,21 +9,23 @@ const { spawnSync } = require("node:child_process");
 const roots = [];
 after(() => roots.forEach(root => fs.rmSync(root, { recursive: true, force: true })));
 const plugin = path.resolve(__dirname, "../..");
+const { license, writeCredentials, sessionFileIn } = require("../../test-support/plugin.cjs");
 
-function status({ seconds = 3600, credentials = {}, choice = true, malformedChoice = false, queue = false, rejected = false, transcript = false, corrupt = false, blockedCapture = false } = {}) {
+function status({ terminal = null, seconds = 3600, credentials = {}, choice = true, malformedChoice = false, queue = false, rejected = false, transcript = false, corrupt = false, blockedCapture = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-"));
   roots.push(root);
   const repo = path.join(root, "repo"), data = path.join(root, "data"), state = path.join(root, ".skillbench");
   fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
   fs.writeFileSync(path.join(repo, ".git/config"), '[remote "origin"]\nurl = https://github.com/acme/widgets.git\n');
-  fs.mkdirSync(state);
-  const token = `h.${Buffer.from(JSON.stringify({ exp: Math.floor(Date.now() / 1000) + seconds })).toString("base64url")}.s`;
-  const store = JSON.stringify({ device_id: "synthetic-device", hash_salt: "synthetic-salt", license_jwt: token, allowed_github_orgs: ["acme"], ...credentials });
-  const credentialPath = path.join(state, "credentials.json");
-  fs.writeFileSync(credentialPath, store);
+  const token = license({ exp: Math.floor(Date.now() / 1000) + seconds });
+  writeCredentials(root, { device_id: "synthetic-device", hash_salt: "synthetic-salt", license_jwt: token, refresh_token: "synthetic-refresh", ...credentials }, { stateDir: state });
   if (choice !== null || malformedChoice) {
     fs.mkdirSync(path.join(repo, ".codex"));
     fs.writeFileSync(path.join(repo, ".codex/settings.local.json"), malformedChoice ? "invalid json" : JSON.stringify({ skillmeter: { telemetry: choice } }));
+  }
+  if (terminal) {
+    fs.writeFileSync(sessionFileIn(state), JSON.stringify({ ...(terminal === "revoked" ? {} : { license_jwt: token, refresh_token: "synthetic-refresh" }), auth_generation: "g1" }));
+    fs.writeFileSync(path.join(path.dirname(sessionFileIn(state)), "license-status.json"), JSON.stringify({ failures: 0, next_retry_at: null, terminal: { reason: terminal, at: 1 }, generation: "g1" }));
   }
   const logs = path.join(data, "logs");
   if (blockedCapture) {
@@ -55,28 +57,30 @@ global.fetch = () => { throw Error("status must not use network"); };
 const cp = require("child_process");
 cp.spawn = cp.execSync = () => { throw Error("status must not spawn or read Keychain"); };
 `);
+  const files = [path.join(state, "credentials.json"), sessionFileIn(state)];
+  const before = files.map(file => fs.readFileSync(file, "utf8"));
   const result = spawnSync(process.execPath, ["--require", preload, path.join(plugin, "scripts/telemetry.js"), "status"], {
     cwd: repo, encoding: "utf8", timeout: 5000,
     env: { ...process.env, HOME: root, USERPROFILE: root, PLUGIN_DATA: data, PLUGIN_ROOT: plugin,
       SKILLMETER_STATE_DIR: state, SKILLMETER_REPO_SCOPE_ORGS: "", NODE_OPTIONS: "" },
   });
   assert.equal(result.status, 0, result.stderr);
-  assert.equal(fs.readFileSync(credentialPath, "utf8"), store, "status must not modify shared credentials");
+  assert.deepEqual(files.map(file => fs.readFileSync(file, "utf8")), before, "status must not modify credentials");
   return result.stderr;
 }
 
 test("expiry pauses delivery without claiming scoped capture stopped", () => {
   const text = status({ seconds: -60, queue: true });
   assert.match(text, /Capture policy: eligible/);
-  assert.match(text, /Delivery authentication: paused.*refresh/);
+  assert.match(text, /Delivery authentication: paused; license expired, renewal due/);
   assert.match(text, /1 sealed event batch.*0 transcript chunks/);
   assert.match(text, /Unsealed event data: present/);
   assert.doesNotMatch(text, /all events dropped|successfully uploaded/);
 });
 
-test("near-expiry credentials distinguish refresh due from delivery pause", () => {
+test("near-expiry credentials distinguish renewal due from delivery pause", () => {
   const text = status({ seconds: 120 });
-  assert.match(text, /Delivery authentication: refresh due/);
+  assert.match(text, /Delivery authentication: renewal due/);
   assert.doesNotMatch(text, /license expired|all events dropped/);
 });
 
@@ -108,19 +112,27 @@ test("project opt-out is reported independently of valid authentication", () => 
   assert.match(text, /Delivery authentication: license locally valid/);
 });
 
+// Sign-out ends this client's session only; it is not a global pause.
 test("signed-out state does not use a leftover token to report delivery readiness", () => {
-  const text = status({ credentials: { signed_out: true, telemetry_disabled: true, allowed_github_orgs: [] } });
-  assert.match(text, /Capture policy: globally disabled/);
+  const text = status({ credentials: { signed_out: true } });
+  assert.match(text, /Capture policy: excluded \(not_activated\)/);
   assert.match(text, /Delivery authentication: signed out/);
 });
 
-test("missing credentials require sign-in without running migration", () => {
-  const text = status({ credentials: { device_id: null, hash_salt: null, license_jwt: null, allowed_github_orgs: [] } });
-  assert.match(text, /Delivery authentication: no license/);
+test("missing credentials require sign-in", () => {
+  const text = status({ credentials: { device_id: null, hash_salt: null, license_jwt: null, refresh_token: null } });
+  assert.match(text, /Delivery authentication: not signed in; run the signin skill/);
 });
 
 test("server rejection overrides a locally unexpired license", () => {
-  assert.match(status({ rejected: true }), /Delivery authentication: paused; server rejected/);
+  assert.match(status({ rejected: true }), /Delivery authentication: paused; server rejected the license, renewal due/);
+});
+
+for (const [reason, expected] of [
+  ["reactivation_required", /Delivery authentication: the sign-in session ended; run the signin skill/],
+  ["revoked", /Delivery authentication: the workspace no longer licenses you/],
+]) test(`a terminal renewal (${reason}) asks for sign-in`, () => {
+  assert.match(status({ terminal: reason }), expected);
 });
 
 test("status includes pending transcript chunks alongside event batches", () => {
@@ -147,7 +159,7 @@ for (const [name, options] of [
 }
 
 test("explicit consent does not override organization scope", () => {
-  const text = status({ credentials: { allowed_github_orgs: ["other-org"] } });
+  const text = status({ credentials: { license_jwt: license({ orgs: ["other-org"] }) } });
   assert.match(text, /Capture policy: excluded/);
   assert.doesNotMatch(text, /Capture policy: eligible/);
 });

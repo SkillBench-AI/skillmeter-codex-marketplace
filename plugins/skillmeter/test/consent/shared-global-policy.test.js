@@ -67,13 +67,16 @@ test("an unrelated policy revision does not exclude an authorized interval", t =
   `);
 });
 
-test("CLI reports shared pause and cannot claim enable while it remains OFF", t => {
-  const f=fixture(t); const raw=JSON.stringify(f.policy(false)); fs.writeFileSync(f.policyFile,raw);
-  assert.match(f.cli(['status']).stderr,/shared policy.*paused/i);
-  const enabled=f.cli(['enable','--global']).stderr;
-  assert.match(enabled,/shared policy.*paused/i);
-  assert.doesNotMatch(enabled,/uploads enabled/);
-  assert.equal(fs.readFileSync(f.policyFile,'utf8'),raw);
+// The one global pause is the shared policy's: another client's pause shows in
+// status, and enable --global resumes it for every client.
+test("CLI reports the shared pause and enable --global resumes it for every client", t => {
+  const f=fixture(t); fs.writeFileSync(f.policyFile,JSON.stringify(f.policy(false)));
+  assert.match(f.cli(['status']).stderr,/globally paused for every SkillMeter client/i);
+  assert.match(f.cli(['enable','--global']).stderr,/resumed for every SkillMeter client/);
+  const policy=JSON.parse(fs.readFileSync(f.policyFile,'utf8'));
+  assert.equal(policy.global.enabled,true);
+  assert.equal(policy.revision,2);
+  assert.deepEqual([policy.organizations,policy.repositories],[f.policy().organizations,f.policy().repositories]);
 });
 
 test("CLI identifies unreadable or invalid shared policy", t => {

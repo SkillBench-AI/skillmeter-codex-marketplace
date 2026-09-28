@@ -32,6 +32,7 @@ const {
 const fs = require("fs");
 const path = require("path");
 const { isJwtExpired } = require("./lib/jwt");
+const licenseActivation = require("./lib/license-activation");
 const { inventory } = require("./transcript_inventory");
 const { sharedPolicyFile } = require("./lib/shared-telemetry-policy");
 
@@ -42,12 +43,30 @@ const isGlobal = process.argv.slice(3).includes("--global");
 
 function authenticationLine() {
   if (getSignedOut()) return "signed out; run the signin skill";
+  const terminal = licenseActivation.readStatus().terminal;
+  if (terminal?.reason === licenseActivation.TERMINAL.REVOKED) {
+    return "the workspace no longer licenses you; run the signin skill with a workspace that does";
+  }
   const token = getLicenseToken();
-  if (!token) return "no license; run the signin skill";
-  if (isLicenseRejected()) return "paused; server rejected license, refresh required";
-  if (isJwtExpired(token)) return "paused; license expired or invalid, refresh required";
-  if (isLicenseTokenExpired(token)) return "refresh due; license still within the upload validity window";
+  if (!token) return "not signed in; run the signin skill";
+  if (terminal) return "the sign-in session ended; run the signin skill";
+  if (isLicenseRejected()) return "paused; server rejected the license, renewal due";
+  if (isJwtExpired(token)) return "paused; license expired, renewal due";
+  if (isLicenseTokenExpired(token)) return "renewal due; license still within the upload validity window";
   return "license locally valid; server acceptance not verified";
+}
+
+// The global pause is the shared policy's; a concurrent change is reported
+// rather than overwritten.
+function setGlobalPause(paused) {
+  try {
+    setTelemetryGloballyDisabled(paused);
+    return true;
+  } catch (error) {
+    process.stderr.write(`SkillMeter: ${error.code || "PAUSE_UPDATE_FAILED"}: ${error.message}\n`);
+    process.exitCode = 1;
+    return false;
+  }
 }
 
 function sharedPauseLine() {
@@ -55,7 +74,7 @@ function sharedPauseLine() {
   if (policy.reason === "missing") return "paused; previously observed shared policy is missing; restore it before capture or delivery";
   if (policy.errorCode === "POLICY_OBSERVATION_FAILED") return "paused; shared policy observation unavailable; check client data permissions";
   if (policy.reason === "invalid") return "shared policy invalid or unreadable; capture and delivery paused; repair the policy file";
-  if (policy.disabled) return "shared policy paused; resume global telemetry through the shared policy controls";
+  if (policy.disabled) return "globally paused for every SkillMeter client on this machine; resume with enable --global";
   return null;
 }
 
@@ -182,9 +201,9 @@ switch (action) {
   }
   case "enable":
     if (isGlobal) {
-      setTelemetryGloballyDisabled(false);
+      if (!setGlobalPause(false)) break;
       const shared = sharedPauseLine();
-      process.stderr.write(shared ? `SkillMeter: Local pause cleared; ${shared}\n` : "SkillMeter: Global telemetry uploads enabled for this machine\n");
+      process.stderr.write(shared ? `SkillMeter: Global pause cleared, but ${shared}\n` : "SkillMeter: Telemetry resumed for every SkillMeter client on this machine\n");
     } else {
       if (!saveRepositoryChoice(true)) break;
       process.stderr.write(`SkillMeter: Repository choice saved for ${projectRoot}\n`);
@@ -192,26 +211,21 @@ switch (action) {
       if (getTelemetryOptIn(cwd) !== true) {
         process.stderr.write(`SkillMeter: Capture remains blocked: ${capturePolicyLine()}\n`);
       }
-      if (getTelemetryGloballyDisabled()) {
-        process.stderr.write(
-          sharedPauseLine() ? `SkillMeter: ${sharedPauseLine()}\n` :
-          "SkillMeter: Global telemetry is still disabled; run with --global to resume uploads\n"
-        );
-      }
+      if (getTelemetryGloballyDisabled()) process.stderr.write(`SkillMeter: ${sharedPauseLine()}\n`);
     }
     break;
   case "disable":
     if (isGlobal) {
-      setTelemetryGloballyDisabled(true);
-      process.stderr.write("SkillMeter: Global telemetry uploads disabled for this machine\n");
-      process.stderr.write("SkillMeter: Pending uploads will remain queued until global telemetry is enabled\n");
+      if (!setGlobalPause(true)) break;
+      process.stderr.write("SkillMeter: Telemetry paused for every SkillMeter client on this machine\n");
+      process.stderr.write("SkillMeter: Pending uploads will remain queued until telemetry is resumed\n");
     } else {
       if (!saveRepositoryChoice(false)) break;
       process.stderr.write(`SkillMeter: New capture disabled for ${projectRoot}; queued repository payloads revoked (in-flight requests may finish)\n`);
     }
     break;
   case "status": {
-    // Status must not migrate credentials from Keychain or change shared state.
+    // Status reads state only; it never changes the session or shared state.
     refreshFromDisk();
     const lines = [
       `Capture policy: ${capturePolicyLine()}`,

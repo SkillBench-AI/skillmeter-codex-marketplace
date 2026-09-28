@@ -1,28 +1,35 @@
 #!/usr/bin/env node
 /**
- * Remove the shared license and allowed organizations, pause uploads and block
- * silent reactivation. Preserve device ID and hash salt for the next sign-in.
+ * Sign out of this plugin: end its session locally, delete event batches that
+ * were recorded but not sent, then revoke the sign-in service's refresh token
+ * (ADR 005). The device identity and consent choices are kept. Other SkillMeter
+ * clients on the machine stay signed in.
  * Usage: node scripts/signout.js.
  */
 
 const credstore = require("./credstore.js");
+const broker = require("./lib/broker");
+const { purgeEventLogs } = require("./logger.js");
 
-function main() {
+async function main() {
   const hadLicense = credstore.getLicenseToken() !== null;
+  const { refreshToken } = credstore.recoverySnapshot();
 
+  // Local first: sign-out takes effect at once, whatever the network does.
   credstore.signOut();
+  purgeEventLogs();
 
-  if (hadLicense) {
-    process.stdout.write("SkillMeter: signed out and global telemetry uploads disabled.\n");
-    process.stdout.write("SkillMeter: run the SkillMeter sign-in flow to re-enable uploads.\n");
-  } else {
-    process.stdout.write("SkillMeter: already signed out; global telemetry uploads disabled.\n");
+  const revoked = refreshToken ? await broker.revoke(refreshToken) : false;
+
+  process.stdout.write(hadLicense
+    ? "SkillMeter: signed out. Run the SkillMeter sign-in flow to record again.\n"
+    : "SkillMeter: already signed out.\n");
+  if (refreshToken && !revoked) {
+    process.stdout.write("SkillMeter: could not reach the sign-in service to end the session there; it expires on its own.\n");
   }
 }
 
-try {
-  main();
-} catch (err) {
+main().catch(err => {
   process.stderr.write(`Sign-out failed: ${err.message}\n`);
   process.exit(1);
-}
+});

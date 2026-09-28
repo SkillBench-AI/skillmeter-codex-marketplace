@@ -1,7 +1,6 @@
 "use strict";
 
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 
 // ENOENT can mean a missing file or an unresolved link in any parent path.
@@ -24,9 +23,7 @@ function policyPathIsAbsent(file) {
 }
 
 function sharedPolicyFile() {
-  const stateDir = process.env.SKILLMETER_STATE_DIR ||
-    path.join(os.homedir(), process.env.SKILLMETER_ENV === "dev" ? ".skillbench-dev" : ".skillbench");
-  return path.join(stateDir, "telemetry-policy.json");
+  return path.join(require("./config").stateDir(), "telemetry-policy.json");
 }
 
 // Unknown records hold delivery; explicit OFF revokes. Only acknowledged

@@ -22,8 +22,9 @@ const {
   isJwtExpired,
   decodeJwtPayload,
 } = require("./lib/jwt");
-const { trySilentGhActivate, refreshExpiredJwt } = require("./lib/license-activation");
+const licenseActivation = require("./lib/license-activation");
 const { resolveOrgScope } = require("./lib/org-scope");
+const { sharedPolicyFile } = require("./lib/shared-telemetry-policy");
 const canonicalScope = require("./lib/repo-scope");
 
 // Codex sets PLUGIN_ROOT for plugin-bundled hooks and also exports
@@ -83,73 +84,66 @@ const PLUGIN_VERSION = (() => {
   }
 })();
 
-function getDeviceId() {
-  return credstore.getDeviceId(LOG_DIR);
-}
+function getDeviceId() { return credstore.getDeviceId(); }
+function getOrCreateHashSalt() { return credstore.getOrCreateHashSalt(); }
+function getLicenseToken() { return credstore.getLicenseToken(); }
+// The upload path's name for the same read: the session is read from disk on
+// every call, so a long-lived drain sees another process renew or sign out.
+function getLicenseTokenUncached() { return credstore.getLicenseToken(); }
 
-function getOrCreateHashSalt() {
-  return credstore.getOrCreateHashSalt(LOG_DIR);
-}
-
-function getLicenseToken() {
-  return credstore.getLicenseToken(LOG_DIR);
-}
-
-// Uncached read for the upload path. The retry daemon can outlive several
-// sign-ins, so it must see a token another process refreshed rather than the
-// snapshot credstore cached when this process started.
-function getLicenseTokenUncached() {
-  return credstore.getLicenseTokenUncached(LOG_DIR);
-}
-
+// The one global pause is the shared policy's (ADR 004); it pauses every
+// SkillMeter client on the machine.
 function getTelemetryGloballyDisabled() {
-  return credstore.getTelemetryDisabled() || readSharedGlobalPolicy().disabled;
+  return readSharedGlobalPolicy().disabled;
 }
 
 function setTelemetryGloballyDisabled(disabled) {
   // Record even an off/on cycle with no intervening hook in this plugin.
   fs.mkdirSync(TRANSCRIPT_CAPTURES_DIR, { recursive: true, mode: 0o700 });
   transcriptQueue.writeDurable(path.join(TRANSCRIPT_CAPTURES_DIR, "global-boundary.json"), JSON.stringify(crypto.randomUUID()));
-  const result = credstore.setTelemetryDisabled(disabled);
+  const { createSharedPolicyStore } = require("./lib/shared-policy-store");
+  const store = createSharedPolicyStore({ file: sharedPolicyFile(), observedFile: path.join(LOG_DIR, "shared-policy-observed") });
+  const current = store.readPolicy();
+  const result = store.setGlobalEnabled(!disabled, { expectedRevision: current?.revision ?? null });
   observeKnownTranscriptConsent();
   return result;
 }
 
-// License recovery tries /refresh before GitHub activation. SessionStart and
-// background drains call this helper; failures leave queued data for later retry.
-
+// The one renewal path (ADR 005): the drains and the retry sweep call this
+// before sending. A rejection by the collector forces a renewal of a license
+// that still looks fresh locally. Failures leave queued data for later.
 async function tryRefreshLicense(deviceId) {
-  // Preserve legacy migration, then snapshot the shared file rather than the
-  // token this daemon cached before another process signed in or out.
-  getLicenseTokenUncached();
-  const expected = credstore.recoverySnapshot();
-  if (expected.signedOut || !deviceId || expected.deviceId !== deviceId) return null;
-  const current = expected.token;
-  // Skip refresh for healthy tokens unless ingest has rejected the credential.
-  if (current && !credstore.isLicenseTokenExpired(current) && !isLicenseRejected()) {
-    return current;
-  }
-  // /refresh first when we have a token to rotate. refreshExpiredJwt returns
-  // null on 410 (sliding window), 404 (endpoint not deployed), 401 (bad
-  // signature), or any network/parse error — falling through to gh in all cases.
-  if (current) {
-    const fresh = await refreshExpiredJwt(current, deviceId, expected);
-    if (fresh) {
-      clearLicenseRejected();
-      return fresh;
-    }
-  }
+  const before = credstore.getLicenseToken();
+  const token = await licenseActivation.ensureFreshLicense(deviceId, {
+    force: isLicenseRejected(),
+    onRevoked: () => purgeEventLogs(),
+  });
+  if (token && token !== before) clearLicenseRejected();
+  return token;
+}
 
-  // A discarded refresh must not fall through to activation and undo the
-  // newer sign-in, token rotation, or sign-out that caused the discard.
-  if (!credstore.isRecoveryCurrent(expected)) return null;
-  try {
-    const activated = await trySilentGhActivate(deviceId, { expected });
-    if (activated) clearLicenseRejected();
-    return activated;
-  } catch {
-    return null;
+// Event batches are not bound to the license they were recorded under, so a
+// session that ends for good (sign-out, or a workspace that no longer licenses
+// the user) deletes them rather than sending them under the next sign-in.
+// Transcripts need no purge: their queue owner includes the license's tenant
+// and user, and delivery refuses a mismatch. Batches locked by an upload in
+// flight are left; returns false when any were.
+function purgeEventLogs() {
+  let complete = true;
+  const names = fs.existsSync(LOG_DIR) ? fs.readdirSync(LOG_DIR) : [];
+  for (const name of names) {
+    if (!/^events\.jsonl(?:\.\d+)?(?:\.sent)?$/.test(name)) continue;
+    const file = path.join(LOG_DIR, name);
+    const batch = file.replace(/\.sent$/, "");
+    const release = transcriptQueue.acquireLock(`${batch}.lock`);
+    if (!release) { complete = false; continue; }
+    try {
+      fs.rmSync(file, { force: true });
+      clearBatchMeta(batch);
+    } catch { complete = false; }
+    finally { release(); }
   }
+  return complete;
 }
 
 // Per-cwd settings
@@ -196,16 +190,16 @@ function findGitRoot(startPath) {
   }
 }
 
-// Intersect configured repository scope with stored GitHub identities.
-// Unconfigured scope keeps all stored identities. Resolution is shared with
-// sign-in through lib/org-scope (environment before project settings).
+// Configured repository filters (environment before project settings). They
+// can only narrow the license's organizations.
 function getRepoScopeOrgFilter(cwd) {
   return resolveOrgScope({ cwd });
 }
 
-// Allow GitHub repositories owned by a stored identity, optionally narrowed by
-// configured filters. Missing identities, non-Git directories, non-GitHub remotes
-// and other owners are excluded.
+// Allow GitHub repositories owned by an organization the license covers (its
+// `orgs` claim), optionally narrowed by configured filters. No license, a
+// license covering none, non-Git directories, non-GitHub remotes and other
+// owners are excluded.
 function getRepoScopeDecision(cwd) {
   const signedInOrgs = credstore.getAllowedGitHubOrgs();
   if (signedInOrgs.length === 0) {
@@ -580,10 +574,10 @@ function transcriptScope(cwd, token, observeOnly = false) {
   const salt = getOrCreateHashSalt(), deviceId = getDeviceId();
   if (!salt || !deviceId) return null;
   const claims = decodeJwtPayload(token);
-  const identity = claims.broker_sub || claims.github_id || claims.user_alt_id;
-  // Broker licences identify the user with broker_sub; sub names the tenant.
-  // Without a stable principal, token rotation cannot reuse this queue. Never
-  // deliver one principal's queued transcript as another user.
+  // A broker license (ADR 005) names the user in broker_sub and the tenant in
+  // sub. Without a stable principal, token rotation cannot reuse this queue.
+  // Never deliver one principal's queued transcript as another user.
+  const identity = claims.broker_sub;
   const owner = transcriptQueue.hmac(salt, JSON.stringify([claims.iss, claims.aud, claims.sub, identity || token]));
   let route;
   try { route = repositoryQueue.register(cwd, decision.repoRoot); }
@@ -1841,6 +1835,7 @@ module.exports = {
   getTelemetryGloballyDisabled,
   setTelemetryGloballyDisabled,
   tryRefreshLicense,
+  purgeEventLogs,
   hashHmac,
   sanitizeToolData,
   getTimestamp,

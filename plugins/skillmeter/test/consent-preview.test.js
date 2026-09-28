@@ -5,6 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { fixture } = require("../../../test-support/shared-policy.cjs");
+const { sessionFileIn } = require("../test-support/plugin.cjs");
 const repoKey = "github.com/acme/widgets";
 const preview = f => JSON.parse(f.cli(["consent-preview", "--json"]).stdout);
 const codes = result => result.notices.map(notice => notice.code);
@@ -165,7 +166,7 @@ test("preview leaves queued data intact and records only the client observation"
 for (const raw of ['{"skillmeter":{"telemetry":false}}', '{']) {
   test(`signed-out preview still shows local restrictions: ${raw}`, t => {
     const f = fixture(t);
-    fs.writeFileSync(path.join(f.state, "credentials.json"), '{"signed_out":true}');
+    fs.writeFileSync(sessionFileIn(f.state), '{"signed_out":true}');
     fs.writeFileSync(path.join(f.repo, ".codex/settings.local.json"), raw);
     const result = preview(f);
     assert.equal(result.repository, null);

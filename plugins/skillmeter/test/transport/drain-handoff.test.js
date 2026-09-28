@@ -21,9 +21,9 @@ function preloadFixture() {
     if (!fs.existsSync(path.join(root, "injected"))) {
       fs.writeFileSync(path.join(root, "injected"), "");
       if (process.env.TEST_INJECT === "paused") {
-        const file = path.join(root, ".skillbench/credentials.json");
-        const credentials = JSON.parse(fs.readFileSync(file, "utf8"));
-        fs.writeFileSync(file, JSON.stringify({ ...credentials, telemetry_disabled: true }));
+        // Another client pauses every SkillMeter client through the shared policy.
+        fs.writeFileSync(path.join(root, ".skillbench/telemetry-policy.json"), JSON.stringify({ schema_version: 1, revision: 1,
+          global: { enabled: false, decided_at: 1, source: "user" }, organizations: {}, repositories: {} }));
       }
       fs.appendFileSync(process.env.TEST_SOURCE, JSON.stringify({ type: "response_item",
         payload: { type: "message", role: "user", content: "final overlapping turn" } }) + "\n");
