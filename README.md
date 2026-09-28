@@ -56,11 +56,14 @@ Git marketplaces; it does not pull a locally registered repository.
 
 ## Internal channel
 
-SkillBench developers can dogfood the latest `main` against the dev environment.
-The `internal` branch is rebuilt from every `main` commit that passes CI; it has
-the same code, defaults to the dev sign-in service, license server and
-`~/.skillbench-dev` state, and is published as the `skillbench-internal`
-marketplace so its installation and queues stay apart from the stable one.
+SkillBench developers can dogfood the code under development against the dev
+environment. Development happens on `next`; `main` moves only at releases. The
+`internal` branch is rebuilt from every `next` commit that passes CI. It is
+versioned as a prerelease of the next patch (for example `0.12.4-internal.37`,
+which sorts after `0.12.3` and before `0.12.4`), defaults to the dev sign-in
+service, license server and `~/.skillbench-dev` state, and is published as the
+`skillbench-internal` marketplace so its installation and queues stay apart from
+the stable one.
 
 ```sh
 codex plugin marketplace add SkillBench-AI/skillmeter-codex-marketplace --ref internal
