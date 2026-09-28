@@ -18,6 +18,15 @@ commands use the installed version rather than an older cached copy:
 export PLUGIN_ROOT="/absolute/path/to/installed/skillmeter"
 ```
 
+Commands use the same local queue as hooks: `PLUGIN_DATA` when set, otherwise
+the Codex data directory for that installation
+(`~/.codex/plugins/data/skillmeter-<marketplace>`). Queues are never kept
+inside the versioned installation, which an update replaces. From a source
+checkout, set `PLUGIN_DATA` explicitly; without it the command stops with
+`persistent-plugin-data-unavailable`. If an older installation still holds
+queued events, commands stop with `legacy-install-data-recovery-required`
+until that data is moved or removed.
+
 Run project controls from the repository you want to configure:
 
 | Task | Command |
