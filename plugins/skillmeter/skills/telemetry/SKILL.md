@@ -3,6 +3,10 @@ name: telemetry
 description: Show SkillMeter collection status for the current repository, record Codex organization and repository consent, or restrict, pause and resume Codex telemetry.
 ---
 
+`<plugin-root>` in the commands below is this plugin's installed root: the
+absolute path of the directory two levels above this `SKILL.md`. Substitute it
+yourself; `$PLUGIN_ROOT` is not set in the shell that runs skill commands.
+
 Run these controls from the repository the user is asking about. The script
 resolves the nearest Git root from the working directory and takes no path
 argument. `status`, `enable` and `disable` print to stderr; `consent-preview` and
@@ -15,7 +19,7 @@ keeps its own consent choices and is not affected.
 ## Status
 
 ```sh
-node "$PLUGIN_ROOT/scripts/telemetry.js" status
+node "<plugin-root>/scripts/telemetry.js" status
 ```
 
 `status` is read-only and changes no credentials or settings. It prints a short
@@ -36,7 +40,7 @@ README) before asking.
 1. Preview. `consent-preview` is read-only.
 
    ```sh
-   node "$PLUGIN_ROOT/scripts/telemetry.js" consent-preview --json
+   node "<plugin-root>/scripts/telemetry.js" consent-preview --json
    ```
 
    Tell the user, in plain words: the `repository` key, the `sharedRevision`,
@@ -71,10 +75,10 @@ README) before asking.
    the revision, so run the preview again before the repository step.
 
    ```sh
-   node "$PLUGIN_ROOT/scripts/telemetry.js" consent-set on --organization ORG --revision REVISION --acknowledge-machine-scope
-   node "$PLUGIN_ROOT/scripts/telemetry.js" consent-set on --repository KEY --revision REVISION --acknowledge-machine-scope
-   node "$PLUGIN_ROOT/scripts/telemetry.js" consent-set off --repository KEY --revision REVISION
-   node "$PLUGIN_ROOT/scripts/telemetry.js" consent-set off --organization ORG --revision REVISION
+   node "<plugin-root>/scripts/telemetry.js" consent-set on --organization ORG --revision REVISION --acknowledge-machine-scope
+   node "<plugin-root>/scripts/telemetry.js" consent-set on --repository KEY --revision REVISION --acknowledge-machine-scope
+   node "<plugin-root>/scripts/telemetry.js" consent-set off --repository KEY --revision REVISION
+   node "<plugin-root>/scripts/telemetry.js" consent-set off --organization ORG --revision REVISION
    ```
 
    Each command prints a short result card. Show it verbatim in a fenced code
@@ -105,8 +109,8 @@ still apply.
 ## Restrict this checkout
 
 ```sh
-node "$PLUGIN_ROOT/scripts/telemetry.js" disable
-node "$PLUGIN_ROOT/scripts/telemetry.js" enable
+node "<plugin-root>/scripts/telemetry.js" disable
+node "<plugin-root>/scripts/telemetry.js" enable
 ```
 
 `disable` writes a local OFF to this checkout's `.codex/settings.local.json`,
@@ -119,8 +123,8 @@ removed payloads.
 ## Pause or resume all Codex collection on this machine
 
 ```sh
-node "$PLUGIN_ROOT/scripts/telemetry.js" disable --global
-node "$PLUGIN_ROOT/scripts/telemetry.js" enable --global
+node "<plugin-root>/scripts/telemetry.js" disable --global
+node "<plugin-root>/scripts/telemetry.js" enable --global
 ```
 
 The global pause stops Codex capture and uploads for every repository and

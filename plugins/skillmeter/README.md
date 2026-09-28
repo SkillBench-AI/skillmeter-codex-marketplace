@@ -19,7 +19,9 @@ export PLUGIN_ROOT="/absolute/path/to/installed/skillmeter"
 ```
 
 Commands use the same local queue as hooks: `PLUGIN_DATA` when set, otherwise
-the Codex data directory for that installation
+the directory Codex last gave this installation's hooks (recorded in
+`~/.skillbench/clients/codex/plugin-data.json`), otherwise the Codex data
+directory for that installation
 (`~/.codex/plugins/data/skillmeter-<marketplace>`, created with owner-only access if
 Codex has not made it yet). Queues are never kept
 inside the versioned installation, which an update replaces. From a source
