@@ -8,9 +8,18 @@ let version = "";
 try { version = require(path.join(__dirname, "..", "..", ".codex-plugin", "plugin.json")).version || ""; }
 catch { /* An unreadable manifest only drops the version from the title. */ }
 
+// Names a non-default channel or environment so the destination is visible.
+function channelLabel() {
+  const config = require("./config");
+  const { channel } = config.channel();
+  const env = config.environment();
+  if (channel !== "stable") return ` · ${channel} (${env})`;
+  return env === "prod" ? "" : ` · ${env}`;
+}
+
 // Content-sized card with a titled top border, as in the Claude plugin.
 function card(lines) {
-  const title = version ? `SkillMeter v${version}` : "SkillMeter";
+  const title = `${version ? `SkillMeter v${version}` : "SkillMeter"}${channelLabel()}`;
   const bodyWidth = Math.max([...title].length, ...lines.map(line => [...line].length));
   const innerWidth = bodyWidth + 4;
   const titleRule = `─ ${title} `;

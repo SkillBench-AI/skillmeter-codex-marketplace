@@ -63,6 +63,13 @@ as the model for length and tone.
 Keep internal coordination and rollout history in Linear. Public notes should
 contain only information users need to update and use the plugin.
 
+## Internal channel
+
+No release step is needed for the internal channel. The `Internal channel`
+workflow rebuilds the `internal` branch after CI passes on each `main` push,
+using `.github/scripts/make-internal-channel.mjs`. Never commit
+`plugins/skillmeter/channel.json` to `main`; a test fails if it is present.
+
 ## Checks
 
 `npm run check` runs version validation, manifest validation and Node tests.
