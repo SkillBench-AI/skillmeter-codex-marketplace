@@ -122,7 +122,7 @@ test("acknowledged hook events are delivered and a retry rechecks revocation", t
 
 test("status distinguishes acknowledged consent from a missing acknowledgement", t => {
   const f=fixture(t);f.run(shared);
-  assert.match(f.cli(['status']).stderr,/eligible for this repository/);
+  assert.match(f.cli(['status']).stderr,/\[ TELEMETRY ON \]/);
   f.run("delete policy.repositories['github.com/acme/widgets'].consent_version;writePolicy(policy);");
   assert.match(f.cli(['status']).stderr,/scope acknowledgement/);
 });
