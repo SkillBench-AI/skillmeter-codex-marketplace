@@ -1,13 +1,13 @@
 "use strict";
 const { createSharedPolicyStore } = require("./shared-policy-store");
-const { sharedPolicyFile, evaluateSharedRepositoryPolicy: evaluateRepository } = require("./shared-telemetry-policy");
+const { consentPolicyFile, evaluateSharedRepositoryPolicy: evaluateRepository } = require("./shared-telemetry-policy");
 
 // Runtime and controls use the same strict reader and durable client marker.
 // No policy repair or default grant occurs on read.
 function createSharedConsentReader(observedFile) {
   function readSharedGlobalPolicy() {
     try {
-      const policy = createSharedPolicyStore({ file: sharedPolicyFile(), observedFile }).readPolicy();
+      const policy = createSharedPolicyStore({ file: consentPolicyFile(), observedFile }).readPolicy();
       if (!policy) return { disabled: false, reason: "absent", boundary: null };
       return {
         policy, disabled: !policy.global.enabled,

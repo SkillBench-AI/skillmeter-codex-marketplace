@@ -21,9 +21,11 @@ function preloadFixture() {
     if (!fs.existsSync(path.join(root, "injected"))) {
       fs.writeFileSync(path.join(root, "injected"), "");
       if (process.env.TEST_INJECT === "paused") {
-        // Another client pauses every SkillMeter client through the shared policy.
-        fs.writeFileSync(path.join(root, ".skillbench/telemetry-policy.json"), JSON.stringify({ schema_version: 1, revision: 1,
-          global: { enabled: false, decided_at: 1, source: "user" }, organizations: {}, repositories: {} }));
+        // Another process pauses Codex in its consent record; the grants stay.
+        const file = path.join(root, ".skillbench/clients/codex/telemetry-policy.json");
+        const policy = JSON.parse(fs.readFileSync(file, "utf8"));
+        policy.global = { enabled: false, decided_at: 2, source: "user" }; policy.revision++;
+        fs.writeFileSync(file, JSON.stringify(policy));
       }
       fs.appendFileSync(process.env.TEST_SOURCE, JSON.stringify({ type: "response_item",
         payload: { type: "message", role: "user", content: "final overlapping turn" } }) + "\n");

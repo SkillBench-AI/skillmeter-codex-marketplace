@@ -2,7 +2,7 @@
 const { buildConsentPreview } = require("./shared-consent-preview");
 const error = (code, message) => Object.assign(new Error(message), { code });
 
-const CONSENT_SET_USAGE = "Usage: consent-set <on|off> --repository github.com/org/repo --revision <number|absent> [--acknowledge-machine-scope]";
+const CONSENT_SET_USAGE = "Usage: consent-set <on|off> (--organization org | --repository github.com/org/repo) --revision <number|absent> [--acknowledge-machine-scope]";
 
 function parseConsentChoiceArgs(args) {
   if (args.length === 1 && args[0] === "--help") return { help: true };
@@ -16,41 +16,66 @@ function parseConsentChoiceArgs(args) {
     seen.add(arg);
     if (arg === "--acknowledge-machine-scope") options.acknowledged = true;
     else if (arg === "--repository") options.repository = args[++i];
+    else if (arg === "--organization") options.organization = args[++i];
     else if (arg === "--revision") {
       const value = args[++i];
       if (value !== "absent" && !/^(0|[1-9][0-9]*)$/.test(value || "")) fail();
       options.expectedRevision = value === "absent" ? null : Number(value);
     } else fail();
   }
-  if (!options.repository || !seen.has("--revision")) fail();
+  if (!options.repository === !options.organization || !seen.has("--revision")) fail();
   return options;
 }
 
-function applyRepositoryConsent({ cwd, scope, store, repository, expectedRevision, enabled, acknowledged, onCommitted }) {
+function checkChoice(enabled, expectedRevision) {
   if (typeof enabled !== "boolean") throw error("CHOICE_REQUIRED", "Choose ON or OFF explicitly; a local choice is never migrated automatically.");
   if (expectedRevision !== null && (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0)) {
-    throw error("EXPECTED_REVISION_REQUIRED", "Run consent-preview and supply its shared revision, or absent for first use.");
+    throw error("EXPECTED_REVISION_REQUIRED", "Run consent-preview and supply its revision, or absent for first use.");
   }
+}
+
+function checkRevision(store, expectedRevision) {
+  const policy = store.readPolicy();
+  if ((policy?.revision ?? null) !== expectedRevision) throw error("STALE_POLICY", "Consent record changed; run consent-preview and confirm the current choices again.");
+  return policy;
+}
+
+// The organization must be one the license covers after any configured
+// narrowing; consent for an organization outside that scope would never apply.
+function applyOrganizationConsent({ store, organization, allowedOrgs, expectedRevision, enabled, acknowledged, onCommitted }) {
+  checkChoice(enabled, expectedRevision);
+  const org = typeof organization === "string" ? organization.trim().toLowerCase() : "";
+  if (!org || !allowedOrgs.includes(org)) {
+    throw error("ORGANIZATION_UNAVAILABLE", "This organization is not covered by the current license and scope settings; check sign-in and sk-jwt.");
+  }
+  if (enabled && acknowledged !== true) {
+    throw error("ACKNOWLEDGEMENT_REQUIRED", "ON lets Codex on this machine capture repositories of this organization that are also enabled. Review consent-preview, then pass --acknowledge-machine-scope to confirm.");
+  }
+  checkRevision(store, expectedRevision);
+  return store.setOrganizationConsent(org, enabled, { expectedRevision, acknowledged, onCommitted });
+}
+
+function applyRepositoryConsent({ cwd, scope, store, repository, expectedRevision, enabled, acknowledged, onCommitted }) {
+  checkChoice(enabled, expectedRevision);
   if (!scope.allowed || !scope.repoKey) throw error("REPOSITORY_UNAVAILABLE", "No allowed canonical repository is available; check sign-in, organization scope and Git remotes.");
   if (repository !== scope.repoKey) throw error("REPOSITORY_CHANGED", "Repository differs from the preview; run consent-preview here and confirm again.");
   if (enabled && acknowledged !== true) {
-    throw error("ACKNOWLEDGEMENT_REQUIRED", "ON authorizes every supported SkillMeter client and every clone or worktree of this repository on this machine. Review consent-preview, then pass --acknowledge-machine-scope to confirm.");
+    throw error("ACKNOWLEDGEMENT_REQUIRED", "ON lets Codex on this machine capture every clone or worktree of this repository. Review consent-preview, then pass --acknowledge-machine-scope to confirm.");
   }
-  const policy = store.readPolicy();
-  if ((policy?.revision ?? null) !== expectedRevision) throw error("STALE_POLICY", "Shared policy changed; run consent-preview and confirm the current choices again.");
+  const policy = checkRevision(store, expectedRevision);
   if (enabled) {
     const preview = buildConsentPreview({ cwd, scope, policy });
     if (preview.localChoices.some(choice => ["off", "invalid"].includes(choice.choice))) {
-      throw error("LOCAL_CONSENT_CONFLICT", "Local OFF or invalid settings remain a restriction. Inspect consent-preview and resolve them explicitly before enabling shared consent.");
+      throw error("LOCAL_CONSENT_CONFLICT", "Local OFF or invalid settings remain a restriction. Inspect consent-preview and resolve them explicitly before enabling this repository.");
     }
     const org = repository.split("/")[1];
     const choice = policy?.organizations?.[org];
     if (choice?.enabled !== true || choice.consent_version !== 2) {
-      throw error("ORGANIZATION_CONSENT_REQUIRED", "Machine-wide organization authorization is required first. This command does not authorize organizations or upgrade their legacy choices.");
+      throw error("ORGANIZATION_CONSENT_REQUIRED", `Enable the organization first: consent-set on --organization ${org} --revision <revision> --acknowledge-machine-scope.`);
     }
   }
-  // The store checks the revision again under the shared lock. Local settings
-  // remain untouched, so a concurrent local OFF continues to restrict capture.
+  // The store checks the revision again under its lock. Local settings remain
+  // untouched, so a concurrent local OFF continues to restrict capture.
   return store.setRepositoryOverride(repository, enabled, { expectedRevision, acknowledged, onCommitted });
 }
-module.exports = { applyRepositoryConsent, parseConsentChoiceArgs, CONSENT_SET_USAGE };
+module.exports = { applyOrganizationConsent, applyRepositoryConsent, parseConsentChoiceArgs, CONSENT_SET_USAGE };

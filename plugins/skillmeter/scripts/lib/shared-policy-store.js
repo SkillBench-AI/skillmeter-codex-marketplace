@@ -5,9 +5,10 @@ const path = require("path");
 const { randomUUID } = require("crypto");
 const { policyPathIsAbsent } = require("./shared-telemetry-policy");
 
-// Schema, key normalization, lock name and atomic writes follow Claude's
-// telemetry-store.js. Unlike its legacy reader, ordinary writes never repair
-// invalid policy. See the canonical shared-consent ADR.
+// Codex's consent record. It keeps the schema of the Claude plugin's record so
+// the two stay easy to compare, but no other client reads or writes this file
+// (ADR 006 in the Claude plugin repository). Ordinary writes never repair
+// invalid policy.
 const FIELDS = ["schema_version", "revision", "global", "organizations", "repositories"];
 const object = value => value !== null && typeof value === "object" && !Array.isArray(value);
 const integer = value => Number.isSafeInteger(value) && value >= 0;
@@ -44,7 +45,7 @@ function validatePolicy(policy) {
       Object.keys(policy).some(key => !FIELDS.includes(key)) || !record(policy.global) ||
       !object(policy.organizations) || !object(policy.repositories) ||
       !Object.values(policy.organizations).every(record) || !Object.values(policy.repositories).every(record)) {
-    throw error("INVALID_POLICY", "Shared policy is invalid or unsupported; repair it explicitly before changing consent.");
+    throw error("INVALID_POLICY", "Consent record is invalid or unsupported; repair it explicitly before changing consent.");
   }
   return policy;
 }
@@ -55,9 +56,15 @@ function normalizeRepoKey(value) {
   return match ? `github.com/${match[1]}/${match[2].replace(/\.git$/, "")}` : "";
 }
 
+function normalizeOrg(value) {
+  if (typeof value !== "string") return "";
+  const org = value.trim().toLowerCase();
+  return /^[a-z0-9_.-]+$/.test(org) ? org : "";
+}
+
 function createSharedPolicyStore({ file, observedFile }) {
   if (!file || !observedFile || path.resolve(file) === path.resolve(observedFile)) {
-    throw new Error("Separate shared policy and client observation paths are required.");
+    throw new Error("Separate consent record and observation paths are required.");
   }
   const lockFile = `${file}.lock`;
 
@@ -95,7 +102,7 @@ function createSharedPolicyStore({ file, observedFile }) {
         // lookups; a valid marker is an observation, not a broken path.
         if (validMarker()) return true;
       }
-      throw error("POLICY_OBSERVATION_FAILED", "Cannot persist or read shared-policy observation; check client data permissions.");
+      throw error("POLICY_OBSERVATION_FAILED", "Cannot persist or read the consent record observation; check client data permissions.");
     }
   }
 
@@ -107,15 +114,15 @@ function createSharedPolicyStore({ file, observedFile }) {
       raw = fs.readFileSync(file, "utf8");
     } catch (err) {
       if (err.code === "ENOENT" && policyPathIsAbsent(file)) {
-        if (observed()) throw error("POLICY_MISSING", "Previously observed shared policy is missing; restore it before changing consent.");
+        if (observed()) throw error("POLICY_MISSING", "Previously observed consent record is missing; restore it before changing consent.");
         return null;
       }
-      throw error("INVALID_POLICY", "Cannot read shared policy; check its path and permissions before changing consent.");
+      throw error("INVALID_POLICY", "Cannot read the consent record; check its path and permissions before changing consent.");
     }
     observed(true);
     let policy;
     try { policy = JSON.parse(raw); }
-    catch { throw error("INVALID_POLICY", "Shared policy contains invalid JSON; repair it explicitly."); }
+    catch { throw error("INVALID_POLICY", "Consent record contains invalid JSON; repair it explicitly."); }
     return validatePolicy(policy);
   }
 
@@ -126,12 +133,12 @@ function createSharedPolicyStore({ file, observedFile }) {
       try { fd = fs.openSync(lockFile, "wx", 0o600); break; }
       catch (err) {
         if (err.code !== "EEXIST") throw err;
-        // Claude's lock has no owner identity. Age alone cannot prove that its
-        // writer exited, so leave even an old lock for explicit recovery.
+        // Age alone cannot prove that a lock's writer exited, so leave even an
+        // old lock for explicit recovery.
         Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10);
       }
     }
-    if (fd === undefined) throw error("POLICY_BUSY", "Shared policy is busy; retry after the other writer finishes.");
+    if (fd === undefined) throw error("POLICY_BUSY", "Consent record is busy; retry after the other writer finishes.");
     const token = randomUUID();
     const acquiredAt = Date.now();
     const owned = () => {
@@ -141,9 +148,9 @@ function createSharedPolicyStore({ file, observedFile }) {
     try {
       fs.writeFileSync(fd, token);
       return callback(() => {
-        // Older Claude writers can reclaim a lock at ten seconds. An expired
-        // or replaced lock must not commit or remove its replacement.
-        if (Date.now() - acquiredAt >= 10_000 || !owned()) throw error("POLICY_BUSY", "Shared policy lock changed; reload and retry.");
+        // A lock held past ten seconds counts as expired. An expired or
+        // replaced lock must not commit or remove its replacement.
+        if (Date.now() - acquiredAt >= 10_000 || !owned()) throw error("POLICY_BUSY", "Consent record lock changed; reload and retry.");
       });
     } finally {
       fs.closeSync(fd);
@@ -162,7 +169,7 @@ function createSharedPolicyStore({ file, observedFile }) {
     return withLock(assertOwned => {
       const previous = readPolicy();
       if ((previous?.revision ?? null) !== expected) {
-        throw error("STALE_POLICY", "Shared policy changed; reload the choices and confirm again.");
+        throw error("STALE_POLICY", "Consent record changed; reload the choices and confirm again.");
       }
       const policy = previous || { schema_version: 1, revision: 0, global: { enabled: true }, organizations: {}, repositories: {} };
       mutator(policy);
@@ -187,10 +194,10 @@ function createSharedPolicyStore({ file, observedFile }) {
         catch (err) { directorySyncError = err; }
         // Keep cooperating writers out until the client has observed revocation.
         try { onCommitted?.(policy); }
-        catch { throw error("POLICY_COMMITTED_OBSERVER_FAILED", "Shared policy was saved, but local reconciliation failed; inspect consent-preview and retry queue cleanup."); }
+        catch { throw error("POLICY_COMMITTED_OBSERVER_FAILED", "Consent record was saved, but local reconciliation failed; inspect consent-preview and retry queue cleanup."); }
         if (directorySyncError) {
           throw Object.assign(error("POLICY_COMMITTED_DURABILITY_UNCERTAIN",
-            "Shared policy was saved and local cleanup ran, but the save may not survive a crash; inspect consent-preview before retrying."),
+            "Consent record was saved and local cleanup ran, but the save may not survive a crash; inspect consent-preview before retrying."),
           { cause: directorySyncError });
         }
         Object.defineProperty(policy, "durability", { value: directorySynced ? "synced" : "unconfirmed" });
@@ -224,13 +231,25 @@ function createSharedPolicyStore({ file, observedFile }) {
   function setRepositoryOverride(repoKey, enabled, options) {
     const key = normalizeRepoKey(repoKey);
     if (!key || key.endsWith("/")) throw new Error("A canonical GitHub repository is required.");
+    return setChoice("repositories", key, enabled, options);
+  }
+
+  function setOrganizationConsent(org, enabled, options) {
+    const key = normalizeOrg(org);
+    if (!key) throw new Error("A GitHub organization is required.");
+    return setChoice("organizations", key, enabled, options);
+  }
+
+  // ON records `consent_version: 2`: the user was shown that the choice covers
+  // Codex in every clone or worktree on this machine.
+  function setChoice(section, key, enabled, options) {
     if (enabled === true && options?.acknowledged !== true) {
       throw error("ACKNOWLEDGEMENT_REQUIRED", "Enabling requires acknowledgement of machine-wide consent scope.");
     }
     return mutate(policy => {
-      policy.repositories[key] = {
-        ...decision(enabled, policy.repositories[key]),
-        ...(enabled === true && options?.acknowledged === true ? { consent_version: 2 } : {}),
+      policy[section][key] = {
+        ...decision(enabled, policy[section][key]),
+        ...(enabled === true ? { consent_version: 2 } : {}),
       };
     }, options, options?.onCommitted);
   }
@@ -239,7 +258,7 @@ function createSharedPolicyStore({ file, observedFile }) {
     return mutate(policy => { policy.global = decision(enabled, policy.global); }, options);
   }
 
-  return { readPolicy, setRepositoryOverride, setGlobalEnabled };
+  return { readPolicy, setRepositoryOverride, setOrganizationConsent, setGlobalEnabled };
 }
 
 module.exports = { createSharedPolicyStore };

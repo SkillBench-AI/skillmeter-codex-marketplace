@@ -5,7 +5,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-const { PLUGIN_ROOT, tempDir, writeCredentials, makeJwt, license, sessionFileIn } = require("../../test-support/plugin.cjs");
+const { PLUGIN_ROOT, tempDir, writeCredentials, makeJwt, license, sessionFileIn, consentPolicyFileIn } = require("../../test-support/plugin.cjs");
 
 function home(credentials) {
   const dir = tempDir("sk-bin-home");
@@ -24,7 +24,7 @@ function run(tool, args, dir) {
 const readJson = file => JSON.parse(fs.readFileSync(file, "utf8"));
 const readCredentials = dir => readJson(path.join(dir, ".skillbench", "credentials.json"));
 const readSession = dir => readJson(sessionFileIn(path.join(dir, ".skillbench")));
-const readPolicy = dir => readJson(path.join(dir, ".skillbench", "telemetry-policy.json"));
+const readPolicy = dir => readJson(consentPolicyFileIn(path.join(dir, ".skillbench")));
 const now = () => Math.floor(Date.now() / 1000);
 
 test("sk-jwt reports no stored license when unauthenticated", () => {
@@ -53,8 +53,8 @@ test("sk-jwt flags an expired token", () => {
   assert.match(run("sk-jwt", [], home({ device_id: "DEV-1", hash_salt: "abcd", license_jwt: jwt })).stdout, /EXPIRED/i);
 });
 
-// The pause is the shared policy's, so it covers every SkillMeter client.
-test("sk-telemetry disable --global pauses through the shared policy and enable --global resumes", () => {
+// The pause is in Codex's consent record and covers only Codex.
+test("sk-telemetry disable --global pauses through the Codex consent record and enable --global resumes", () => {
   const dir = home({ device_id: "DEV-1", hash_salt: "abcd" });
   assert.equal(run("sk-telemetry", ["disable", "--global"], dir).status, 0);
   assert.equal(readPolicy(dir).global.enabled, false);
@@ -72,6 +72,7 @@ test("signout ends this client's session, keeps the device identity and pauses n
   assert.equal(session.refresh_token, undefined);
   assert.equal(session.signed_out, true);
   assert.deepEqual(readCredentials(dir), { device_id: "DEV-1", hash_salt: "abcd" });
-  assert.equal(fs.existsSync(path.join(dir, ".skillbench", "telemetry-policy.json")), false, "not a global pause");
+  assert.equal(fs.existsSync(consentPolicyFileIn(path.join(dir, ".skillbench"))), false, "not a global pause");
+  assert.equal(fs.existsSync(path.join(dir, ".skillbench", "telemetry-policy.json")), false, "no machine-wide record");
   assert.equal((result.stdout + result.stderr).includes("synthetic-refresh"), false, "the refresh token is never printed");
 });

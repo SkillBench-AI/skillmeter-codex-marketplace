@@ -24,7 +24,7 @@ const {
 } = require("./lib/jwt");
 const licenseActivation = require("./lib/license-activation");
 const { resolveOrgScope } = require("./lib/org-scope");
-const { sharedPolicyFile } = require("./lib/shared-telemetry-policy");
+const { consentPolicyFile } = require("./lib/shared-telemetry-policy");
 const canonicalScope = require("./lib/repo-scope");
 
 // Codex sets PLUGIN_ROOT and PLUGIN_DATA for plugin hooks. The CLAUDE_PLUGIN_*
@@ -39,8 +39,11 @@ const PLUGIN_DATA = process.env.PLUGIN_DATA || PLUGIN_ROOT;
 
 const LOG_DIR = path.join(PLUGIN_DATA, "logs");
 const LOG_FILE = path.join(LOG_DIR, "events.jsonl");
+// Named for Codex's own record: the marker left by the former shared record
+// must not make this record look deleted.
+const CONSENT_OBSERVED_FILE = path.join(LOG_DIR, "consent-policy-observed");
 const { readSharedGlobalPolicy, readSharedRepositoryPolicy } =
-  createSharedConsentReader(path.join(LOG_DIR, "shared-policy-observed"));
+  createSharedConsentReader(CONSENT_OBSERVED_FILE);
 const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const CODEX_SESSIONS_DIR = path.join(CODEX_HOME, "sessions");
 
@@ -88,8 +91,7 @@ function getLicenseToken() { return credstore.getLicenseToken(); }
 // every call, so a long-lived drain sees another process renew or sign out.
 function getLicenseTokenUncached() { return credstore.getLicenseToken(); }
 
-// The one global pause is the shared policy's (ADR 004); it pauses every
-// SkillMeter client on the machine.
+// The global pause lives in Codex's consent record and pauses only Codex.
 function getTelemetryGloballyDisabled() {
   return readSharedGlobalPolicy().disabled;
 }
@@ -99,7 +101,7 @@ function setTelemetryGloballyDisabled(disabled) {
   fs.mkdirSync(TRANSCRIPT_CAPTURES_DIR, { recursive: true, mode: 0o700 });
   transcriptQueue.writeDurable(path.join(TRANSCRIPT_CAPTURES_DIR, "global-boundary.json"), JSON.stringify(crypto.randomUUID()));
   const { createSharedPolicyStore } = require("./lib/shared-policy-store");
-  const store = createSharedPolicyStore({ file: sharedPolicyFile(), observedFile: path.join(LOG_DIR, "shared-policy-observed") });
+  const store = createSharedPolicyStore({ file: consentPolicyFile(), observedFile: CONSENT_OBSERVED_FILE });
   const current = store.readPolicy();
   const result = store.setGlobalEnabled(!disabled, { expectedRevision: current?.revision ?? null });
   observeKnownTranscriptConsent();
@@ -1574,24 +1576,20 @@ function telemetryCliCommand(action) {
 }
 
 function getRepositoryPolicyDecision(cwd) {
-  const scope = getRepoScopeDecision(cwd);
-  const shared = readSharedRepositoryPolicy(scope);
-  try {
-    if (shared.reason === "absent" && repositoryQueue.requiresSharedPolicy(scope.repoRoot)) {
-      return { ...shared, allowed: false, reason: "shared_policy_missing" };
-    }
-  } catch { return { allowed: false, reason: "routing_unavailable", stamp: null }; }
-  return shared;
+  // A record deleted after it was observed is reported by the reader through
+  // the observation marker, not through routing state.
+  return readSharedRepositoryPolicy(getRepoScopeDecision(cwd));
 }
 
 function getTelemetryOptIn(cwd) {
   const shared = getRepositoryPolicyDecision(cwd);
-  if (!shared.allowed) return shared.revoked ? false : null;
+  if (shared.revoked) return false;
+  // Local settings only restrict; the grant is the acknowledged record. A local
+  // OFF reports as an opt-out even before any record exists.
   const local = getLocalTelemetryChoice(cwd);
   if (local === "off") return false;
-  if (local === "invalid") return null;
-  if (shared.acknowledged) return true;
-  return local === "on" ? true : null;
+  if (!shared.allowed || local === "invalid") return null;
+  return shared.acknowledged ? true : null;
 }
 
 function getLocalTelemetryChoice(cwd) {
@@ -1637,20 +1635,18 @@ function saveTelemetryOptIn(cwd, value) {
 }
 
 // In-context consent notice: printed to a Codex hook's stderr channel when a
-// project has no explicit opt-in. No decision is saved until the user runs
-// `telemetry.js enable|disable`.
+// project has no consent. No decision is saved until the user records one.
 function writeTelemetryConsentFallback(cwd, stream = process.stderr) {
   const shared = getRepositoryPolicyDecision(cwd);
-  if (!shared.allowed && shared.reason !== "scope_unavailable") {
-    stream.write("SkillMeter: Shared organization/repository policy blocks capture. Check the shared policy controls and telemetry status; local enable cannot override it.\n");
+  if (shared.revoked || ["shared_policy_missing", "invalid"].includes(shared.reason)) {
+    stream.write("SkillMeter: The organization or repository consent record blocks capture. Check telemetry status; local enable cannot override it.\n");
     return;
   }
   stream.write(
     [
       `SkillMeter: Telemetry is not configured for ${cwd}`,
-      "SkillMeter: Enable or disable telemetry for this project with:",
-      `  ${telemetryCliCommand("enable")}`,
-      `  ${telemetryCliCommand("disable")}`,
+      "SkillMeter: Review and record organization and repository consent with:",
+      `  ${telemetryCliCommand("consent-preview")}`,
       `  ${telemetryCliCommand("status")}`,
       "",
     ].join("\n")
@@ -1917,6 +1913,7 @@ module.exports = {
   PLUGIN_VERSION,
   LOG_DIR,
   LOG_FILE,
+  CONSENT_OBSERVED_FILE,
   CODEX_HOME,
   CODEX_SESSIONS_DIR,
   TRANSCRIPTS_PENDING_DIR,

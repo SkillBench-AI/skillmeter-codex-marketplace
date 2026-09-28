@@ -6,7 +6,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const crypto = require("node:crypto");
-const { PLUGIN_ROOT, sandbox } = require("../../test-support/plugin.cjs");
+const { PLUGIN_ROOT, sandbox, grantConsent } = require("../../test-support/plugin.cjs");
 
 const CODEX_HOOK_EVENTS = [
   "SessionStart", "SessionEnd", "Interrupt", "UserPromptSubmit", "PreToolUse", "PermissionRequest",
@@ -31,10 +31,8 @@ test("every wired hook is a command that points at an existing handler script", 
 });
 
 const EVENT = { session_id: "synthetic-session", tool_name: "synthetic", tool_input: { message: "synthetic event" } };
-const enable = box => {
-  const result = box.script("telemetry.js", { args: ["enable"] });
-  assert.equal(result.status, 0, result.stderr);
-};
+// Acknowledged organization and repository ON in Codex's consent record.
+const enable = box => grantConsent(box.state, "github.com/acme/widgets");
 const hashed = (box, value) => crypto.createHmac("sha256", box.credentials.hash_salt).update(value).digest("hex").slice(0, 12);
 
 test("Stop hooks keep their JSON protocol while consent blocks capture", t => {

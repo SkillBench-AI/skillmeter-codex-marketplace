@@ -28,12 +28,27 @@ for (const kind of ['original','clone','worktree']) {
 }
 
 for (const record of ['organizations.acme', "repositories['github.com/acme/widgets']"]) {
-  test(`legacy ${record} still requires local opt-in`, t => fixture(t).run(shared + `
+  test(`unacknowledged ${record} grants nothing, even with local ON`, t => fixture(t).run(shared + `
     delete policy.${record}.consent_version;writePolicy(policy);
     assert.equal(logger.getTelemetryOptIn(repo),null);
-    logger.saveTelemetryOptIn(repo,true);assert.equal(logger.getTelemetryOptIn(repo),true);
+    logger.saveTelemetryOptIn(repo,true);assert.equal(logger.getTelemetryOptIn(repo),null);
   `));
 }
+
+test("no consent record grants nothing, even with local ON", t => fixture(t).run(`
+  assert.equal(fs.existsSync(policyFile),false);
+  assert.equal(logger.getTelemetryOptIn(repo),null);
+  fs.writeFileSync(source,'');logger.observeTranscriptConsent(source,repo);
+  fs.appendFileSync(source,line('no record'));assert.equal(stage(),null);
+`));
+
+test("a record at the former shared path neither grants nor pauses", t => fixture(t).run(`
+  writePolicy(policy);fs.renameSync(policyFile,legacyPolicyFile);
+  assert.equal(logger.getTelemetryOptIn(repo),null);
+  policy.global={enabled:false,decided_at:2};fs.writeFileSync(legacyPolicyFile,JSON.stringify(policy));
+  assert.equal(logger.getTelemetryGloballyDisabled(),false);
+  assert.equal(fs.existsSync(policyFile),false);
+`));
 
 for (const raw of ['{"skillmeter":{"telemetry":false}}','{','{"skillmeter":{"telemetry":"true"}}','[]']) {
   for (const location of ['root','child']) {
@@ -48,6 +63,7 @@ for (const raw of ['{"skillmeter":{"telemetry":false}}','{','{"skillmeter":{"tel
 }
 
 test("acknowledgement transition excludes the uncertain interval and allows subsequent text", t => fixture(t).run(`
+  delete policy.organizations.acme.consent_version;delete policy.repositories['github.com/acme/widgets'].consent_version;
   writePolicy(policy);fs.unlinkSync(path.join(repo,'.codex/settings.local.json'));
   fs.writeFileSync(source,'');logger.observeTranscriptConsent(source,repo);
   fs.appendFileSync(source,line('before acknowledgement'));
@@ -57,10 +73,10 @@ test("acknowledgement transition excludes the uncertain interval and allows subs
   assert.deepEqual(records([chunk]).map(r=>r.payload.content),['after acknowledgement']);
 `));
 
-test("legacy opt-in payload cannot cross an acknowledgement change unnoticed", t => fixture(t).run(`
-  writePolicy(policy);fs.writeFileSync(source,'');logger.observeTranscriptConsent(source,repo);
-  fs.appendFileSync(source,line('legacy queue'));const chunk=stage();assert.ok(chunk);const before=fs.readFileSync(chunk);
-  policy.organizations.acme.consent_version=2;policy.repositories['github.com/acme/widgets'].consent_version=2;policy.revision++;
+test("a queued payload cannot cross a re-recorded grant unnoticed", t => fixture(t).run(shared + `
+  fs.writeFileSync(source,'');logger.observeTranscriptConsent(source,repo);
+  fs.appendFileSync(source,line('queued under the first grant'));const chunk=stage();assert.ok(chunk);const before=fs.readFileSync(chunk);
+  policy.repositories['github.com/acme/widgets'].decided_at=5;policy.revision++;
   writePolicy(policy);
   let sent=0;global.fetch=async()=>{sent++;return {ok:true};};
   await logger.processPendingTranscript(chunk,'SYNTHETIC','https://collector.invalid',1000);
@@ -71,11 +87,11 @@ test("runtime observation persists across processes and protects an unselected c
   const f=fixture(t);fs.writeFileSync(f.policyFile,JSON.stringify(f.policy()));
   f.run('logger.getTelemetryGloballyDisabled();');fs.unlinkSync(f.policyFile);
   f.run(`assert.equal(logger.getTelemetryGloballyDisabled(),true);assert.notEqual(logger.getTelemetryOptIn(repo),true);`);
-  assert.match(f.cli(['status']).stderr,/previously observed shared policy is missing/);
+  assert.match(f.cli(['status']).stderr,/previously observed consent record is missing/);
 });
 
 test("marker I/O failure cannot authorize acknowledged capture", t => fixture(t).run(shared + `
-  fs.mkdirSync(logger.LOG_DIR,{recursive:true});fs.mkdirSync(path.join(logger.LOG_DIR,'shared-policy-observed'));
+  fs.mkdirSync(logger.LOG_DIR,{recursive:true});fs.mkdirSync(logger.CONSENT_OBSERVED_FILE);
   assert.equal(logger.getTelemetryGloballyDisabled(),true);
   assert.notEqual(logger.getTelemetryOptIn(repo),true);
 `));
@@ -104,11 +120,11 @@ test("acknowledged hook events are delivered and a retry rechecks revocation", t
   assert.equal(fs.existsSync(event),false);
 `));
 
-test("status distinguishes acknowledged consent from legacy acknowledgement needed", t => {
+test("status distinguishes acknowledged consent from a missing acknowledgement", t => {
   const f=fixture(t);f.run(shared);
-  assert.match(f.cli(['status']).stderr,/acknowledged shared consent/);
-  f.run("writePolicy(policy);");
-  assert.match(f.cli(['status']).stderr,/acknowledgement required/);
+  assert.match(f.cli(['status']).stderr,/eligible for this repository/);
+  f.run("delete policy.repositories['github.com/acme/widgets'].consent_version;writePolicy(policy);");
+  assert.match(f.cli(['status']).stderr,/scope acknowledgement/);
 });
 
 test("shared permission preserves organization narrowing and the Work transcript boundary", t => fixture(t).run(shared + `
@@ -169,10 +185,10 @@ for (const target of ['missing.json','settings-dir']) {
   `));
 }
 
-test("unchanged legacy policy retains its serialized queue boundary", t => fixture(t).run(`
-  writePolicy(policy);fs.writeFileSync(source,'');logger.observeTranscriptConsent(source,repo);
-  fs.appendFileSync(source,line('legacy backlog'));const chunk=stage();assert.ok(chunk);
-  const boundary=JSON.stringify(['github.com/acme/widgets',[true,null],[true,null]]);
+test("an unchanged acknowledged record retains its serialized queue boundary", t => fixture(t).run(shared + `
+  fs.writeFileSync(source,'');logger.observeTranscriptConsent(source,repo);
+  fs.appendFileSync(source,line('backlog'));const chunk=stage();assert.ok(chunk);
+  const boundary=JSON.stringify(['github.com/acme/widgets',[true,1,2],[true,1,2]]);
   const index=path.join(logger.LOG_DIR,'repository-routing');
   const state=fs.readdirSync(index).filter(n=>n.endsWith('.json')).map(n=>JSON.parse(fs.readFileSync(path.join(index,n)))).find(x=>x.repoRoot===repo);
   assert.equal(state.sharedStamp,boundary);

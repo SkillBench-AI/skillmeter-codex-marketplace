@@ -9,9 +9,11 @@ const { spawnSync } = require("node:child_process");
 const roots = [];
 after(() => roots.forEach(root => fs.rmSync(root, { recursive: true, force: true })));
 const plugin = path.resolve(__dirname, "../..");
-const { license, writeCredentials, sessionFileIn } = require("../../test-support/plugin.cjs");
+const { license, writeCredentials, sessionFileIn, grantConsent } = require("../../test-support/plugin.cjs");
 
-function status({ terminal = null, seconds = 3600, credentials = {}, choice = true, malformedChoice = false, queue = false, rejected = false, transcript = false, corrupt = false, blockedCapture = false } = {}) {
+// `consent` writes acknowledged organization and repository ON to Codex's
+// consent record; `choice` is the local setting, which can only restrict.
+function status({ terminal = null, seconds = 3600, credentials = {}, consent = true, choice = true, malformedChoice = false, queue = false, rejected = false, transcript = false, corrupt = false, blockedCapture = false } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-status-"));
   roots.push(root);
   const repo = path.join(root, "repo"), data = path.join(root, "data"), state = path.join(root, ".skillbench");
@@ -19,6 +21,7 @@ function status({ terminal = null, seconds = 3600, credentials = {}, choice = tr
   fs.writeFileSync(path.join(repo, ".git/config"), '[remote "origin"]\nurl = https://github.com/acme/widgets.git\n');
   const token = license({ exp: Math.floor(Date.now() / 1000) + seconds });
   writeCredentials(root, { device_id: "synthetic-device", hash_salt: "synthetic-salt", license_jwt: token, refresh_token: "synthetic-refresh", ...credentials }, { stateDir: state });
+  if (consent) grantConsent(state, "github.com/acme/widgets");
   if (choice !== null || malformedChoice) {
     fs.mkdirSync(path.join(repo, ".codex"));
     fs.writeFileSync(path.join(repo, ".codex/settings.local.json"), malformedChoice ? "invalid json" : JSON.stringify({ skillmeter: { telemetry: choice } }));
@@ -146,17 +149,22 @@ test("unreadable queue state is unavailable rather than empty", () => {
 });
 
 for (const [name, options] of [
-  ["missing", { choice: null }],
+  ["missing", { consent: false }],
   ["malformed", { malformedChoice: true }],
   ["non-boolean", { choice: "true" }],
 ]) {
   test(`${name} repository choice does not report capture eligibility`, () => {
     const text = status(options);
-    assert.match(text, name === "missing" ? /Capture policy: disabled; repository choice required/ : /Capture policy: paused; invalid local consent settings/);
+    // A missing consent record is not granted by the local ON left in place.
+    assert.match(text, name === "missing" ? /Capture policy: disabled; organization and repository consent required/ : /Capture policy: paused; invalid local consent settings/);
     assert.match(text, /Delivery authentication: license locally valid/);
     assert.doesNotMatch(text, /Capture policy: eligible/);
   });
 }
+
+test("a consent record grants capture without a local setting", () => {
+  assert.match(status({ choice: null }), /Capture policy: eligible.*hook execution not verified/);
+});
 
 test("explicit consent does not override organization scope", () => {
   const text = status({ credentials: { license_jwt: license({ orgs: ["other-org"] }) } });

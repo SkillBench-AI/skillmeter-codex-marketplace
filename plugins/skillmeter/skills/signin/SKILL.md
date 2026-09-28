@@ -20,12 +20,12 @@ with other SkillMeter clients. Repository capture is limited to the GitHub
 organizations the workspace has connected; uploads are routed by the license's
 `aud` claim.
 
-Sign-in does not create repository consent. Existing acknowledged shared consent
-may allow capture once authentication recovers. Check `sk-telemetry status` and
-`consent-preview` first. If consent is missing, explain the data collected in the
-README and obtain the user's explicit choice. Shared ON covers every supported
-SkillMeter client and every clone or worktree of the repository on this machine.
-Do not infer capture consent from a request to sign in.
+Sign-in does not create consent. Organization and repository ON already recorded
+in Codex may allow capture once authentication recovers. Check `sk-telemetry
+status` and `consent-preview` first. If consent is missing, explain the data
+collected in the README and obtain the user's explicit choice through the
+telemetry skill. Consent recorded in SkillMeter for Claude Code does not apply
+here. Do not infer capture consent from a request to sign in.
 
 If the script prints a welcome banner, reproduce it in a fenced code block to
 preserve alignment. Report the result without exposing credentials.

@@ -22,9 +22,21 @@ test("preview does not promote local ON or create shared policy", t => {
   assert.equal(fs.existsSync(f.policyFile), false);
 });
 
-test("legacy shared choices require acknowledgement and preview preserves bytes", t => {
+test("a record written by the former shared store is ignored", t => {
+  const f = fixture(t); fs.writeFileSync(f.legacyPolicyFile, JSON.stringify(f.policy()));
+  const result = preview(f);
+  assert.equal(result.sharedRevision, null);
+  assert.ok(codes(result).includes("organization_choice_required"));
+  assert.ok(codes(result).includes("repository_choice_required"));
+});
+
+test("unacknowledged choices require acknowledgement and preview preserves bytes", t => {
   const f = fixture(t);
-  const raw = JSON.stringify(f.policy()); fs.writeFileSync(f.policyFile, raw);
+  const raw = JSON.stringify(f.policy(true, {
+    organizations: { acme: { enabled: true, consent_version: 1 } },
+    repositories: { [repoKey]: { enabled: true } },
+  }));
+  fs.writeFileSync(f.policyFile, raw);
   const files = [f.policyFile, path.join(f.repo, ".codex/settings.local.json"), path.join(f.state, "credentials.json")];
   const before = files.map(file => fs.readFileSync(file));
   const result = preview(f);
@@ -104,8 +116,9 @@ test("missing repository identity cannot produce a migration target", t => {
 test("human output distinguishes the preview from applied migration", t => {
   const f = fixture(t); const result = f.cli(["consent-preview"]);
   assert.match(result.stdout, /No consent settings changed/);
-  assert.match(result.stdout, /Local settings remain in effect/);
-  assert.match(result.stdout, /Shared revision: absent/);
+  assert.match(result.stdout, /Local OFF settings remain in effect/);
+  assert.match(result.stdout, /Revision: absent/);
+  assert.match(result.stdout, /does not change SkillMeter for Claude Code/);
   assert.doesNotMatch(result.stdout, /capture enabled|uploads enabled|migration complete/i);
 });
 
@@ -133,7 +146,7 @@ test("a nested repository does not inherit its parent's local opt-out", t => {
 });
 
 for (const kind of ["clone", "worktree"]) {
-  test(`a ${kind} resolves to the same shared choice without creating local consent`, t => {
+  test(`a ${kind} resolves to the same recorded choice without creating local consent`, t => {
     fixture(t).run(`
       const second=path.join(path.dirname(repo),'${kind}'); fs.mkdirSync(second);
       if ('${kind}' === 'clone') {
@@ -147,7 +160,7 @@ for (const kind of ["clone", "worktree"]) {
       const result=buildConsentPreview({cwd:second,scope:logger.getRepoScopeDecision(second),policy});
       assert.equal(result.repository,'github.com/acme/widgets');
       assert.equal(result.localChoices[0].choice,'unset');
-      assert.ok(result.notices.some(x=>x.code==='repository_acknowledgement_required'));
+      assert.deepEqual(result.notices.map(x=>x.code),[]);
       assert.equal(fs.existsSync(path.join(second,'.codex/settings.local.json')),false);
     `);
   });
@@ -159,7 +172,7 @@ test("preview leaves queued data intact and records only the client observation"
   const queue = path.join(logs, "events.jsonl.123"); fs.writeFileSync(queue, "synthetic queue\n");
   preview(f);
   assert.equal(fs.readFileSync(queue, "utf8"), "synthetic queue\n");
-  assert.deepEqual(fs.readdirSync(logs).sort(), ["events.jsonl.123", "shared-policy-observed"]);
+  assert.deepEqual(fs.readdirSync(logs).sort(), ["consent-policy-observed", "events.jsonl.123"]);
 });
 
 

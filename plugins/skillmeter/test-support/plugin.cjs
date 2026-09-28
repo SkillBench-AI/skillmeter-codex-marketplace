@@ -36,6 +36,22 @@ function license(claims = {}) {
 // device identity (and other clients' fields) in credentials.json.
 const SESSION_FIELDS = ["license_jwt", "refresh_token", "auth_generation", "signed_out"];
 const sessionFileIn = stateDir => path.join(stateDir, "clients", "codex", "session.json");
+const consentPolicyFileIn = stateDir => path.join(stateDir, "clients", "codex", "telemetry-policy.json");
+
+// Codex's consent record with acknowledged organization and repository ON for
+// each repository key, as consent-set would leave it.
+function grantConsent(stateDir, repoKeys, { revision = 1 } = {}) {
+  const keys = [].concat(repoKeys);
+  const on = { enabled: true, decided_at: 1, source: "user", consent_version: 2 };
+  const file = consentPolicyFileIn(stateDir);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({
+    schema_version: 1, revision, global: { enabled: true, decided_at: 1, source: "user" },
+    organizations: Object.fromEntries(keys.map(key => [key.split("/")[1], on])),
+    repositories: Object.fromEntries(keys.map(key => [key, on])),
+  }));
+  return file;
+}
 
 // Write a device the way the plugin stores it. The session file is always
 // written, so the first-run cutover does not run in tests that did not ask for it.
@@ -128,6 +144,11 @@ function sandbox(t, { prefix = "codex-sandbox", credentials = DEFAULT_CREDENTIAL
   fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
   fs.writeFileSync(path.join(repo, ".git", "config"), `[remote "origin"]\nurl = ${remote}\n`);
   if (telemetry !== undefined) writeSettings(repo, { telemetry });
+  // Local ON no longer grants capture; the consent record does.
+  const remoteRepo = /github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/.exec(remote || "");
+  if (telemetry === true && remoteRepo) {
+    grantConsent(state, `github.com/${remoteRepo[1].toLowerCase()}/${remoteRepo[2].toLowerCase()}`);
+  }
   const credentialFile = path.join(state, "credentials.json");
   const sessionFile = sessionFileIn(state);
   const saveCredentials = patch => writeCredentials(root, { ...credentials, ...patch }, { stateDir: state });
@@ -157,6 +178,6 @@ function sandbox(t, { prefix = "codex-sandbox", credentials = DEFAULT_CREDENTIAL
 
 module.exports = {
   PLUGIN_ROOT, SCRIPTS, FIXTURES, DEFAULT_CREDENTIALS, STRICT_PRELOAD,
-  tempDir, makeJwt, license, sessionFileIn, writeCredentials, isolateHome, writeSettings, makeRepo,
+  tempDir, makeJwt, license, sessionFileIn, consentPolicyFileIn, grantConsent, writeCredentials, isolateHome, writeSettings, makeRepo,
   transcriptLine, gunzipRecords, readJsonl, chunkQueue, sandbox,
 };

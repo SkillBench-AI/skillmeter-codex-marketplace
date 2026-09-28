@@ -1,7 +1,7 @@
 "use strict";
 // Credentials: JWT claims, the session lifecycle (ADR 005), tenant routing,
 // endpoint trust, and authenticated uploads against a loopback server.
-const { isolateHome, makeJwt, license, sessionFileIn, tempDir, writeSettings } = require("../../test-support/plugin.cjs");
+const { isolateHome, makeJwt, license, sessionFileIn, consentPolicyFileIn, tempDir, writeSettings } = require("../../test-support/plugin.cjs");
 const tmpHome = isolateHome({ device_id: "TEST-DEVICE", hash_salt: "deadbeef" });
 for (const name of ["SKILLMETER_BACKEND_URL", "SKILLMETER_ACTIVATE_URL", "SKILLMETER_BROKER_URL", "SKILLMETER_ENV", "SKILLMETER_STATE_DIR"]) {
   delete process.env[name];
@@ -35,7 +35,7 @@ function startServer(handler) {
 
 const sessionFile = sessionFileIn(path.join(tmpHome, ".skillbench"));
 const sharedFile = path.join(tmpHome, ".skillbench", "credentials.json");
-const policyFile = path.join(tmpHome, ".skillbench", "telemetry-policy.json");
+const policyFile = consentPolicyFileIn(path.join(tmpHome, ".skillbench"));
 const readJson = file => JSON.parse(fs.readFileSync(file, "utf8"));
 
 // Hold `token` as the signed-in license, or no license when it is empty.
@@ -47,13 +47,13 @@ function setToken(token) {
   });
 }
 
-// A global pause writes the shared policy; remove it so later tests start
+// A global pause writes the Codex consent record; remove it so later tests start
 // without one.
 function withGlobalPause(fn) {
   logger.setTelemetryGloballyDisabled(true);
   return Promise.resolve().then(fn).finally(() => {
     // The observed marker would make a missing policy read as tampering.
-    for (const file of [policyFile, path.join(logger.LOG_DIR, "shared-policy-observed")]) fs.rmSync(file, { force: true });
+    for (const file of [policyFile, logger.CONSENT_OBSERVED_FILE]) fs.rmSync(file, { force: true });
   });
 }
 
