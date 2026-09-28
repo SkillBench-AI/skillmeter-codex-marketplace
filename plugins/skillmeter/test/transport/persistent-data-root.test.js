@@ -36,6 +36,28 @@ test("logger keeps one persistent data root across versioned install replacement
   assert.equal(fs.existsSync(path.join(next, "logs")), false);
 });
 
+test("skill commands use the data directory a hook was given for the same install", t => {
+  const f = fixture(t), install = f.install("new"), hookData = path.join(f.root, "host-chosen-data");
+  fs.mkdirSync(install, { recursive: true }); fs.mkdirSync(hookData);
+  const hook = readRoot(f, install, { PLUGIN_DATA: hookData });
+  assert.equal(hook.status, 0, hook.stderr);
+  const skill = readRoot(f, install);
+  assert.equal(skill.status, 0, skill.stderr);
+  assert.deepEqual(JSON.parse(skill.stdout), { data: hookData, childData: hookData });
+  assert.equal(fs.existsSync(f.data), false, "no inferred directory when a hook recorded one");
+});
+
+test("a recorded directory from another install is ignored", t => {
+  const f = fixture(t), hookData = path.join(f.root, "internal-data");
+  const other = path.join(f.root, "plugins/cache/fixture-internal/skillmeter/new");
+  fs.mkdirSync(other, { recursive: true }); fs.mkdirSync(hookData);
+  assert.equal(readRoot(f, other, { PLUGIN_DATA: hookData }).status, 0);
+  const install = f.install("new"); fs.mkdirSync(install, { recursive: true });
+  const skill = readRoot(f, install);
+  assert.equal(skill.status, 0, skill.stderr);
+  assert.deepEqual(JSON.parse(skill.stdout), { data: f.data, childData: f.data });
+});
+
 test("a clean install without plugins/data creates its private data directory", t => {
   const f = fixture(t), install = f.install("new");
   fs.mkdirSync(install, { recursive: true });
