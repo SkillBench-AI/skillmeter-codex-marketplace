@@ -58,7 +58,7 @@ function status({ terminal = null, seconds = 3600, credentials = {}, consent = t
   fs.writeFileSync(preload, `
 global.fetch = () => { throw Error("status must not use network"); };
 const cp = require("child_process");
-cp.spawn = cp.execSync = () => { throw Error("status must not spawn or read Keychain"); };
+cp.spawn = cp.execSync = () => { throw Error("status must not spawn processes"); };
 `);
   const files = [path.join(state, "credentials.json"), sessionFileIn(state)];
   const before = files.map(file => fs.readFileSync(file, "utf8"));

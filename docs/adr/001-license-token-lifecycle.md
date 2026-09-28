@@ -29,5 +29,7 @@ separates capture policy from delivery readiness (#47).
 
 ## Open items
 
-- Broker sign-in and identity-bound re-activation.
-- Purge on sign-out and 402, and the 7-day age bound for unsent data.
+- Resolved 2026-09-28: broker sign-in and identity-bound re-activation (ADR 005),
+  and the purge on sign-out and on 402. Unsent data follows the queue limits in
+  `docs/repository-consent.md` (14-day retry age, sealed batches removed after
+  30 days), not a 7-day bound.

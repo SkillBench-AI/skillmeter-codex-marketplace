@@ -11,7 +11,7 @@ function preloadFixture() {
   const fs = require("fs"), cp = require("child_process"), path = require("path");
   const root = process.env.TEST_ROOT;
   const record = (file, value) => fs.appendFileSync(path.join(root, file), JSON.stringify(value) + "\n");
-  cp.execSync = () => { throw Error("unexpected shell/Keychain access"); };
+  cp.execSync = () => { throw Error("unexpected shell access"); };
   cp.spawn = (_, args) => {
     if (!args[0].endsWith("/drain_once.js")) throw Error("unexpected background worker");
     record("spawns.jsonl", {});

@@ -5,8 +5,9 @@ description: Show SkillMeter collection status for the current repository, recor
 
 Run these controls from the repository the user is asking about. The script
 resolves the nearest Git root from the working directory and takes no path
-argument. It prints to stderr; report the output verbatim in a fenced code
-block and add nothing it does not say.
+argument. `status`, `enable` and `disable` print to stderr; `consent-preview` and
+`consent-set` print to stdout. Report the output verbatim in a fenced code block
+and add nothing it does not say.
 
 These controls change only SkillMeter for Codex. SkillMeter for Claude Code
 keeps its own consent choices and is not affected.
@@ -126,4 +127,4 @@ The global pause stops Codex capture and uploads for every repository and
 keeps queued data. It does not pause SkillMeter for Claude Code. Requests
 already in flight may finish. Resuming allows later delivery attempts when
 authentication and connectivity permit; it does not guarantee delivery. After
-any change, run `status` and report the new capture policy line.
+any change, run `status` and show its card.

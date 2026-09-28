@@ -2,7 +2,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const { fixture } = require("../../../../test-support/shared-policy.cjs");
+const { fixture } = require("../../../../test-support/consent-record.cjs");
 
 test("shared global OFF blocks capture and both queues without consuming queued bytes", t => {
   fixture(t).run(`
@@ -176,7 +176,7 @@ for (const suffix of ['', '/nested/state']) {
   });
 }
 
-test("a valid directory symlink with no policy retains absent-policy compatibility", t => {
+test("a valid directory symlink with no policy is treated as no record", t => {
   fixture(t).run(`
     const dir=path.join(process.env.HOME,'empty-state'); fs.mkdirSync(dir);
     const link=path.join(process.env.HOME,'linked-state'); fs.symlinkSync(dir,link);

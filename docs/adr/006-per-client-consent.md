@@ -2,7 +2,8 @@
 
 **Status:** Adopted by reference. Canonical text:
 [Claude Code plugin ADR 006](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/main/docs/adr/006-per-client-consent.md)
-(Proposed 2026-09-28). Supersedes the shared-record decisions of
+(Proposed 2026-09-28). Implemented in Codex 0.12.1 (#109). Supersedes the
+shared-record decisions of
 [ADR 004](004-shared-consent.md).
 **Related:** `docs/repository-consent.md` (the boundary it documents)
 

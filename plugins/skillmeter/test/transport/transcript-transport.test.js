@@ -413,8 +413,8 @@ test("enable advances an unselected source before any upload hint exists", () =>
   logger.observeTranscriptConsent(source,repo);
   assert.equal(fs.existsSync(logger.TRANSCRIPT_CAPTURES_DIR),false);
   // Enable the way consent-set does: observe known sources under the writer lock.
-  const { createSharedPolicyStore } = require("../../scripts/lib/shared-policy-store");
-  createSharedPolicyStore({ file: policyFile, observedFile: logger.CONSENT_OBSERVED_FILE })
+  const { createConsentStore } = require("../../scripts/lib/consent-store");
+  createConsentStore({ file: policyFile, observedFile: logger.CONSENT_OBSERVED_FILE })
     .setRepositoryOverride(repoKey, true, { expectedRevision: policy.revision, acknowledged: true,
       onCommitted: () => logger.observeKnownTranscriptConsent() });
   fs.appendFileSync(source,line("FIRST-AUTHORIZED-PROMPT"));

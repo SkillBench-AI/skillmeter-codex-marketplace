@@ -7,7 +7,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawn } = require("node:child_process");
 
-const modulePath = path.resolve(__dirname, "../scripts/lib/shared-policy-store.js");
+const modulePath = path.resolve(__dirname, "../scripts/lib/consent-store.js");
 const repo = "github.com/acme/widgets";
 const otherRepo = "github.com/acme/other";
 const policy = () => ({
@@ -23,8 +23,8 @@ function fixture(t, initial = policy()) {
   const observedFile = path.join(root, "codex-data", "policy-observed");
   fs.mkdirSync(path.dirname(file));
   if (initial !== null) fs.writeFileSync(file, JSON.stringify(initial));
-  const { createSharedPolicyStore } = require(modulePath);
-  return { root, file, observedFile, store: createSharedPolicyStore({ file, observedFile }) };
+  const { createConsentStore } = require(modulePath);
+  return { root, file, observedFile, store: createConsentStore({ file, observedFile }) };
 }
 
 test("first-use reads do not create a shared grant or policy", t => {
@@ -52,7 +52,7 @@ test("an acknowledged choice uses canonical keys and version 2 without granting 
   assert.equal(fs.statSync(f.file).mode & 0o777, 0o600);
 });
 
-test("a stale confirmation cannot overwrite another client's OFF", t => {
+test("a stale confirmation cannot overwrite another process's OFF", t => {
   const f = fixture(t);
   const preview = f.store.readPolicy();
   const off = policy(); off.revision++; off.repositories[repo] = { enabled: false, decided_at: 30 };
@@ -61,7 +61,7 @@ test("a stale confirmation cannot overwrite another client's OFF", t => {
   assert.deepEqual(JSON.parse(fs.readFileSync(f.file)), off);
 });
 
-test("an absent preview cannot overwrite a policy created by another client", t => {
+test("an absent preview cannot overwrite a record created by another process", t => {
   const f = fixture(t, null);
   assert.equal(f.store.readPolicy(), null);
   fs.writeFileSync(f.file, JSON.stringify(policy()));
@@ -112,7 +112,7 @@ for (const [name, raw] of [
 
 test("a disappeared observed policy remains blocked across store instances", t => {
   const f = fixture(t); f.store.readPolicy(); fs.unlinkSync(f.file);
-  const restarted = require(modulePath).createSharedPolicyStore(f);
+  const restarted = require(modulePath).createConsentStore(f);
   assert.throws(() => restarted.readPolicy(), { code: "POLICY_MISSING" });
   assert.throws(() => restarted.setRepositoryOverride(repo, true, { expectedRevision: null, acknowledged: true }), { code: "POLICY_MISSING" });
   assert.equal(fs.existsSync(f.file), false);
@@ -142,7 +142,7 @@ for (const kind of ["directory", "dangling link", "file link"]) {
   });
 }
 
-test("ordinary writes respect an existing Claude lock, even if old", t => {
+test("ordinary writes never reclaim an existing lock, even an old one", t => {
   const f = fixture(t); const lock = `${f.file}.lock`;
   fs.writeFileSync(lock, ""); const past = new Date(Date.now() - 60_000); fs.utimesSync(lock, past, past);
   const before = fs.readFileSync(f.file);
@@ -207,7 +207,7 @@ test("concurrent confirmations of the same revision commit exactly one choice", 
   const children = [];
   t.after(() => children.forEach(child => { if (child.exitCode === null) child.kill(); }));
   const script = `
-    const store = require(process.argv[1]).createSharedPolicyStore(JSON.parse(process.argv[2]));
+    const store = require(process.argv[1]).createConsentStore(JSON.parse(process.argv[2]));
     process.send('ready');
     process.on('message', () => {
       try { store.setRepositoryOverride(process.argv[3], false, { expectedRevision: 4 }); process.send('ok'); }

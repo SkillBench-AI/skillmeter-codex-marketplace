@@ -1,6 +1,6 @@
 # Per-Client Sessions: a Hydra Refresh Token, with the License as a Cache
 
-**Status:** Proposed. Adopts by reference
+**Status:** Proposed; implemented in Codex 0.11.0 (#105). Adopts by reference
 [Claude Code plugin ADR 005](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/main/docs/adr/005-per-client-session.md)
 (proposed 2026-09-27; implemented in Claude 0.40.0 and 0.40.1 and verified
 end to end in dev and prod). This file is the Codex design, and it is a

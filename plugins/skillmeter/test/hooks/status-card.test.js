@@ -4,7 +4,7 @@
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const { fixture } = require("../../../../test-support/shared-policy.cjs");
+const { fixture } = require("../../../../test-support/consent-record.cjs");
 const { statusBanner, consentSavedBanner } = require("../../scripts/lib/banner");
 
 const widths = text => new Set(text.split("\n").filter(Boolean).map(line => [...line].length));

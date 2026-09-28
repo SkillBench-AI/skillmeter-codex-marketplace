@@ -4,13 +4,13 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { fixture } = require("../../../test-support/shared-policy.cjs");
+const { fixture } = require("../../../test-support/consent-record.cjs");
 const { sessionFileIn } = require("../test-support/plugin.cjs");
 const repoKey = "github.com/acme/widgets";
 const preview = f => JSON.parse(f.cli(["consent-preview", "--json"]).stdout);
 const codes = result => result.notices.map(notice => notice.code);
 
-test("preview does not promote local ON or create shared policy", t => {
+test("preview does not treat local ON as consent or create the record", t => {
   const f = fixture(t);
   const result = preview(f);
   assert.equal(result.repository, repoKey);
@@ -64,7 +64,7 @@ test("a descendant OFF is shown separately from the root ON", t => {
   fixture(t).run(`
     const child = path.join(repo,'src'); fs.mkdirSync(path.join(child,'.codex'),{recursive:true});
     fs.writeFileSync(path.join(child,'.codex/settings.local.json'),'{"skillmeter":{"telemetry":false}}');
-    const { buildConsentPreview } = require(${JSON.stringify(path.resolve(__dirname, "../scripts/lib/shared-consent-preview.js"))});
+    const { buildConsentPreview } = require(${JSON.stringify(path.resolve(__dirname, "../scripts/lib/consent-preview.js"))});
     const result = buildConsentPreview({cwd:child,scope:logger.getRepoScopeDecision(child),policy:null});
     assert.deepEqual(result.localChoices.map(x=>x.choice),['on','off']);
     assert.equal(result.localChoices[1].path,'src/.codex/settings.local.json');
@@ -106,14 +106,14 @@ test("removed observed policy is not described as first-use consent", t => {
   assert.equal(fs.existsSync(f.policyFile), false);
 });
 
-test("missing repository identity cannot produce a migration target", t => {
+test("missing repository identity cannot produce a consent target", t => {
   const f = fixture(t); fs.writeFileSync(path.join(f.repo, ".git/config"), "");
   const result = preview(f);
   assert.equal(result.repository, null);
   assert.ok(codes(result).includes("repository_unavailable"));
 });
 
-test("human output distinguishes the preview from applied migration", t => {
+test("human output distinguishes the preview from a saved choice", t => {
   const f = fixture(t); const result = f.cli(["consent-preview"]);
   assert.match(result.stdout, /No consent settings changed/);
   assert.match(result.stdout, /Local OFF settings remain in effect/);
@@ -137,7 +137,7 @@ test("a nested repository does not inherit its parent's local opt-out", t => {
     fs.writeFileSync(path.join(repo,'.codex/settings.local.json'),'{"skillmeter":{"telemetry":false}}');
     const nested=path.join(repo,'nested'); fs.mkdirSync(path.join(nested,'.git'),{recursive:true});
     fs.writeFileSync(path.join(nested,'.git/config'),'[remote "origin"]\\nurl = https://github.com/acme/other.git\\n');
-    const { buildConsentPreview } = require(${JSON.stringify(path.resolve(__dirname, "../scripts/lib/shared-consent-preview.js"))});
+    const { buildConsentPreview } = require(${JSON.stringify(path.resolve(__dirname, "../scripts/lib/consent-preview.js"))});
     const result=buildConsentPreview({cwd:nested,scope:logger.getRepoScopeDecision(nested),policy:null});
     assert.equal(result.repository,'github.com/acme/other');
     assert.deepEqual(result.localChoices.map(x=>x.choice),['unset']);
@@ -156,7 +156,7 @@ for (const kind of ["clone", "worktree"]) {
         fs.writeFileSync(path.join(gitdir,'commondir'),'../..');
         fs.writeFileSync(path.join(second,'.git'),'gitdir: '+gitdir+'\\n');
       }
-      const { buildConsentPreview } = require(${JSON.stringify(path.resolve(__dirname, "../scripts/lib/shared-consent-preview.js"))});
+      const { buildConsentPreview } = require(${JSON.stringify(path.resolve(__dirname, "../scripts/lib/consent-preview.js"))});
       const result=buildConsentPreview({cwd:second,scope:logger.getRepoScopeDecision(second),policy});
       assert.equal(result.repository,'github.com/acme/widgets');
       assert.equal(result.localChoices[0].choice,'unset');
