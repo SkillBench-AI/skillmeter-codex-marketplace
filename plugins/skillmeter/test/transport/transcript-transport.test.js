@@ -11,13 +11,13 @@ delete process.env.SKILLMETER_BACKEND_URL;
 const repo = path.join(root, "repo");
 execFileSync("git", ["init", "--quiet", repo]);
 execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://github.com/synthetic/repo.git"]);
-const { writeCredentials, sessionFileIn } = require("../../test-support/plugin.cjs");
+const { writeCredentials, sessionFileIn, consentPolicyFileIn, grantConsent } = require("../../test-support/plugin.cjs");
 const stateDir = path.join(root, ".skillbench"), identityFile = path.join(stateDir, "credentials.json"), sessionFile = sessionFileIn(stateDir);
 // A broker license: `broker_sub` is the user, `orgs` the repository scope.
 const jwt = (user = "synthetic-user", exp = 4102444800, extra = {}) => "e30." + Buffer.from(JSON.stringify({ sub: "synthetic-tenant", broker_sub: user, org: { login: "synthetic" }, orgs: ["synthetic"], exp, aud: "https://synthetic.meter.skillbench.com", ...extra })).toString("base64url") + ".fixture";
 const credentials = { device_id: "SYNTHETIC-DEVICE", hash_salt: "fixture-salt", license_jwt: jwt(), refresh_token: "synthetic-refresh" };
 const save = patch => writeCredentials(root, { ...credentials, ...patch }, { stateDir });
-const policyFile = path.join(stateDir, "telemetry-policy.json");
+const policyFile = consentPolicyFileIn(stateDir), repoKey = "github.com/synthetic/repo";
 const snapshot = () => [identityFile, sessionFile].map(file => fs.readFileSync(file));
 save({});
 const logger = require("../../scripts/logger");
@@ -28,9 +28,9 @@ const line = message => JSON.stringify({ type: "response_item", payload: { type:
 const stage = () => logger.stageTranscriptForUpload(source, { cwd: repo });
 const upload = file => logger.processPendingTranscript(file, credentials.device_id, "https://collector.invalid/logs/codex", 1000);
 beforeEach(() => {
-  // A global pause creates the shared policy; start each test without one.
-  fs.rmSync(policyFile, { force: true });
+  // Start each test with acknowledged organization and repository consent.
   save({}); fs.rmSync(logger.LOG_DIR, { recursive: true, force: true });
+  grantConsent(stateDir, repoKey);
   fs.rmSync(path.join(repo, ".codex"), { recursive: true, force: true });
   logger.saveTelemetryOptIn(repo, true);
   fs.writeFileSync(source, "");
@@ -49,7 +49,11 @@ for (const [name, change] of [
   ["expired token", () => save({ license_jwt: jwt("synthetic-user", 1) })],
   ["missing token", () => save({ license_jwt: "" })],
   ["project opt-out", () => { fs.mkdirSync(path.join(repo, ".codex"), { recursive: true }); fs.writeFileSync(path.join(repo, ".codex/settings.local.json"), '{"skillmeter":{"telemetry":false}}'); }],
-  ["removed repository choice", () => fs.unlinkSync(path.join(repo, ".codex/settings.local.json"))],
+  ["removed repository choice", () => {
+    const policy = JSON.parse(fs.readFileSync(policyFile, "utf8"));
+    delete policy.repositories[repoKey]; policy.revision++;
+    fs.writeFileSync(policyFile, JSON.stringify(policy));
+  }],
 ]) test(`${name} blocks queued upload without consuming it`, async () => {
   const file = stage(); assert.ok(file); change();
   assert.equal(await upload(file), "skip"); assert.equal(fs.existsSync(file), true);
@@ -351,9 +355,6 @@ test("repository disable/re-enable without hooks excludes the interval through a
 });
 
 test("global pause retains queued chunks but excludes newly written interval", () => {
-  // Once the shared policy exists, the repository needs a shared choice.
-  fs.writeFileSync(policyFile, JSON.stringify({ schema_version: 1, revision: 1, global: { enabled: true, decided_at: 1, source: "user" },
-    organizations: { synthetic: { enabled: true } }, repositories: { "github.com/synthetic/repo": { enabled: true } } }));
   fs.writeFileSync(source, ""); logger.observeTranscriptConsent(source, repo);
   fs.appendFileSync(source, line("synthetic first message"));
   logger.requestTranscriptCapture({ cwd: repo, session_id: "pause", transcript_path: source });
@@ -404,11 +405,18 @@ test("a disabled native hook observes offsets without logging content or launchi
 
 test("enable advances an unselected source before any upload hint exists", () => {
   fs.rmSync(path.join(repo,".codex"),{recursive:true,force:true});
-  fs.rmSync(logger.TRANSCRIPT_CHUNKS_DIR,{recursive:true,force:true});
+  fs.rmSync(logger.LOG_DIR,{recursive:true,force:true});
+  const policy = JSON.parse(fs.readFileSync(policyFile,"utf8"));
+  delete policy.repositories[repoKey];
+  fs.writeFileSync(policyFile,JSON.stringify(policy));
   fs.writeFileSync(source,line("UNSELECTED-HISTORY"));
   logger.observeTranscriptConsent(source,repo);
   assert.equal(fs.existsSync(logger.TRANSCRIPT_CAPTURES_DIR),false);
-  logger.saveTelemetryOptIn(repo,true);
+  // Enable the way consent-set does: observe known sources under the writer lock.
+  const { createSharedPolicyStore } = require("../../scripts/lib/shared-policy-store");
+  createSharedPolicyStore({ file: policyFile, observedFile: logger.CONSENT_OBSERVED_FILE })
+    .setRepositoryOverride(repoKey, true, { expectedRevision: policy.revision, acknowledged: true,
+      onCommitted: () => logger.observeKnownTranscriptConsent() });
   fs.appendFileSync(source,line("FIRST-AUTHORIZED-PROMPT"));
   assert.deepEqual(recordsIn([stage()]).map(r=>r.payload.content),["FIRST-AUTHORIZED-PROMPT"]);
 });

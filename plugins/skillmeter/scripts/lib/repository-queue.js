@@ -192,15 +192,11 @@ function createRepositoryQueue(root, salt, allowed, sharedPolicy = () => null) {
     }
     return complete;
   }
-  function requiresSharedPolicy(repoRoot) {
-    if (!repoRoot || !fs.existsSync(index)) return false;
-    return read(key(repoRoot))?.sharedPolicySeen === true;
-  }
   function hasRevoked(file) {
     if (!fs.existsSync(file)) return false;
     const bytes = fs.readFileSync(file);
     return filter(bytes, false).kept !== bytes.toString();
   }
-  return { register, epoch, eventRoute, revokedScope, pruneFile, purgeEvents, requiresSharedPolicy, hasRevoked };
+  return { register, epoch, eventRoute, revokedScope, pruneFile, purgeEvents, hasRevoked };
 }
 module.exports = { createRepositoryQueue };

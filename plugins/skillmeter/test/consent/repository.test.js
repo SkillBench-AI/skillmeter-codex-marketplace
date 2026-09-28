@@ -1,7 +1,7 @@
 "use strict";
 // Repository consent: the in-process gate, and the boundary as the real hook
 // and control scripts enforce it from a checkout.
-const { isolateHome, sandbox, tempDir, license, STRICT_PRELOAD } = require("../../test-support/plugin.cjs");
+const { isolateHome, sandbox, tempDir, license, grantConsent, STRICT_PRELOAD } = require("../../test-support/plugin.cjs");
 isolateHome();
 
 const { test } = require("node:test");
@@ -46,16 +46,16 @@ test("writeTelemetryConsentFallback prints the in-context commands without savin
   const output = chunks.join("");
   assert.equal(logger.getTelemetryOptIn(cwd), null);
   assert.match(output, /Telemetry is not configured/);
-  for (const action of ["enable", "disable", "status"]) assert.match(output, new RegExp(`telemetry\\.js" ${action}`));
+  for (const action of ["consent-preview", "status"]) assert.match(output, new RegExp(`telemetry\\.js" ${action}`));
 });
 
-test("saveTelemetryOptIn round-trips through getTelemetryOptIn", () => {
+test("a local ON alone grants nothing without a consent record", () => {
   const cwd = tempDir("sk-consent-project");
   assert.equal(logger.getTelemetryOptIn(cwd), null);
   logger.saveTelemetryOptIn(cwd, true);
-  assert.equal(logger.getTelemetryOptIn(cwd), true);
+  assert.equal(logger.getTelemetryOptIn(cwd), null);
   logger.saveTelemetryOptIn(cwd, false);
-  assert.equal(logger.getTelemetryOptIn(cwd), false);
+  assert.notEqual(logger.getTelemetryOptIn(cwd), true);
 });
 
 const EVENT = { session_id: "synthetic-session", tool_name: "synthetic", tool_input: { message: "synthetic event" } };
@@ -77,7 +77,9 @@ function checkout(t) {
     fs.writeFileSync(path.join(subdir, ".codex", "settings.local.json"), typeof value === "string" ? value : JSON.stringify(value));
     return subdir;
   };
-  return { ...box, control, hook, subdirSettings };
+  // Acknowledged organization and repository ON in the Codex consent record.
+  const grant = () => grantConsent(box.state, "github.com/acme/widgets");
+  return { ...box, control, hook, subdirSettings, grant };
 }
 
 test("an unselected owned repository creates no events or capture hints", t => {
@@ -91,8 +93,16 @@ test("an unselected owned repository creates no events or capture hints", t => {
   assert.match(result.stderr, /telemetry not enabled/);
 });
 
-test("an explicit enable persists across hook processes and a disable stops new capture", t => {
+test("a local enable alone does not capture", t => {
   const f = checkout(t);
+  f.control("enable");
+  f.hook();
+  assert.deepEqual(f.events(), []);
+});
+
+test("recorded consent persists across hook processes and a local disable stops new capture", t => {
+  const f = checkout(t);
+  f.grant();
   f.control("enable");
   f.hook(); f.hook();
   assert.equal(f.events().length, 2);
@@ -103,6 +113,7 @@ test("an explicit enable persists across hook processes and a disable stops new 
 
 test("the repository-root choice applies to hooks and controls in subdirectories", t => {
   const f = checkout(t);
+  f.grant();
   const subdir = path.join(f.repo, "src");
   fs.mkdirSync(subdir);
   f.control("enable", subdir);
@@ -117,6 +128,7 @@ test("the repository-root choice applies to hooks and controls in subdirectories
 
 test("parent consent does not enable an unselected nested repository", t => {
   const f = checkout(t);
+  f.grant();
   f.control("enable");
   const nested = path.join(f.repo, "nested");
   fs.mkdirSync(path.join(nested, ".git"), { recursive: true });
@@ -129,11 +141,7 @@ test("the global pause and scope exclusion override an explicit repository enabl
   const f = checkout(t);
   f.control("enable");
   const global = action => assert.equal(f.script("telemetry.js", { args: [action, "--global"], cwd: f.repo }).status, 0);
-  // The pause creates the shared policy, after which the repository needs a
-  // shared choice; record one so the pause is the only change.
-  fs.writeFileSync(path.join(f.state, "telemetry-policy.json"), JSON.stringify({ schema_version: 1, revision: 1,
-    global: { enabled: true, decided_at: 1, source: "user" }, organizations: { acme: { enabled: true } },
-    repositories: { "github.com/acme/widgets": { enabled: true } } }));
+  f.grant();
   global("disable"); f.hook();
   assert.deepEqual(f.events(), []);
   global("enable");
@@ -146,6 +154,7 @@ test("the global pause and scope exclusion override an explicit repository enabl
 for (const value of ["{", "[]", '{"skillmeter":{"telemetry":"true"}}']) {
   test(`malformed root consent never authorizes capture: ${value}`, t => {
     const f = checkout(t);
+    f.grant();
     fs.mkdirSync(path.dirname(f.settings));
     fs.writeFileSync(f.settings, value);
     f.hook();
@@ -184,6 +193,7 @@ test("SessionStart asks for a choice in an unselected repository without startin
 
 test("SessionStart does not start monitors for an opted-in repository that is out of scope", t => {
   const f = checkout(t);
+  f.grant();
   f.control("enable");
   f.saveCredentials({ license_jwt: license({ orgs: ["another"] }) });
   const result = f.script("session_start.js", { input: { ...EVENT, cwd: f.repo } });
@@ -203,6 +213,7 @@ test("a subdirectory opt-in alone cannot authorize the repository", t => {
 for (const value of [{ skillmeter: { telemetry: false } }, 42, { skillmeter: [] }, { skillmeter: { telemetry: "false" } }]) {
   test(`a restrictive or malformed descendant setting blocks root consent: ${JSON.stringify(value)}`, t => {
     const f = checkout(t);
+    f.grant();
     f.control("enable");
     f.hook(f.subdirSettings(value));
     assert.deepEqual(f.events(), []);
@@ -213,6 +224,7 @@ for (const value of [{ skillmeter: { telemetry: false } }, 42, { skillmeter: [] 
 for (const value of [{ skillmeter: {} }, { skillmeter: { telemetry: true } }]) {
   test(`a permissive descendant setting retains root consent: ${JSON.stringify(value)}`, t => {
     const f = checkout(t);
+    f.grant();
     f.control("enable");
     f.hook(f.subdirSettings(value));
     assert.equal(f.events().length, 1);
@@ -221,6 +233,7 @@ for (const value of [{ skillmeter: {} }, { skillmeter: { telemetry: true } }]) {
 
 test("routing lock contention keeps the Stop hook's JSON and reports a retryable control failure", t => {
   const f = checkout(t);
+  f.grant();
   f.control("enable");
   const routing = path.join(f.data, "logs/repository-routing");
   const id = require("node:crypto").createHmac("sha256", f.credentials.hash_salt).update(fs.realpathSync(f.repo)).digest("hex").slice(0, 12);

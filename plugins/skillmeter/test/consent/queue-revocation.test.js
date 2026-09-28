@@ -8,7 +8,7 @@ const os = require("node:os");
 const path = require("node:path");
 const zlib = require("node:zlib");
 const { execFileSync } = require("node:child_process");
-const { license, writeCredentials, transcriptLine: line } = require("../../test-support/plugin.cjs");
+const { license, writeCredentials, grantConsent, transcriptLine: line } = require("../../test-support/plugin.cjs");
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-revocation-"));
 process.env.HOME = root;
@@ -58,8 +58,8 @@ function event(name) {
 }
 
 beforeEach(() => {
-  // A global pause creates the shared policy; start each test without one.
-  fs.rmSync(path.join(root, ".skillbench/telemetry-policy.json"), { force: true });
+  // Start each test with acknowledged consent for both repositories and no pause.
+  grantConsent(path.join(root, ".skillbench"), ["github.com/synthetic/a", "github.com/synthetic/b"]);
   save();
   fs.rmSync(logger.LOG_DIR, { recursive: true, force: true });
   for (const name of ["a", "b"]) {
@@ -306,13 +306,15 @@ test("missing credentials retain queued events without an upload or retry charge
 
 test("revocation removes A even when B's delivery authorization is temporarily unavailable", () => {
   event("a"); event("b"); const sealed = logger.sealEventLog();
-  fs.writeFileSync(path.join(repos.b, logger.SETTINGS_RELATIVE), "{}");
+  fs.writeFileSync(path.join(repos.b, logger.SETTINGS_RELATIVE), '{"skillmeter":{"telemetry":"hold"}}');
   control("a", "disable");
   assert.deepEqual(fs.readFileSync(sealed, "utf8").trim().split("\n").map(JSON.parse).map(r => r.session_id), ["synthetic-b"]);
 });
 
+// An invalid local choice holds delivery without revoking queued payloads.
+const HOLD = '{"skillmeter":{"telemetry":"hold"}}';
 function holdA() {
-  fs.writeFileSync(path.join(repos.a, logger.SETTINGS_RELATIVE), "{}");
+  fs.writeFileSync(path.join(repos.a, logger.SETTINGS_RELATIVE), HOLD);
 }
 function sessions(file) {
   return fs.readFileSync(file, "utf8").trim().split("\n").map(JSON.parse).map(r => r.session_id);
@@ -494,8 +496,8 @@ test("global pause during rejection leaves salvage queued rather than quarantine
     logger.setTelemetryGloballyDisabled(true);
     return { ok: false, status: 400 };
   };
-  // The shared pause holds the salvage at the consent recheck.
-  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "held");
+  // The pause stops the salvage before it is sent; the batch stays queued.
+  assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "skip");
   assert.equal(calls, 1);
   assert.deepEqual(sessions(sealed), ["synthetic-b"]);
   assert.equal(fs.existsSync(path.join(logger.LOG_DIR, "poison", path.basename(sealed))), false);

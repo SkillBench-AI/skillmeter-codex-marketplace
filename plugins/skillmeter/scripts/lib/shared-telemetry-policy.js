@@ -22,15 +22,17 @@ function policyPathIsAbsent(file) {
   }
 }
 
-function sharedPolicyFile() {
-  return path.join(require("./config").stateDir(), "telemetry-policy.json");
+// Codex's own consent record, next to its session (ADR 006 in the Claude
+// plugin repository). Other clients' records are never read.
+function consentPolicyFile() {
+  return path.join(require("./config").sessionDir(), "telemetry-policy.json");
 }
 
-// Unknown records hold delivery; explicit OFF revokes. Only acknowledged
-// organization and repository grants can replace a required local opt-in.
+// Unknown records hold delivery; explicit OFF revokes. Capture needs
+// acknowledged organization and repository grants; no record grants nothing.
 function evaluateSharedRepositoryPolicy(scope, shared) {
   const key = scope.repoKey;
-  if (shared.reason === "absent") return { key, allowed: true, reason: "absent", stamp: key ? JSON.stringify([key, null]) : null };
+  if (shared.reason === "absent") return { key, allowed: false, reason: "absent", stamp: key ? JSON.stringify([key, null]) : null };
   if (!scope.allowed || !key) return { allowed: false, reason: "scope_unavailable", stamp: null };
   if (!shared.policy) return { allowed: false, reason: "invalid", stamp: null };
   const { organizations, repositories } = shared.policy;
@@ -63,4 +65,4 @@ function evaluateSharedRepositoryPolicy(scope, shared) {
   };
 }
 
-module.exports = { evaluateSharedRepositoryPolicy, policyPathIsAbsent, sharedPolicyFile };
+module.exports = { evaluateSharedRepositoryPolicy, policyPathIsAbsent, consentPolicyFile };

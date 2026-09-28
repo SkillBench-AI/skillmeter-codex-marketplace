@@ -6,6 +6,10 @@
 end to end in dev and prod). This file is the Codex design, and it is a
 **full cutover**: GitHub OAuth, `gh` activation and `/refresh` are removed,
 with no compatibility path.
+**Amended 2026-09-28 by [ADR 006](006-per-client-consent.md):** consent and
+the global pause moved from the shared `<state>/telemetry-policy.json` to
+`<state>/clients/codex/telemetry-policy.json`. The file table and the global
+pause section below describe the state before that change.
 
 ## Why a cutover, not a migration
 

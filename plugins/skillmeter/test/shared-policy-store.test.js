@@ -365,6 +365,34 @@ test("a synced write reports confirmed durability", t => {
   assert.equal(f.store.setRepositoryOverride(repo, false, { expectedRevision: 4 }).durability, "synced");
 });
 
+test("an organization write requires a revision and acknowledgement for ON and upgrades a legacy grant", t => {
+  const f = fixture(t);
+  const before = fs.readFileSync(f.file);
+  assert.throws(() => f.store.setOrganizationConsent("acme", true, { expectedRevision: 4 }), { code: "ACKNOWLEDGEMENT_REQUIRED" });
+  assert.throws(() => f.store.setOrganizationConsent("acme", false), { code: "EXPECTED_REVISION_REQUIRED" });
+  assert.throws(() => f.store.setOrganizationConsent("acme", true, { expectedRevision: 3, acknowledged: true }), { code: "STALE_POLICY" });
+  assert.throws(() => f.store.setOrganizationConsent("acme/widgets", true, { expectedRevision: 4, acknowledged: true }), /organization is required/);
+  assert.deepEqual(fs.readFileSync(f.file), before);
+  const updated = f.store.setOrganizationConsent(" ACME ", true, { expectedRevision: 4, acknowledged: true });
+  assert.equal(updated.revision, 5);
+  assert.equal(updated.organizations.acme.consent_version, 2);
+  assert.ok(updated.organizations.acme.decided_at > 10);
+  assert.deepEqual(updated.repositories, policy().repositories);
+});
+
+test("organization OFF drops the acknowledgement and runs the commit observer under the lock", t => {
+  const f = fixture(t, null);
+  let observed = 0;
+  const saved = f.store.setOrganizationConsent("acme", false, { expectedRevision: null, onCommitted: committed => {
+    observed++;
+    assert.equal(committed.organizations.acme.enabled, false);
+    assert.throws(() => f.store.setOrganizationConsent("acme", true, { expectedRevision: 1, acknowledged: true }), { code: "POLICY_BUSY" });
+  } });
+  assert.equal(observed, 1);
+  assert.deepEqual(Object.keys(saved.organizations.acme).sort(), ["decided_at", "enabled", "source"]);
+  assert.deepEqual(saved.repositories, {});
+});
+
 test("on Windows, directory sync is not attempted and durability is reported as unconfirmed", t => {
   const f = fixture(t, null);
   onPlatform(t, "win32");

@@ -39,6 +39,7 @@ require.cache[credentialModule] = {
   },
 };
 const logger = require("../../scripts/logger");
+require("../../test-support/plugin.cjs").grantConsent(process.env.SKILLMETER_STATE_DIR, "github.com/synthetic/repo");
 logger.saveTelemetryOptIn(dataDir, true);
 const realFetch = global.fetch;
 

@@ -12,10 +12,10 @@ transcripts, and custom skill content. Sanitization reduces exposure; it does
 not make arbitrary content anonymous. Read the [data and scope guide](plugins/skillmeter/README.md#data-and-privacy)
 before enabling collection.
 
-New capture requires an explicit repository choice as well as an allowed GitHub
-owner. Installation and sign-in alone do not enable capture. See
-[collection scope](plugins/skillmeter/README.md#collection-scope) for controls
-and the remaining differences from Claude's shared consent flow.
+New capture requires explicit organization and repository choices in Codex as
+well as an allowed GitHub owner. Installation and sign-in alone do not enable
+capture, and choices made in SkillMeter for Claude Code do not apply here. See
+[collection scope](plugins/skillmeter/README.md#collection-scope) for controls.
 
 ## Install
 
@@ -31,8 +31,8 @@ Codex prompts you. Then ask Codex:
 
 > Use SkillMeter's signin skill to sign me in.
 
-Then review the collection notice and explicitly enable telemetry for the
-repository you want to capture using the [project controls](plugins/skillmeter/README.md#sign-in-and-controls).
+Then review the collection notice and record organization and repository
+consent for the repository you want to capture using the [project controls](plugins/skillmeter/README.md#sign-in-and-controls).
 
 Sign-in opens the SkillBench sign-in service, where you pick your workspace.
 This plugin keeps its own session, separate from SkillMeter for Claude Code. See

@@ -7,7 +7,7 @@ See the [installation and update guide](../../README.md#install) to get started.
 ## Sign in and controls
 
 In Codex, ask SkillMeter to sign you in, sign you out, show collection status,
-enable or disable the repository you are in, or check whether it is in scope.
+record consent for the repository you are in, or check whether it is in scope.
 The bundled skills are listed below.
 
 For terminal commands, set `PLUGIN_ROOT` to the **Installed plugin root** printed
@@ -25,10 +25,10 @@ Run project controls from the repository you want to configure:
 | Sign in | `node "$PLUGIN_ROOT/bin/signin"` |
 | Inspect sign-in claims and expiry (no raw token) | `node "$PLUGIN_ROOT/bin/sk-jwt"` |
 | Check capture policy, authentication and local queues | `node "$PLUGIN_ROOT/bin/sk-telemetry" status` |
-| Preview local/shared consent conflicts | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-preview` |
-| Record a shared repository choice (the `telemetry` skill guides preview, acknowledgement and apply) | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-set on\|off …` |
-| Enable / disable this project | `node "$PLUGIN_ROOT/bin/sk-telemetry" enable` / `disable` |
-| Pause / resume collection and uploads for every SkillMeter client | `node "$PLUGIN_ROOT/bin/sk-telemetry" disable --global` / `enable --global` |
+| Preview consent choices and local restrictions | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-preview` |
+| Record an organization or repository choice (the `telemetry` skill guides preview, acknowledgement and apply) | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-set on\|off …` |
+| Restrict this checkout / clear the restriction | `node "$PLUGIN_ROOT/bin/sk-telemetry" disable` / `enable` |
+| Pause / resume Codex collection and uploads | `node "$PLUGIN_ROOT/bin/sk-telemetry" disable --global` / `enable --global` |
 | Sign out | `node "$PLUGIN_ROOT/bin/signout"` |
 
 Sign-in is a device flow through the SkillBench sign-in service: open the URL
@@ -42,15 +42,21 @@ the sign-in service's refresh token renews the license, and signing in or out
 of SkillMeter for Claude Code does not affect it. Signing out ends the session,
 revokes it at the sign-in service, and deletes event batches not yet sent. When
 the workspace stops licensing you, the session ends the same way at the next
-renewal. The device identity and consent choices are shared by every SkillMeter
-client and kept.
+renewal. The device identity is shared by every SkillMeter client; sign-out
+keeps it and the consent choices.
 
-The global pause is the shared policy's and covers every SkillMeter client on
-the machine. It retains queued data for later delivery, but sealed event batches
-are still removed 30 days after sealing, paused or not.
+Consent choices and the global pause are this plugin's own too
+(`~/.skillbench/clients/codex/telemetry-policy.json`). Choices made in
+SkillMeter for Claude Code do not apply to Codex, and Codex choices do not
+apply to Claude Code. The pause retains queued data for later delivery, but
+sealed event batches are still removed 30 days after sealing, paused or not.
 
 Upgrading from a version that signed in with GitHub starts signed out: nothing
 is carried over, and event batches recorded under the old sign-in are dropped.
+Upgrading from a version that used the machine-wide shared consent record
+starts with no Codex consent: record the organization and repository again.
+Event batches queued under the shared record are held and expire at the
+30-day limit without being sent.
 
 `status` is read-only. It separates repository capture eligibility from license
 freshness and reports pending event batches and current-format transcript chunks
@@ -59,37 +65,35 @@ capture continues. It does not verify hook execution or server acceptance, and
 this version does not track the last successful upload. An empty queue does not
 prove delivery or report generation; legacy snapshots are excluded from the count.
 
-`consent-preview` shows choices at the repository root and along the path to the
-current directory, shared opt-outs and missing machine-wide acknowledgements.
-Use `--json` for structured output. It does not scan other directories or change
-consent settings, credentials or queued data. It records a local observation
-marker so a later missing shared policy is reported.
+`consent-preview` shows the organization and repository choices, local
+restrictions at the repository root and along the path to the current
+directory, and missing acknowledgements. Use `--json` for structured output. It
+does not scan other directories or change consent settings, credentials or
+queued data. It records a local observation marker so a later missing consent
+record is reported.
 
-To record an explicit shared repository choice, use the repository key and
-revision shown by a fresh preview:
+Capture needs the organization ON, then the repository ON. Use the revision
+shown by a fresh preview for each write:
 
 ```sh
 node "$PLUGIN_ROOT/bin/sk-telemetry" consent-set on \
-  --repository github.com/org/repo --revision 12 --acknowledge-machine-scope
+  --organization org --revision absent --acknowledge-machine-scope
+node "$PLUGIN_ROOT/bin/sk-telemetry" consent-set on \
+  --repository github.com/org/repo --revision 1 --acknowledge-machine-scope
 node "$PLUGIN_ROOT/bin/sk-telemetry" consent-set off \
-  --repository github.com/org/repo --revision 13
+  --repository github.com/org/repo --revision 2
 ```
 
-ON authorizes every supported SkillMeter client and every clone or worktree of
-that repository on this machine. It requires machine-wide organization consent
-already recorded at version 2; this command cannot authorize an organization or
-upgrade its legacy choice. Local OFF or invalid settings must be resolved
-explicitly first. OFF needs no acknowledgement. For an absent policy, use
-`--revision absent`; only OFF can proceed without organization authorization.
-A stale revision or changed repository requires a new preview and confirmation.
+ON applies to Codex on this machine and to every clone or worktree of the
+repository. The organization must be covered by the license. Repository ON
+requires the organization ON first, and local OFF or invalid settings must be
+resolved explicitly first. OFF needs no acknowledgement. Use `--revision absent`
+before any choice exists. A stale revision or changed repository requires a new
+preview and confirmation.
 
-Local settings are preserved, including restrictions in other directories.
-Version-2 ON for both the organization and repository authorizes Codex capture
-without a checkout-local ON. Legacy choices retain the local opt-in requirement.
-The command checks
-known local queue revocations without uploading, reports deferred cleanup, and
-preserves privacy cursors. In-flight requests may finish. A saved choice does
-not prove hook execution, delivery or report generation.
+The command checks known local queue revocations without uploading, reports
+deferred cleanup, and preserves privacy cursors. In-flight requests may finish.
+A saved choice does not prove hook execution, delivery or report generation.
 
 ## Collection scope
 
@@ -100,18 +104,18 @@ hook-event collection. Per-task Work consent and delivery remain separate work.
 
 A recognized GitHub repository and an allowed remote owner are required:
 
-- Eligible repositories remain off until explicitly enabled.
-- An explicit project opt-out stops collection even for an allowed owner.
-- Enabling a project cannot bring an out-of-scope repository into scope.
-- The global pause overrides project choices. There is no OS consent pop-up.
+- Eligible repositories remain off until the organization and repository are
+  both ON.
+- An explicit OFF, in the record or in a local setting, stops collection even
+  for an allowed owner.
+- Consent cannot bring an out-of-scope repository into scope.
+- The global pause overrides every choice. There is no OS consent pop-up.
 
-Legacy `enable` / `disable` controls read and write
-`<git-root>/.codex/settings.local.json`, including from subdirectories.
-Local OFF and malformed settings remain restrictive. A shared grant requires
-version-2 ON for both organization and repository, and covers all clones and
-worktrees with the same canonical GitHub identity. Until acknowledged, shared
-legacy ON still requires a local boolean `true`; an absent, never-observed
-shared policy also retains that legacy behavior.
+`enable` / `disable` without `--global` read and write
+`<git-root>/.codex/settings.local.json`, including from subdirectories. Local
+OFF and malformed settings restrict capture; a local ON grants nothing on its
+own. Record choices cover all clones and worktrees with the same canonical
+GitHub identity.
 
 For additional narrowing, set `SKILLMETER_REPO_SCOPE_ORGS` to comma-separated
 owners, or use `skillmeter.repoScopeOrgs` in the same settings file. These filters
@@ -119,11 +123,12 @@ can only restrict allowed identities. Nested repositories use their own
 identity. A subdirectory OFF restricts that directory; a subdirectory ON cannot
 authorize the repository.
 
-Explicit repository OFF revokes known queued payloads while preserving privacy
-cursors and other repositories' data. Global pause holds queues. Missing shared
-choices hold rather than revoke. A missing previously observed policy, invalid
-policy or failed observation marker blocks capture and delivery without repair.
-Legacy unattributed queues retain their existing behavior.
+Explicit organization or repository OFF revokes known queued payloads while
+preserving privacy cursors and other repositories' data. Global pause holds
+queues. Missing choices hold rather than revoke. A missing previously observed
+record, an invalid record or a failed observation marker blocks capture and
+delivery without repair. Legacy unattributed queues retain their existing
+behavior.
 
 Observed disabled intervals and the initial transcript prefix are excluded from
 staging and baseline recovery. Consent changes can also exclude uncertain
@@ -208,7 +213,7 @@ Production routing normally needs no manual configuration. Development overrides
 | `SKILLMETER_ENV=dev` | Use the dev sign-in service, license server and `~/.skillbench-dev` state together |
 | `SKILLMETER_BROKER_URL` | Sign-in service (HTTPS on skillbench.ai/.com, or loopback) |
 | `SKILLMETER_ACTIVATE_URL` | License server `/activate` (same restriction) |
-| `SKILLMETER_STATE_DIR` | State directory holding the device identity, shared policy and session |
+| `SKILLMETER_STATE_DIR` | State directory holding the device identity and this plugin's session and consent record |
 | `SKILLMETER_BACKEND_URL` | Trusted ingest URL override; uploads still require a valid license |
 | `SKILLMETER_HARNESS_HASH_SKILL_NAMES=1` | Hash skill names in harness metadata |
 
