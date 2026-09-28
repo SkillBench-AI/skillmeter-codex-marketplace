@@ -169,3 +169,19 @@ test("an unknown cutover version cannot authorize capture or trigger a destructi
   assert.equal(signin(), false);
   assert.equal(fs.readFileSync(batch, "utf8"), bytes);
 });
+
+
+test("an unreadable event directory is a hold, never evidence of an empty queue", () => {
+  const readdir = fs.readdirSync;
+  fs.readdirSync = function (file, ...args) {
+    if (file === logger.LOG_DIR) throw Object.assign(new Error("unreadable"), { code: "EACCES" });
+    return readdir.call(this, file, ...args);
+  };
+  try {
+    assert.equal(prepareSession(), false);
+    fs.writeFileSync(session, JSON.stringify({ license_jwt: license(), refresh_token: "r" }));
+    assert.equal(prepareSession(), false);
+    assert.equal(store.getLicenseToken(), null);
+    assert.equal(fs.readFileSync(batch, "utf8"), bytes);
+  } finally { fs.readdirSync = readdir; }
+});
