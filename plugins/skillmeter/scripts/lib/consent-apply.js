@@ -1,5 +1,5 @@
 "use strict";
-const { buildConsentPreview } = require("./shared-consent-preview");
+const { buildConsentPreview } = require("./consent-preview");
 const error = (code, message) => Object.assign(new Error(message), { code });
 
 const CONSENT_SET_USAGE = "Usage: consent-set <on|off> (--organization org | --repository github.com/org/repo) --revision <number|absent> [--acknowledge-machine-scope]";

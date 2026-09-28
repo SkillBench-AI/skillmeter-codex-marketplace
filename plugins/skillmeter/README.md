@@ -136,14 +136,12 @@ Explicit organization or repository OFF revokes known queued payloads while
 preserving privacy cursors and other repositories' data. Global pause holds
 queues. Missing choices hold rather than revoke. A missing previously observed
 record, an invalid record or a failed observation marker blocks capture and
-delivery without repair. Legacy unattributed queues retain their existing
-behavior.
+delivery without repair. Event batches recorded before 0.11.0 were removed
+on the first run of 0.11.0.
 
 Observed disabled intervals and the initial transcript prefix are excluded from
 staging and baseline recovery. Consent changes can also exclude uncertain
-intervals, so native startup timing still matters. Authentication, organization
-controls, native validation and release acceptance remain separate from this
-consent integration. See the [consent contract](../../docs/repository-consent.md).
+intervals, so native startup timing still matters. See the [consent contract](../../docs/repository-consent.md).
 
 ## Data and privacy
 
@@ -186,12 +184,12 @@ preservation; otherwise, later batches remain content-only.
 | Symptom | Check |
 | --- | --- |
 | Reinstall still shows an old version | For a local marketplace, update the source checkout first; for a Git marketplace, run `marketplace upgrade`. |
-| Collection is paused or the repository is excluded | Check project/global settings and the license's GitHub organizations (`sk-jwt`). |
+| Collection is paused or the repository is excluded | Run `status`; for details run `status --details`, and check the license's GitHub organizations with `sk-jwt`. |
 | Uploads fail with 401/403 | Credentials and queued uploads are retained; background recovery requests a refreshed license. Check sign-in status if failures persist. |
 | Transcript delivery needs investigation | Use the [read-only inventory and recovery guide](integration/README.md#queue-and-recovery). |
 
-Token refresh is automatic during active retry-monitor sweeps and at session
-start. Delivery waits for a valid token. Renewal uses the sign-in service's
+Drains and the retry monitor renew the license before they send; session start
+does not. Delivery waits for a valid token. Renewal uses the sign-in service's
 refresh token; when the service ends the session, sign in again.
 
 Current limitations:
@@ -208,7 +206,7 @@ Current limitations:
 | --- | --- |
 | [signin](skills/signin/SKILL.md) | Sign in through the SkillBench sign-in service and choose a workspace |
 | [signout](skills/signout/SKILL.md) | End this plugin's session and stop uploads |
-| [telemetry](skills/telemetry/SKILL.md) | Show collection status; enable, disable, pause or resume collection |
+| [telemetry](skills/telemetry/SKILL.md) | Show collection status; record organization and repository consent; restrict, pause or resume collection |
 | [check-repo-scope](skills/check-repo-scope/SKILL.md) | Check whether the current repository is eligible |
 | [collect-export](skills/collect-export/SKILL.md) | Prepare a sanitized export for a one-off review |
 | [review-export](skills/review-export/SKILL.md) | Review an export before upload |

@@ -117,7 +117,7 @@ test("the repository-root choice applies to hooks and controls in subdirectories
   const subdir = path.join(f.repo, "src");
   fs.mkdirSync(subdir);
   f.control("enable", subdir);
-  assert.equal(JSON.parse(fs.readFileSync(f.settings)).skillmeter.telemetry, true);
+  assert.equal(JSON.parse(fs.readFileSync(f.settings)).skillmeter.telemetry, undefined);
   assert.equal(fs.existsSync(path.join(subdir, ".codex/settings.local.json")), false);
   f.hook(); f.hook(subdir);
   assert.equal(f.events().length, 2);
@@ -248,7 +248,7 @@ test("routing lock contention keeps the Stop hook's JSON and reports a retryable
     const control = f.script("telemetry.js", { args: ["disable"] });
     assert.equal(control.status, 1);
     assert.match(control.stderr, /busy.*retry/i);
-    assert.equal(JSON.parse(fs.readFileSync(f.settings)).skillmeter.telemetry, true);
+    assert.equal(JSON.parse(fs.readFileSync(f.settings)).skillmeter.telemetry, undefined);
   } finally { release(); }
   f.control("disable");
   assert.equal(JSON.parse(fs.readFileSync(f.settings)).skillmeter.telemetry, false);

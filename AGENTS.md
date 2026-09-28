@@ -17,7 +17,8 @@ concise English for readers who do not know the team's internal history.
   avoid promises such as "always safe" or "never fails."
 - Do not commit credentials, real telemetry, personal paths, device identifiers
   or generated test receipts. Use synthetic fixtures for tests.
-- Follow the canonical Claude ADRs for shared behavior. Amend the relevant ADR
-  when a policy decision changes instead of duplicating policy explanations.
+- Follow the canonical Claude ADRs and this repository's mirrors in `docs/adr/`.
+  Sessions and consent are per client (ADR 005, ADR 006); amend the relevant
+  ADR when a policy decision changes instead of duplicating explanations.
 - Keep PR descriptions focused on the final change and relevant validation.
   Follow `RELEASING.md` for release-note conventions.
