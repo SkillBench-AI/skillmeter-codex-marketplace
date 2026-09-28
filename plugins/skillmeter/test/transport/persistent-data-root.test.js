@@ -36,14 +36,39 @@ test("logger keeps one persistent data root across versioned install replacement
   assert.equal(fs.existsSync(path.join(next, "logs")), false);
 });
 
+test("a clean install without plugins/data creates its private data directory", t => {
+  const f = fixture(t), install = f.install("new");
+  fs.mkdirSync(install, { recursive: true });
+  assert.equal(fs.existsSync(path.dirname(f.data)), false);
+  const result = readRoot(f, install);
+  assert.equal(result.status, 0, result.stderr);
+  assert.deepEqual(JSON.parse(result.stdout), { data: f.data, childData: f.data });
+  assert.equal(fs.statSync(f.data).mode & 0o777, 0o700);
+  assert.equal(fs.existsSync(path.join(install, "logs")), false);
+});
+
+test("a cache-shaped path outside a plugins directory is not treated as an installation", t => {
+  const f = fixture(t), install = path.join(f.root, "elsewhere/cache/fixture/skillmeter/new");
+  fs.mkdirSync(install, { recursive: true });
+  const result = readRoot(f, install);
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /persistent-plugin-data-unavailable: set PLUGIN_DATA/);
+  assert.equal(fs.existsSync(path.join(f.root, "elsewhere/data")), false);
+});
+
 test("unresolved source checkout or unsubstituted data cannot write inside installation", t => {
   const f = fixture(t);
-  for (const root of [f.root, f.install("new")]) {
-    const result = readRoot(f, root, { PLUGIN_DATA: "${PLUGIN_DATA}" });
-    assert.notEqual(result.status, 0);
-    assert.match(result.stderr, /persistent-plugin-data-unavailable/);
-    assert.equal(fs.existsSync(path.join(root, "logs")), false);
-  }
+  const source = readRoot(f, f.root, { PLUGIN_DATA: "${PLUGIN_DATA}" });
+  assert.notEqual(source.status, 0);
+  assert.match(source.stderr, /persistent-plugin-data-unavailable/);
+  assert.equal(fs.existsSync(path.join(f.root, "logs")), false);
+  // An unsubstituted variable in an installation falls back to the host layout.
+  const install = f.install("new");
+  fs.mkdirSync(install, { recursive: true });
+  const inferred = readRoot(f, install, { PLUGIN_DATA: "${PLUGIN_DATA}" });
+  assert.equal(inferred.status, 0, inferred.stderr);
+  assert.deepEqual(JSON.parse(inferred.stdout), { data: f.data, childData: f.data });
+  assert.equal(fs.existsSync(path.join(install, "logs")), false);
 });
 
 test("host-supplied data is propagated to detached children", t => {
