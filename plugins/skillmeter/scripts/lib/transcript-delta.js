@@ -19,7 +19,17 @@ const STAGE_BYTES = 8 * 1024 * 1024;
 const digest = (bytes) => crypto.createHash("sha256").update(bytes).digest("hex");
 const hmac = (salt, bytes) => crypto.createHmac("sha256", salt).update(bytes).digest("hex");
 
+let warnedDirectoryDurability = false;
 function syncDir(dir) {
+  // Windows cannot fsync a read-only directory handle. File data is still
+  // synced before publication; do not turn a published write into a failure.
+  if (process.platform === "win32") {
+    if (!warnedDirectoryDurability) {
+      warnedDirectoryDurability = true;
+      try { console.error("[skillmeter] Windows queue directory durability is unconfirmed; directory syncing is unsupported."); } catch {}
+    }
+    return;
+  }
   const fd = fs.openSync(dir, "r");
   try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
 }
