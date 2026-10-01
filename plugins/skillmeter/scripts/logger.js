@@ -1627,14 +1627,13 @@ function saveTelemetryOptIn(cwd, value) {
 function writeTelemetryConsentFallback(cwd, stream = process.stderr) {
   const record = getRepositoryPolicyDecision(cwd);
   if (record.revoked || ["consent_record_missing", "invalid"].includes(record.reason)) {
-    stream.write("SkillMeter: The organization or repository consent record blocks capture. Check telemetry status; local enable cannot override it.\n");
+    stream.write("SkillMeter: The organization or repository consent record blocks capture. Check telemetry status; unrestrict cannot override it.\n");
     return;
   }
   stream.write(
     [
       `SkillMeter: Telemetry is not configured for ${cwd}`,
-      "SkillMeter: Review and record organization and repository consent with:",
-      `  ${telemetryCliCommand("consent-preview")}`,
+      "SkillMeter: Choose telemetry with $skillmeter:signin, or check it with:",
       `  ${telemetryCliCommand("status")}`,
       "",
     ].join("\n")

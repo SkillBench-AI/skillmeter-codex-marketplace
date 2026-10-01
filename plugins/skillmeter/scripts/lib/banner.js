@@ -59,10 +59,10 @@ const STATUS_TITLES = {
 };
 
 const NEXT_STEPS = {
-  consent: "→ Ask Codex to record SkillMeter consent for this repository",
-  signin: "→ Ask Codex to sign in to SkillMeter",
+  consent: "→ Run $skillmeter:signin to choose telemetry",
+  signin: "→ Run $skillmeter:signin",
   paused: "→ status --details for the cause",
-  off: "→ Ask Codex to show SkillMeter consent for this repository",
+  off: "→ Run $skillmeter:telemetry list to review choices",
   scope: "→ Ask Codex to check SkillMeter repository scope",
   on: "→ status --details for diagnostics",
 };
@@ -89,7 +89,7 @@ function consentSavedBanner({ kind, target, enabled, revision, capture, cleanupD
   if (kind === "repository" && enabled && capture?.state !== "on") lines.push(row("Reason", capture?.text || "unknown"));
   if (durabilityUnconfirmed) lines.push("Save not confirmed to survive a crash; check consent-preview.");
   lines.push("");
-  if (kind === "organization" && enabled) lines.push("→ Next: turn this repository on");
+  if (kind === "organization" && enabled) lines.push("→ Next: $skillmeter:telemetry enable in the repository");
   else if (enabled && capture?.state === "on") lines.push("→ Start a new Codex session to capture from the beginning");
   else lines.push("→ status for the current state");
   return card(lines);

@@ -103,4 +103,23 @@ function applyOnboardingSelection({ store, inventory, organization, repositories
   return store.setOrganizationRepositories(org, selected.map(repo => repo.key), repositoriesEnabled, { expectedRevision, acknowledged, onCommitted });
 }
 
-module.exports = { applyOrganizationConsent, applyRepositoryConsent, applyOnboardingSelection, parseConsentChoiceArgs, CONSENT_SET_USAGE };
+// The telemetry list picker: flip each selected repository from a fresh
+// inventory. Repositories without an `action` are reported, not changed.
+// Returns null when nothing can change, so no revision is spent.
+function applyRepositoryToggles({ store, inventory, repositories, expectedRevision, acknowledged, onCommitted }) {
+  checkChoice(true, expectedRevision);
+  const known = new Map(inventory.repositories.map(repo => [repo.key, repo]));
+  const selected = [...new Set(repositories)].map(key => known.get(key));
+  if (!selected.length || selected.some(repo => !repo)) {
+    throw error("REPOSITORY_CHANGED", "A repository is not in the current list; run list again and confirm.");
+  }
+  const changes = Object.fromEntries(selected.filter(repo => repo.action).map(repo => [repo.key, repo.action === "enable"]));
+  if (Object.values(changes).some(Boolean) && acknowledged !== true) {
+    throw error("ACKNOWLEDGEMENT_REQUIRED", "Turning a repository on lets Codex on this machine capture every clone or worktree of it. Show the scope statement, then pass --acknowledge-machine-scope.");
+  }
+  if (!Object.keys(changes).length) return null;
+  checkRevision(store, expectedRevision);
+  return store.setRepositoryChoices(changes, { expectedRevision, acknowledged, onCommitted });
+}
+
+module.exports = { applyOrganizationConsent, applyRepositoryConsent, applyOnboardingSelection, applyRepositoryToggles, parseConsentChoiceArgs, CONSENT_SET_USAGE };

@@ -33,7 +33,7 @@
     "privacyPolicyURL": "https://skillbench.com/privacy",
     "termsOfServiceURL": "https://skillbench.com/terms",
     "defaultPrompt": [
-      "Record SkillMeter consent for this repository and show the current status.",
+      "$skillmeter:telemetry status",
       "Use SkillMeter to check whether this repo matches my allowed GitHub org scope.",
       "Use SkillMeter to review this sanitized export before I upload it."
     ],

@@ -17,6 +17,6 @@ This ends Codex's SkillMeter session, deletes event batches that were recorded
 but not sent, and revokes the session at the sign-in service. The device
 identity and consent choices remain. Other SkillMeter clients on the machine
 stay signed in. To pause Codex uploads without signing out, use
-`node "<plugin-root>/scripts/telemetry.js" disable --global`.
+`$skillmeter:telemetry disable-global`.
 
-Report the result. Recording and uploads resume after signing in again.
+Report the result. Recording and uploads resume after `$skillmeter:signin`.
