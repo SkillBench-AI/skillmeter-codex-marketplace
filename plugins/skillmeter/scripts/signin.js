@@ -110,6 +110,24 @@ function spawnBackgroundPoll(deviceId, deviceCode, interval, generation) {
   fs.closeSync(logFd);
 }
 
+// The signin skill reads this line to start telemetry onboarding, as the Claude
+// plugin's sign-in hook does. It carries organizations and their Codex consent
+// only; the skill lists repositories itself right before asking.
+function signinState() {
+  try {
+    const { loadInventory } = require("./lib/repository-inventory");
+    const { inventory } = loadInventory({ discover: false });
+    return { status: "signed_in", globalPaused: inventory.globalPaused, orgs: inventory.orgs };
+  } catch (err) {
+    return { status: "signed_in", consentRecordError: err.code || "POLICY_UNAVAILABLE" };
+  }
+}
+
+function sayWelcome() {
+  say(welcomeBanner(credstore.getAllowedGitHubOrgs()));
+  say(`SkillMeter sign-in state JSON:\n${JSON.stringify(signinState())}`);
+}
+
 // A valid license whose session the sign-in service already ended is not a
 // sign-in to keep.
 function currentSignin() {
@@ -121,7 +139,7 @@ function currentSignin() {
 
 async function main() {
   if (currentSignin()) {
-    say(welcomeBanner(credstore.getAllowedGitHubOrgs()));
+    sayWelcome();
     return;
   }
 
@@ -171,7 +189,7 @@ async function main() {
         say("Sign-in discarded: signed out or signed in again meanwhile.");
         process.exit(0);
       }
-      say(welcomeBanner(credstore.getAllowedGitHubOrgs()));
+      sayWelcome();
     } catch (err) {
       stop();
       say(`Sign-in failed: ${err.message}`);
@@ -180,7 +198,7 @@ async function main() {
   } else {
     spawnBackgroundPoll(deviceId, device.device_code, device.interval || 5, generation);
     say("Polling for approval in the background.");
-    say("After approving in your browser, run the sign-in flow again to confirm.");
+    say("After approving in your browser, run the sign-in flow again to confirm and choose telemetry.");
     say(`(background log: ${backgroundLog()})`);
   }
 }

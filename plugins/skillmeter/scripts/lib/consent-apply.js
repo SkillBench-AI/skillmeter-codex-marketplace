@@ -78,4 +78,29 @@ function applyRepositoryConsent({ cwd, scope, store, repository, expectedRevisio
   // untouched, so a concurrent local OFF continues to restrict capture.
   return store.setRepositoryOverride(repository, enabled, { expectedRevision, acknowledged, onCommitted });
 }
-module.exports = { applyOrganizationConsent, applyRepositoryConsent, parseConsentChoiceArgs, CONSENT_SET_USAGE };
+// Sign-in onboarding for one organization. `inventory` is a fresh
+// repository-inventory result; only its repositories of that organization can
+// be named, and a checkout with a local OFF or invalid setting cannot be
+// turned on here (the same rule as applyRepositoryConsent).
+function applyOnboardingSelection({ store, inventory, organization, repositories, repositoriesEnabled, expectedRevision, acknowledged, onCommitted }) {
+  checkChoice(repositoriesEnabled, expectedRevision);
+  const org = typeof organization === "string" ? organization.trim().toLowerCase() : "";
+  if (!org || !inventory.orgs.some(entry => entry.org === org)) {
+    throw error("ORGANIZATION_UNAVAILABLE", "This organization is not covered by the current license and scope settings; check sign-in and sk-jwt.");
+  }
+  const known = new Map(inventory.repositories.filter(repo => repo.org === org).map(repo => [repo.key, repo]));
+  const selected = [...new Set(repositories)].map(key => known.get(key));
+  if (selected.some(repo => !repo)) {
+    throw error("REPOSITORY_CHANGED", "A repository is not in the current list for this organization; run list again and confirm.");
+  }
+  if (repositoriesEnabled && selected.some(repo => repo.localRestriction)) {
+    throw error("LOCAL_CONSENT_CONFLICT", "A selected checkout has a local OFF or invalid setting; leave it out or resolve it first.");
+  }
+  if (acknowledged !== true) {
+    throw error("ACKNOWLEDGEMENT_REQUIRED", "Authorizing an organization lets Codex on this machine capture its enabled repositories in every clone or worktree. Show the scope statement, then pass --acknowledge-machine-scope.");
+  }
+  checkRevision(store, expectedRevision);
+  return store.setOrganizationRepositories(org, selected.map(repo => repo.key), repositoriesEnabled, { expectedRevision, acknowledged, onCommitted });
+}
+
+module.exports = { applyOrganizationConsent, applyRepositoryConsent, applyOnboardingSelection, parseConsentChoiceArgs, CONSENT_SET_USAGE };
