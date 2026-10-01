@@ -278,11 +278,28 @@ function createConsentStore({ file, observedFile }) {
     }, options, options?.onCommitted);
   }
 
+  // Several repository choices in one revision, for the telemetry list picker.
+  // `choices` maps repository keys to ON (true) or OFF (false).
+  function setRepositoryChoices(choices, options) {
+    const entries = Object.entries(choices).map(([key, enabled]) => [normalizeRepoKey(key), enabled]);
+    if (!entries.length || entries.some(([key, enabled]) => !key || typeof enabled !== "boolean")) {
+      throw new Error("Canonical GitHub repositories with boolean choices are required.");
+    }
+    if (entries.some(([, enabled]) => enabled) && options?.acknowledged !== true) {
+      throw error("ACKNOWLEDGEMENT_REQUIRED", "Enabling requires acknowledgement of machine-wide consent scope.");
+    }
+    return mutate(policy => {
+      for (const [key, enabled] of entries) {
+        policy.repositories[key] = { ...decision(enabled, policy.repositories[key]), ...(enabled ? { consent_version: 2 } : {}) };
+      }
+    }, options, options?.onCommitted);
+  }
+
   function setGlobalEnabled(enabled, options) {
     return mutate(policy => { policy.global = decision(enabled, policy.global); }, options);
   }
 
-  return { readPolicy, setRepositoryOverride, setOrganizationConsent, setOrganizationRepositories, setGlobalEnabled };
+  return { readPolicy, setRepositoryOverride, setOrganizationConsent, setOrganizationRepositories, setRepositoryChoices, setGlobalEnabled };
 }
 
 module.exports = { createConsentStore, normalizeRepoKey };

@@ -135,7 +135,14 @@ function buildInventory({ roots, allowedOrgs, policy, getScope, getLocalChoice, 
     const consent = choice(policy?.repositories?.[repo.key]);
     const orgConsent = choice(organizations[repo.org]);
     const on = !globalPaused && orgConsent === true && consent === true && !repo.localRestriction;
-    return { ...repo, consent, effective: on ? "on" : "off" };
+    // What the telemetry list picker may do, as in the Claude plugin: a
+    // repository blocked by the pause or its organization is shown, not offered.
+    const blockedBy = globalPaused ? "paused"
+      : orgConsent === false ? "organization_off"
+      : orgConsent !== true ? "organization_choice_required"
+      : !on && repo.localRestriction ? "local_restriction"
+      : null;
+    return { ...repo, consent, effective: on ? "on" : "off", action: blockedBy ? null : on ? "disable" : "enable", ...(blockedBy ? { blockedBy } : {}) };
   }).sort((a, b) => a.displayName.localeCompare(b.displayName));
 
   return {

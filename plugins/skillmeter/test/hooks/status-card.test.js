@@ -15,7 +15,7 @@ test("cards are boxes of one width", () => {
   const saved = consentSavedBanner({ kind: "organization", target: "@acme", enabled: true, revision: 1 });
   for (const text of [status, saved]) assert.equal(widths(text).size, 1, text);
   assert.match(status, /\[ CONSENT REQUIRED \][\s\S]*Reason +disabled; consent required/);
-  assert.match(saved, /\[ ORGANIZATION ON \][\s\S]*→ Next: turn this repository on/);
+  assert.match(saved, /\[ ORGANIZATION ON \][\s\S]*→ Next: \$skillmeter:telemetry enable in the repository/);
 });
 
 test("status prints a short card and keeps diagnostics behind --details", t => {
@@ -35,5 +35,5 @@ test("status without consent names the reason and the next step", t => {
   const card = f.cli(["status"]).stderr;
   assert.match(card, /\[ CONSENT REQUIRED \]/);
   assert.match(card, /Reason +disabled; organization and repository consent required/);
-  assert.match(card, /→ Ask Codex to record SkillMeter consent/);
+  assert.match(card, /→ Run \$skillmeter:signin to choose telemetry/);
 });

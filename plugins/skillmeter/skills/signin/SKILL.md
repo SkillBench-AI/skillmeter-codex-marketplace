@@ -78,9 +78,9 @@ The scope statement, used in every question that can turn telemetry on:
   telemetry for every repository listed above.` Offer only when repositories
   are listed.
 - `Organization only`: `Authorize @ORG and keep every listed repository off.
-  You can turn repositories on later with the telemetry skill.`
+  You can turn repositories on later with `$skillmeter:telemetry`.`
 - `Keep telemetry off`: `Keep @ORG and its repositories off. You can choose
-  later by signing in again.`
+  later by running `$skillmeter:signin` again.`
 
 **Organization `consent` is `true`.** Listed repositories whose `consent` is
 `null` are *new*. Ask:
@@ -102,7 +102,7 @@ The scope statement, used in every question that can turn telemetry on:
 - `Authorize @ORG`: `Re-authorize @ORG. Repositories already turned on resume
   collection.`
 - `Keep off for now`: `Keep Codex telemetry off for @ORG. You can enable it
-  later by signing in again.`
+  later by running `$skillmeter:signin` again.`
 
 ### Applying the choice
 
@@ -153,6 +153,6 @@ After a successful command, print a final summary from `results`:
 `Telemetry OFF (N)` followed by every other one, each `displayName` on its own
 line. If `cleanupDeferred` is true, say that queued-data cleanup finishes at
 the next upload attempt. If `globalPaused` is true and anything was turned on,
-explain that Codex telemetry is paused on this machine until the telemetry
-skill resumes it. Repositories not listed remain off; the telemetry skill
-changes individual repositories later.
+explain that Codex telemetry is paused on this machine until
+`$skillmeter:telemetry enable-global` resumes it. Repositories not listed remain off;
+`$skillmeter:telemetry list` changes individual repositories later.

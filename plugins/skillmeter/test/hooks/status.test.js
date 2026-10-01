@@ -124,7 +124,7 @@ test("signed-out state does not use a leftover token to report delivery readines
 
 test("missing credentials require sign-in", () => {
   const text = status({ credentials: { device_id: null, hash_salt: null, license_jwt: null, refresh_token: null } });
-  assert.match(text, /Delivery authentication: not signed in; run the signin skill/);
+  assert.match(text, /Delivery authentication: not signed in; run \$skillmeter:signin/);
 });
 
 test("server rejection overrides a locally unexpired license", () => {
@@ -132,7 +132,7 @@ test("server rejection overrides a locally unexpired license", () => {
 });
 
 for (const [reason, expected] of [
-  ["reactivation_required", /Delivery authentication: the sign-in session ended; run the signin skill/],
+  ["reactivation_required", /Delivery authentication: the sign-in session ended; run \$skillmeter:signin/],
   ["revoked", /Delivery authentication: the workspace no longer licenses you/],
 ]) test(`a terminal renewal (${reason}) asks for sign-in`, () => {
   assert.match(status({ terminal: reason }), expected);
