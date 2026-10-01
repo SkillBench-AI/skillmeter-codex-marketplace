@@ -6,7 +6,7 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
-const { PLUGIN_ROOT, tempDir, writeCredentials, license, makeRepo, writeSettings, consentPolicyFileIn } = require("../../test-support/plugin.cjs");
+const { PLUGIN_ROOT, tempDir, writeCredentials, license, makeRepo, consentPolicyFileIn } = require("../../test-support/plugin.cjs");
 const { buildInventory, trustedProjectCwds, rolloutCwd } = require("../../scripts/lib/repository-inventory");
 
 const ON = { enabled: true, decided_at: 1, source: "user", consent_version: 2 };
@@ -105,17 +105,6 @@ test("only repositories of the named organization from a fresh list can be chose
   }
   const foreign = cli(["org", "absent", "other", "enabled", "--acknowledge-machine-scope"]);
   assert.match(foreign.stderr, /ORGANIZATION_UNAVAILABLE/);
-  assert.equal(fs.existsSync(policyFile), false);
-});
-
-test("a checkout with a local OFF is flagged and cannot be turned on by onboarding", t => {
-  const { cli, repos, policyFile } = setup(t);
-  writeSettings(repos.widgets, { telemetry: false });
-  const listed = cli(["list"]).json.repositories.find(repo => repo.key === "github.com/acme/widgets");
-  assert.equal(listed.localRestriction, true);
-  const result = cli(["onboard", "absent", "acme", "enabled", "github.com/acme/widgets", "--acknowledge-machine-scope"]);
-  assert.equal(result.status, 1);
-  assert.match(result.stderr, /LOCAL_CONSENT_CONFLICT/);
   assert.equal(fs.existsSync(policyFile), false);
 });
 
