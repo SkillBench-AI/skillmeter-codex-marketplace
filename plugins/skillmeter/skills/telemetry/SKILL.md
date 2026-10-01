@@ -31,6 +31,9 @@ report generation; do not claim delivery from an empty queue.
 
 ## Record consent for this repository
 
+To choose for every local repository of an organization at once, use the
+`signin` skill instead; it runs the same onboarding question as after sign-in.
+
 Capture needs two choices in Codex's consent record: the repository's
 organization ON, then the repository ON. Change them only when the user
 explicitly asks. Never pick ON or OFF for them. Sign-in and an in-scope

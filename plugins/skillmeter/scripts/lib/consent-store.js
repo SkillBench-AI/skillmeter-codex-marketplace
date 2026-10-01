@@ -254,11 +254,35 @@ function createConsentStore({ file, observedFile }) {
     }, options, options?.onCommitted);
   }
 
+  // Sign-in onboarding: organization ON and the listed repositories ON or OFF
+  // in one revision, so an interrupted onboarding never leaves half a choice.
+  function setOrganizationRepositories(org, repoKeys, repositoriesEnabled, options) {
+    const orgKey = normalizeOrg(org);
+    if (!orgKey) throw new Error("A GitHub organization is required.");
+    if (typeof repositoriesEnabled !== "boolean") throw new TypeError("Telemetry consent must be boolean.");
+    const keys = [...new Set([].concat(repoKeys).map(normalizeRepoKey))];
+    if (keys.some(key => !key || key.split("/")[1] !== orgKey)) {
+      throw new Error("Every repository must be a canonical GitHub repository of the organization.");
+    }
+    if (options?.acknowledged !== true) {
+      throw error("ACKNOWLEDGEMENT_REQUIRED", "Enabling requires acknowledgement of machine-wide consent scope.");
+    }
+    return mutate(policy => {
+      policy.organizations[orgKey] = { ...decision(true, policy.organizations[orgKey]), consent_version: 2 };
+      for (const key of keys) {
+        policy.repositories[key] = {
+          ...decision(repositoriesEnabled, policy.repositories[key]),
+          ...(repositoriesEnabled ? { consent_version: 2 } : {}),
+        };
+      }
+    }, options, options?.onCommitted);
+  }
+
   function setGlobalEnabled(enabled, options) {
     return mutate(policy => { policy.global = decision(enabled, policy.global); }, options);
   }
 
-  return { readPolicy, setRepositoryOverride, setOrganizationConsent, setGlobalEnabled };
+  return { readPolicy, setRepositoryOverride, setOrganizationConsent, setOrganizationRepositories, setGlobalEnabled };
 }
 
-module.exports = { createConsentStore };
+module.exports = { createConsentStore, normalizeRepoKey };

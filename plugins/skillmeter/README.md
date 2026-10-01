@@ -35,6 +35,8 @@ Run project controls from the repository you want to configure:
 | Task | Command |
 | --- | --- |
 | Sign in | `node "$PLUGIN_ROOT/bin/signin"` |
+| List local repositories of the licensed organizations and their choices (JSON, no paths) | `node "$PLUGIN_ROOT/scripts/repository_telemetry.js" list` |
+| Onboard an organization, or turn it on or off (the `signin` skill guides the question and summary) | `node "$PLUGIN_ROOT/scripts/repository_telemetry.js" onboard\|org …` |
 | Inspect sign-in claims and expiry (no raw token) | `node "$PLUGIN_ROOT/bin/sk-jwt"` |
 | Check capture policy, authentication and local queues | `node "$PLUGIN_ROOT/bin/sk-telemetry" status` |
 | Preview consent choices and local restrictions | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-preview` |
@@ -48,6 +50,14 @@ it prints, approve, and pick the workspace when asked. Repository capture is
 limited to the GitHub organizations that workspace has connected (the license's
 `orgs`); `SKILLMETER_REPO_SCOPE_ORGS` and `skillmeter.repoScopeOrgs` can
 narrow that further but never widen it.
+
+After sign-in, the `signin` skill asks one telemetry question per licensed
+organization, as SkillMeter for Claude Code does: turn on the local
+repositories it found (from the working directory, Codex's trusted projects and
+past Codex sessions), authorize the organization only, or keep it off. Each
+answer is saved in one write and summarized as `Telemetry ON` and
+`Telemetry OFF` lists. Nothing is turned on without an explicit answer, and
+signing in again asks again.
 
 The session is this plugin's own (`~/.skillbench/clients/codex/session.json`):
 the sign-in service's refresh token renews the license, and signing in or out
