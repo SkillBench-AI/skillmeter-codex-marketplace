@@ -39,7 +39,26 @@ code and run `node "<plugin-root>/scripts/telemetry.js" status`; the consent
 record must be repaired first. If `orgs` is empty, report that sign-in
 succeeded but the license covers no GitHub organization, and stop.
 
-### Asking a question
+### Asking with a form
+
+For each organization, in the order given, first call the `onboard_organization`
+tool of the `skillmeter` MCP server with the organization exactly as in the
+state and `cwd` set to the absolute working directory. It shows the user a form
+with a picker for the same question as below, including the repositories and
+the scope statement, and saves the answer itself. Act on its `outcome`:
+
+- `applied`: print the summary described under "Applying the choice" from
+  `result`. Do not run a command for this organization.
+- `unchanged`: report that the setting was kept.
+- `stale`: the choices changed meanwhile; call the tool once more.
+- `declined` or `cancelled`: nothing was saved. Report that, then ask the text
+  question below once, in case no form was shown.
+- `unavailable`, `error` with a code other than `ORGANIZATION_UNAVAILABLE`, or
+  no such tool: ask the text question below.
+- `error` with `ORGANIZATION_UNAVAILABLE`: report it and ask nothing for this
+  organization.
+
+### Asking in text
 
 Each telemetry question below is one message with numbered options and the
 exact labels and descriptions given here. End the message there and wait for

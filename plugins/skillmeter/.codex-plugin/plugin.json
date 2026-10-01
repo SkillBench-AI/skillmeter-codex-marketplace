@@ -19,6 +19,7 @@
   ],
   "skills": "./skills/",
   "hooks": "./hooks/hooks.json",
+  "mcpServers": "./.mcp.json",
   "interface": {
     "displayName": "SkillMeter",
     "shortDescription": "Live SkillBench telemetry for Codex sessions.",
