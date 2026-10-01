@@ -29,6 +29,24 @@ in this conversation and confirmed the change that turns something on.
 
 ## list
 
+First call the `review_repositories` tool of the `skillmeter` MCP server with
+`cwd` set to the absolute working directory. It shows the user a form with an
+ON/OFF picker per repository and the scope statement, and saves only the
+changes. Act on its `outcome`:
+
+- `applied`: report every entry of `result.results` (`changed`, `effective`,
+  `reason`) and every `blocked` repository with its `blockedBy`, as below.
+  If `result.cleanupDeferred` is true, say that queued-data cleanup finishes at
+  the next upload attempt.
+- `unchanged` or `nothing_to_review`: report the current state and the
+  `blocked` repositories.
+- `stale`: call the tool once more.
+- `declined` or `cancelled`: report that nothing was saved, then offer the text
+  list below once, in case no form was shown.
+- `unavailable`, `error`, or no such tool: use the text list below.
+
+The text list:
+
 ```sh
 node "<plugin-root>/scripts/repository_telemetry.js" list
 ```
