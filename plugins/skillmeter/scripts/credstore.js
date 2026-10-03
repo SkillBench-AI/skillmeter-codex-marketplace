@@ -132,9 +132,8 @@ function getLicenseToken() {
 }
 
 // Create an empty session the first time this version runs on a machine.
-// Returns true only for that first call: nothing is carried over from the
-// shared file or from a GitHub sign-in (ADR 005, full cutover), so the caller
-// discards what an earlier version queued.
+// Returns true only for that first call: no earlier credentials are carried
+// over (ADR 005), so the caller discards what an earlier version queued.
 function ensureSessionFile() {
   if (fs.existsSync(config.sessionFile())) return false;
   return mutateSession(session => {
