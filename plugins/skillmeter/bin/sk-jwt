@@ -48,7 +48,7 @@ process.stdout.write("─".repeat(56) + "\n");
 line("Tenant (sub)", payload.sub);
 line("Workspace", payload.org && payload.org.login);
 line("User (broker_sub)", payload.broker_sub);
-line("GitHub orgs", Array.isArray(payload.orgs) ? payload.orgs.join(", ") || "(none)" : undefined);
+line("Connected GitHub orgs", Array.isArray(payload.orgs) ? payload.orgs.join(", ") || "(none)" : undefined);
 line("Issuer (iss)", payload.iss);
 line("Telemetry endpoint", getEndpointFromToken(token) || payload.aud);
 if (typeof payload.iat === "number") {

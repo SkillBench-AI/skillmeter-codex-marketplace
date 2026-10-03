@@ -14,9 +14,9 @@ const credstore = require("./credstore");
 const licenseActivation = require("./lib/license-activation");
 const { detectHarness } = require("./harness.js");
 
-// The first run of this version starts without a session: GitHub sign-in is
-// gone and nothing carries over, so what an earlier version queued is dropped
-// rather than sent under a later sign-in (ADR 005). Renewal is not done here;
+// The first run of this version starts without a session: no earlier
+// credentials carry over, so what an earlier version queued is dropped rather
+// than sent under a later sign-in (ADR 005). Renewal is not done here;
 // the drains renew before they send.
 function prepareSession() {
   try {
