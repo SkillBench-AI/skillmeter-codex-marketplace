@@ -27,26 +27,62 @@ function card(lines) {
 
 const row = (label, value) => `${label.padEnd(14)}${value}`;
 
-// `orgs` are the GitHub accounts the license covers.
-function welcomeBanner(orgs) {
-  // Without a connected organization no repository is in scope; say where to
-  // fix that rather than welcoming nobody.
-  const scope = Array.isArray(orgs) && orgs.length
-    ? [`      Welcome, @${orgs.join(", @")}`]
-    : ["      No GitHub organization is connected to this workspace,",
-       "      so no repository is recorded. Connect one in SkillBench."];
+const SIGNED_IN = row("Sign-in", "✓ signed in");
 
-  return [
-    "",
-    "   ╭──────────────────────────────────────────╮",
-    "   │                                          │",
-    "   │           ✓   SkillMeter                 │",
-    "   │               signed in                  │",
-    "   │                                          │",
-    "   ╰──────────────────────────────────────────╯",
-    ...scope,
-    "",
-  ].join("\n");
+// The organization's state for this sign-in, as the Claude plugin's
+// signinStatusBanner: authentication is shown apart from telemetry permission.
+// `current` is the working directory's repository when it belongs to `org`.
+function organizationStatusCard({ org, consent, globalPaused, repositories, current }) {
+  const on = repositories.filter(repo => repo.effective === "on").length;
+  const lines = (title, status, next, extra = []) => card([title, "", SIGNED_IN, row("Organization", `@${org}`),
+    ...(current ? [row("Repository", current.displayName.slice(1))] : []), ...extra, row("Status", status), "", next]);
+  if (globalPaused) {
+    return lines("[ PAUSED ]", "OFF — Codex telemetry is paused on this machine", "→ $skillmeter:telemetry enable-global");
+  }
+  if (consent === null) return lines("[ TELEMETRY SETUP ]", "OFF — nothing is being sent", "→ Choose below, or later with $skillmeter:signin");
+  if (consent === false) return lines("[ TELEMETRY OFF ]", `OFF — @${org} is turned off`, "→ $skillmeter:signin to turn it on");
+  if (current?.effective === "on") return lines("[ TELEMETRY ON ]", "ON — sanitized telemetry is active here", "→ $skillmeter:telemetry list");
+  if (current) {
+    const why = current.localRestriction ? "OFF — turned off in this checkout's local settings" : "OFF — this repository is not on";
+    return lines("[ REPOSITORY OFF ]", why, current.localRestriction ? "→ $skillmeter:telemetry unrestrict" : "→ $skillmeter:telemetry enable");
+  }
+  return lines("[ ORGANIZATION ON ]", `ON for ${on} of ${repositories.length} local repositories`, "→ $skillmeter:telemetry list");
+}
+
+// Every local repository of the organization with its state, as the Claude
+// plugin's signinRepositoryInventoryBanner.
+function repositoryReviewCard(org, repositories) {
+  const on = repositories.filter(repo => repo.effective === "on").length;
+  const lines = ["[ REPOSITORY REVIEW ]", "", row("Organization", `@${org}`), row("Telemetry ON", String(on)),
+    row("Discovered", String(repositories.length)), ""];
+  if (!repositories.length) lines.push("No local organization repositories found.");
+  for (const repo of repositories) lines.push(`${repo.effective === "on" ? "✓ ON " : "○ OFF"}  ${repo.displayName}`);
+  lines.push("", "→ $skillmeter:telemetry list");
+  return card(lines);
+}
+
+/**
+ * Cards printed right after sign-in. `inventory` is a repository-inventory
+ * result, `currentKey` the working directory's repository key, and `error` the
+ * code when the consent record cannot be read.
+ */
+function signinBanner({ inventory, currentKey, error }) {
+  if (error) {
+    return card(["[ SIGNED IN ]", "", SIGNED_IN, row("Status", `OFF — consent record unavailable (${error})`),
+      "", "→ $skillmeter:telemetry status"]);
+  }
+  if (!inventory.orgs.length) {
+    // Without a connected organization no repository is in scope; say where
+    // to fix that rather than welcoming nobody.
+    return card(["[ SIGNED IN ]", "", SIGNED_IN, "No GitHub organization is connected to this workspace,",
+      "so nothing is recorded. Connect one in SkillBench."]);
+  }
+  return inventory.orgs.map(({ org, consent }) => {
+    const repositories = inventory.repositories.filter(repo => repo.org === org);
+    const current = repositories.find(repo => repo.key === currentKey);
+    return organizationStatusCard({ org, consent, globalPaused: inventory.globalPaused, repositories, current }) +
+      repositoryReviewCard(org, repositories);
+  }).join("");
 }
 
 const STATUS_TITLES = {
@@ -95,4 +131,4 @@ function consentSavedBanner({ kind, target, enabled, revision, capture, cleanupD
   return card(lines);
 }
 
-module.exports = { card, welcomeBanner, statusBanner, consentSavedBanner };
+module.exports = { card, signinBanner, statusBanner, consentSavedBanner };
