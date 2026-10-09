@@ -14,7 +14,12 @@ const checks = [];
 function readJson(relPath) {
   const abs = resolve(repoRoot, relPath);
   try {
-    return JSON.parse(readFileSync(abs, "utf8"));
+    const value = JSON.parse(readFileSync(abs, "utf8"));
+    if (value === null || typeof value !== "object" || Array.isArray(value)) {
+      errors.push(`${relPath}: expected a JSON object`);
+      return null;
+    }
+    return value;
   } catch (err) {
     errors.push(`${relPath}: invalid JSON (${err.message})`);
     return null;
