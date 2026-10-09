@@ -3,7 +3,7 @@
 const fs = require("fs");
 const path = require("path");
 const { randomUUID } = require("crypto");
-const { policyPathIsAbsent } = require("./shared-telemetry-policy");
+const { policyPathIsAbsent } = require("./consent-policy");
 
 // Codex's consent record. It keeps the schema of the Claude plugin's record so
 // the two stay easy to compare, but no other client reads or writes this file
@@ -62,7 +62,7 @@ function normalizeOrg(value) {
   return /^[a-z0-9_.-]+$/.test(org) ? org : "";
 }
 
-function createSharedPolicyStore({ file, observedFile }) {
+function createConsentStore({ file, observedFile }) {
   if (!file || !observedFile || path.resolve(file) === path.resolve(observedFile)) {
     throw new Error("Separate consent record and observation paths are required.");
   }
@@ -254,11 +254,52 @@ function createSharedPolicyStore({ file, observedFile }) {
     }, options, options?.onCommitted);
   }
 
+  // Sign-in onboarding: organization ON and the listed repositories ON or OFF
+  // in one revision, so an interrupted onboarding never leaves half a choice.
+  function setOrganizationRepositories(org, repoKeys, repositoriesEnabled, options) {
+    const orgKey = normalizeOrg(org);
+    if (!orgKey) throw new Error("A GitHub organization is required.");
+    if (typeof repositoriesEnabled !== "boolean") throw new TypeError("Telemetry consent must be boolean.");
+    const keys = [...new Set([].concat(repoKeys).map(normalizeRepoKey))];
+    if (keys.some(key => !key || key.split("/")[1] !== orgKey)) {
+      throw new Error("Every repository must be a canonical GitHub repository of the organization.");
+    }
+    if (options?.acknowledged !== true) {
+      throw error("ACKNOWLEDGEMENT_REQUIRED", "Enabling requires acknowledgement of machine-wide consent scope.");
+    }
+    return mutate(policy => {
+      policy.organizations[orgKey] = { ...decision(true, policy.organizations[orgKey]), consent_version: 2 };
+      for (const key of keys) {
+        policy.repositories[key] = {
+          ...decision(repositoriesEnabled, policy.repositories[key]),
+          ...(repositoriesEnabled ? { consent_version: 2 } : {}),
+        };
+      }
+    }, options, options?.onCommitted);
+  }
+
+  // Several repository choices in one revision, for the telemetry list picker.
+  // `choices` maps repository keys to ON (true) or OFF (false).
+  function setRepositoryChoices(choices, options) {
+    const entries = Object.entries(choices).map(([key, enabled]) => [normalizeRepoKey(key), enabled]);
+    if (!entries.length || entries.some(([key, enabled]) => !key || typeof enabled !== "boolean")) {
+      throw new Error("Canonical GitHub repositories with boolean choices are required.");
+    }
+    if (entries.some(([, enabled]) => enabled) && options?.acknowledged !== true) {
+      throw error("ACKNOWLEDGEMENT_REQUIRED", "Enabling requires acknowledgement of machine-wide consent scope.");
+    }
+    return mutate(policy => {
+      for (const [key, enabled] of entries) {
+        policy.repositories[key] = { ...decision(enabled, policy.repositories[key]), ...(enabled ? { consent_version: 2 } : {}) };
+      }
+    }, options, options?.onCommitted);
+  }
+
   function setGlobalEnabled(enabled, options) {
     return mutate(policy => { policy.global = decision(enabled, policy.global); }, options);
   }
 
-  return { readPolicy, setRepositoryOverride, setOrganizationConsent, setGlobalEnabled };
+  return { readPolicy, setRepositoryOverride, setOrganizationConsent, setOrganizationRepositories, setRepositoryChoices, setGlobalEnabled };
 }
 
-module.exports = { createSharedPolicyStore };
+module.exports = { createConsentStore, normalizeRepoKey };

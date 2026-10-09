@@ -14,15 +14,14 @@ the scope acknowledgement). No record, or a missing choice, grants nothing.
 | Local settings | `.codex/settings.local.json` only restricts: local OFF or invalid settings block even an acknowledged grant; local ON grants nothing. |
 | Subdirectories and identity | A descendant OFF remains restrictive. Clones/worktrees use canonical GitHub identity. Nested repositories are independent. |
 | Organization scope | Organization ON is accepted only for an organization the license covers after optional narrowing. |
-| Queues | Explicit OFF revokes known payloads, including while paused. Missing choices hold. Changed positive decisions or acknowledgement versions hold old stamped payloads. Unrelated repository edits preserve authorization. In-flight requests may finish; busy cleanup is deferred. Legacy unattributed data retains its behavior. |
+| Queues | Explicit OFF revokes known payloads, including while paused. Missing choices hold. Changed positive decisions or acknowledgement versions hold old stamped payloads. Unrelated repository edits preserve authorization. In-flight requests may finish; busy cleanup is deferred. Event batches recorded before 0.11.0 were removed on its first run. |
 | Global pause | `global.enabled` in the Codex record blocks Codex capture and delivery while retaining queues. It does not pause other clients. |
 | Invalid or disappeared record | The runtime and controls share a strict reader and durable observation marker. Invalid records or marker failures hold capture/delivery without normalizing or rewriting the record. |
 
-Authentication lifecycle and expiry behavior are unchanged. ChatGPT Work
-transcript delivery remains unsupported; consent does not bypass that
+ChatGPT Work transcript delivery remains unsupported; consent does not bypass that
 capability boundary.
 
-Run `node --test plugins/skillmeter/test/shared-consent-gates.test.js` for the
+Run `node --test plugins/skillmeter/test/consent-gates.test.js` for the
 grant boundary tests, then `npm run check` for the full suite. Synthetic checks
 do not prove installed hook trust, production receipt or reporting.
 
@@ -62,11 +61,11 @@ leave no transition evidence; those unobserved cycles cannot be detected.
 ## Consent record
 
 Codex reads and writes schema version 1 at `clients/codex/telemetry-policy.json`
-under `SKILLMETER_STATE_DIR`, or `~/.skillbench` (`~/.skillbench-dev` when
-`SKILLMETER_ENV=dev`). The schema matches the Claude plugin's record so the two
+under `SKILLMETER_STATE_DIR`, or `~/.skillbench` (`~/.skillbench-dev` in the internal
+channel build). The schema matches the Claude plugin's record so the two
 stay easy to compare; neither client reads the other's file. Global OFF retains
 queues. Organization/repository OFF purges indexed payloads while retaining
-privacy cursors; legacy unattributed event rows retain their previous behavior.
+privacy cursors.
 
 A record that has never been observed grants nothing. Removing a previously
 observed record holds data and blocks capture until it is readable again. Both
@@ -75,14 +74,15 @@ consent boundary. Existing malformed, unreadable or unsupported-version records
 pause capture and delivery without rewriting them.
 
 Upgrading from the machine-wide shared record starts with no Codex choices.
-Event batches stamped under the shared record no longer match any delivery
-token, so they are held and expire at the 30-day retention limit without being
+Event batches stamped under the shared record are held: while no Codex record
+exists nothing grants them, and recording consent rotates the delivery token so
+they never match it. They expire at the 30-day retention limit without being
 sent.
 
 Run the record boundary tests:
 
 ```sh
-node --test plugins/skillmeter/test/consent/shared-global-policy.test.js plugins/skillmeter/test/consent/shared-repository-policy.test.js
+node --test plugins/skillmeter/test/consent/global-pause.test.js plugins/skillmeter/test/consent/repository-record.test.js
 ```
 
 Canonical identity parsing follows Claude's pinned `repo-scope.js`: matching
@@ -99,7 +99,7 @@ this queue. Requests already in flight can finish. Background drains and blocked
 hooks reconcile revocations, including quarantined and active event data.
 
 `consent-set` writes through the record's lock and expected revision and
-preserves local settings. Local ON is never promoted to a record choice.
+preserves local settings. A local ON grants nothing.
 
 ## Queued repository data
 
@@ -132,8 +132,8 @@ capture with a diagnostic, and the control command reports that it needs a retry
 Global pause retains payloads. Explicit repository disable during a global pause
 still revokes that repository. Direct settings edits enforce the current capture
 and delivery gate but do not supply the durable off/on generation recorded by the
-CLI. Unknown legacy event ownership remains separate work. Unattributed legacy batches keep their
-existing delivery behavior; this is not a guarantee of retroactive isolation.
+CLI. Event batches recorded before 0.11.0, which carry no repository routing,
+were removed on the first run of 0.11.0.
 
 Run `node --test plugins/skillmeter/test/consent/queue-revocation.test.js` for mixed-batch,
 retry, cursor preservation, in-flight revocation and disable/re-enable checks.

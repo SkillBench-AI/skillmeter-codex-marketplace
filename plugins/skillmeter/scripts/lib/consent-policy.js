@@ -30,7 +30,7 @@ function consentPolicyFile() {
 
 // Unknown records hold delivery; explicit OFF revokes. Capture needs
 // acknowledged organization and repository grants; no record grants nothing.
-function evaluateSharedRepositoryPolicy(scope, shared) {
+function evaluateRepositoryConsent(scope, shared) {
   const key = scope.repoKey;
   if (shared.reason === "absent") return { key, allowed: false, reason: "absent", stamp: key ? JSON.stringify([key, null]) : null };
   if (!scope.allowed || !key) return { allowed: false, reason: "scope_unavailable", stamp: null };
@@ -45,7 +45,7 @@ function evaluateSharedRepositoryPolicy(scope, shared) {
   const revoked = (valid(organization) && !organization.enabled) || (valid(repository) && !repository.enabled);
   // Preserve a known OFF even when the other choice is absent.
   if (!revoked && (!valid(organization) || !valid(repository))) {
-    return { allowed: false, reason: "shared_choice_required", stamp: null };
+    return { allowed: false, reason: "choice_required", stamp: null };
   }
   const recordStamp = record => {
     if (!valid(record)) return null;
@@ -60,9 +60,9 @@ function evaluateSharedRepositoryPolicy(scope, shared) {
     allowed: !revoked,
     revoked,
     acknowledged: !revoked && organization?.consent_version === 2 && repository?.consent_version === 2,
-    reason: revoked ? "shared_opt_out" : "enabled",
+    reason: revoked ? "choice_off" : "enabled",
     stamp: JSON.stringify([key, recordStamp(organization), recordStamp(repository)]),
   };
 }
 
-module.exports = { evaluateSharedRepositoryPolicy, policyPathIsAbsent, consentPolicyFile };
+module.exports = { evaluateRepositoryConsent, policyPathIsAbsent, consentPolicyFile };

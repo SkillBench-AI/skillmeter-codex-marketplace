@@ -16,6 +16,7 @@ const licenseActivation = require("./lib/license-activation");
 const { detectHarness } = require("./harness.js");
 
 // Retry incomplete legacy cleanup before capture or delivery becomes possible.
+// Renewal is not done here; the drains renew before they send.
 function prepareSession() {
   try { return credstore.completeEventCutover(purgeEventLogs, eventQueueEmpty); }
   catch { return false; }
@@ -53,8 +54,8 @@ function onGate({ gate, cwd }) {
     return;
   }
   if (signInRequired()) {
-    process.stderr.write(`SkillMeter v${PLUGIN_VERSION} (sign-in required; run the signin skill)\n`);
-    process.stdout.write("SkillMeter is not signed in, so nothing is being recorded. Ask the user to run the SkillMeter signin skill.\n");
+    process.stderr.write(`SkillMeter v${PLUGIN_VERSION} (sign-in required; run $skillmeter:signin)\n`);
+    process.stdout.write("SkillMeter is not signed in, so nothing is being recorded. Ask the user to run $skillmeter:signin.\n");
     cleanupStaleFiles();
     return;
   }

@@ -19,7 +19,7 @@ capture, and choices made in SkillMeter for Claude Code do not apply here. See
 
 ## Install
 
-Requires Codex with plugin support, Node.js 20 or later, and a SkillMeter license.
+Requires Codex with plugin support, Node.js 22 or later, and a SkillMeter license.
 
 ```sh
 codex plugin marketplace add SkillBench-AI/skillmeter-codex-marketplace --ref main
@@ -27,12 +27,13 @@ codex plugin add skillmeter@skillbench
 ```
 
 Restart Codex and start a new session. Review and enable the plugin's hooks if
-Codex prompts you. Then ask Codex:
+Codex prompts you. Then run:
 
-> Use SkillMeter's signin skill to sign me in.
+> $skillmeter:signin
 
-Then review the collection notice and record organization and repository
-consent for the repository you want to capture using the [project controls](plugins/skillmeter/README.md#sign-in-and-controls).
+After sign-in it asks which of your organization's repositories send
+telemetry. Change them later with `$skillmeter:telemetry`; see the
+[project controls](plugins/skillmeter/README.md#sign-in-and-controls).
 
 Sign-in opens the SkillBench sign-in service, where you pick your workspace.
 This plugin keeps its own session, separate from SkillMeter for Claude Code. See
@@ -53,6 +54,27 @@ the installed SkillMeter version.
 **Installed from a local checkout?** Update that checkout first, then run
 `codex plugin add skillmeter@skillbench`. `marketplace upgrade` only refreshes
 Git marketplaces; it does not pull a locally registered repository.
+
+## Internal channel
+
+SkillBench developers can dogfood the code under development against the dev
+environment. Development happens on `next`; `main` moves only at releases. The
+`internal` branch is rebuilt from every `next` commit that passes CI. It is
+versioned as a prerelease of the next patch (for example `0.12.4-internal.37`,
+which sorts after `0.12.3` and before `0.12.4`), defaults to the dev sign-in
+service, license server and `~/.skillbench-dev` state, and is published as the
+`skillbench-internal` marketplace so its installation and queues stay apart from
+the stable one.
+
+```sh
+codex plugin marketplace add SkillBench-AI/skillmeter-codex-marketplace --ref internal
+codex plugin add skillmeter@skillbench-internal
+```
+
+Sign in with a dev workspace account. Remove the stable plugin first
+(`codex plugin remove skillmeter@skillbench`), or both would record the same
+sessions. Status cards show `internal (dev)` in the title. To update, run
+`codex plugin marketplace upgrade skillbench-internal` and add the plugin again.
 
 ## Using SkillMeter
 

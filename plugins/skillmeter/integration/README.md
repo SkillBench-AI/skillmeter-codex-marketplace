@@ -118,7 +118,7 @@ Capture reports observed raw source bytes and the committed raw cursor; delivery
 records the last HTTP-acknowledged sequence/baseline. These byte positions do not
 measure eligible content, and HTTP acceptance does not prove stored completeness.
 
-`telemetry.js status` includes capture blockage even with zero pending chunks.
+`telemetry.js status --details` includes capture blockage even with zero pending chunks.
 Successful staging resolves only the capture error; a delivery error remains
 until delivery succeeds, and the converse also holds. Legacy diagnostics remain
 visible until the corresponding phase succeeds. Observations can be stale, and

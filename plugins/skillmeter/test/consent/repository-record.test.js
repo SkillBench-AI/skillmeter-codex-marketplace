@@ -1,7 +1,7 @@
 "use strict";
-// Synthetic contract fixtures promoted into the default regression suite.
+// Synthetic fixtures for the repository choice in the Codex consent record.
 const { test } = require("node:test");
-const { fixture } = require("../../../../test-support/shared-policy.cjs");
+const { fixture } = require("../../../../test-support/consent-record.cjs");
 
 for (const scope of ["organizations", "repositories"]) {
   const key = scope === "organizations" ? "acme" : "github.com/acme/widgets";
@@ -148,7 +148,7 @@ test("mixed event delivery drops shared-disabled A and preserves B, including af
   `);
 });
 
-test("removing an observed shared policy holds queued data instead of restoring local permission", t => {
+test("removing an observed record holds queued data instead of granting capture", t => {
   fixture(t).run(`
     writePolicy(policy); fs.writeFileSync(source,''); logger.observeTranscriptConsent(source,repo);
     fs.appendFileSync(source,line('authorized')); const chunk=stage(); const before=fs.readFileSync(chunk);
@@ -220,11 +220,11 @@ test("CLI identifies shared blockers and local enable leaves shared OFF untouche
   const raw=JSON.stringify(f.policy(true,{repositories:{'github.com/acme/widgets':{enabled:false}}}));
   fs.writeFileSync(f.policyFile,raw);
   assert.match(f.cli(['status']).stderr,/disabled by the organization or repository choice/);
-  assert.match(f.cli(['enable']).stderr,/Capture remains blocked: disabled by the organization or repository choice/);
+  assert.match(f.cli(['unrestrict']).stderr,/Capture remains blocked: disabled by the organization or repository choice/);
   assert.equal(fs.readFileSync(f.policyFile,'utf8'),raw);
 });
 
-test("CLI reports an observed policy disappearing without requesting another local opt-in", t => {
+test("CLI reports an observed record disappearing", t => {
   const f=fixture(t), fs=require('node:fs'), assert=require('node:assert/strict');
   fs.writeFileSync(f.policyFile,JSON.stringify(f.policy()));
   f.run("await logger.runHook('PreToolUse',()=>({synthetic:true}));"); fs.unlinkSync(f.policyFile);

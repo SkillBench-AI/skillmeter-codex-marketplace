@@ -2,7 +2,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const { fixture } = require("../../../../test-support/shared-policy.cjs");
+const { fixture } = require("../../../../test-support/consent-record.cjs");
 
 test("shared global OFF blocks capture and both queues without consuming queued bytes", t => {
   fixture(t).run(`
@@ -123,21 +123,17 @@ test("policy changes are rechecked between successive queued chunks", t => {
   `);
 });
 
-test("consent record location follows default, development and explicit state directories", t => {
+test("consent record location follows the default and explicit state directories", t => {
   fixture(t).run(`
     const record=dir=>{const file=path.join(dir,'clients/codex/telemetry-policy.json');fs.mkdirSync(path.dirname(file),{recursive:true});return file;};
     writePolicy({...policy,global:{enabled:false}});
-    delete process.env.SKILLMETER_STATE_DIR; delete process.env.SKILLMETER_ENV;
-    assert.equal(logger.getTelemetryGloballyDisabled(),true);
-    process.env.SKILLMETER_ENV='dev';
-    // Reusing client data after observing a record cannot restore first-use
-    // permission just by selecting an empty state directory.
-    assert.equal(logger.getTelemetryGloballyDisabled(),true);
-    const dev=path.join(process.env.HOME,'.skillbench-dev');
-    fs.writeFileSync(record(dev),JSON.stringify({...policy,global:{enabled:false}}));
+    delete process.env.SKILLMETER_STATE_DIR;
     assert.equal(logger.getTelemetryGloballyDisabled(),true);
     const explicit=path.join(process.env.HOME,'explicit');
     process.env.SKILLMETER_STATE_DIR=explicit;
+    // Reusing client data after observing a record cannot restore first-use
+    // permission just by selecting an empty state directory.
+    assert.equal(logger.getTelemetryGloballyDisabled(),true);
     fs.writeFileSync(record(explicit),JSON.stringify(policy));
     assert.equal(logger.getTelemetryGloballyDisabled(),false);
     fs.writeFileSync(path.join(explicit,'telemetry-policy.json'),JSON.stringify({...policy,global:{enabled:false}}));
@@ -176,7 +172,7 @@ for (const suffix of ['', '/nested/state']) {
   });
 }
 
-test("a valid directory symlink with no policy retains absent-policy compatibility", t => {
+test("a valid directory symlink with no policy is treated as no record", t => {
   fixture(t).run(`
     const dir=path.join(process.env.HOME,'empty-state'); fs.mkdirSync(dir);
     const link=path.join(process.env.HOME,'linked-state'); fs.symlinkSync(dir,link);

@@ -3,14 +3,17 @@
  * Codex consent controls: organization and repository choices and the global
  * pause in Codex's consent record, and local restrictions in
  * .codex/settings.local.json.
- * Usage: node scripts/telemetry.js <enable|disable> [--global], status [--details],
- * or node scripts/telemetry.js consent-preview [--json]; consent-set --help prints choice arguments.
+ * The verbs match the Claude Code plugin: `enable`/`disable` record this
+ * repository's choice, `enable-global`/`disable-global` pause or resume Codex.
+ * Usage: node scripts/telemetry.js <enable [--acknowledge-machine-scope]|disable|enable-global|disable-global|restrict|unrestrict>,
+ * status [--details], consent-preview [--json]; consent-set --help prints choice arguments.
+ * `enable --global` and `disable --global` remain aliases of the global verbs.
  */
 
 const {
   getTelemetryOptIn,
   getLocalTelemetryChoice,
-  readSharedGlobalPolicy,
+  readGlobalConsent,
   getTelemetryGloballyDisabled,
   saveTelemetryOptIn,
   setTelemetryGloballyDisabled,
@@ -40,7 +43,7 @@ const path = require("path");
 const { isJwtExpired } = require("./lib/jwt");
 const licenseActivation = require("./lib/license-activation");
 const { inventory } = require("./transcript_inventory");
-const { consentPolicyFile } = require("./lib/shared-telemetry-policy");
+const { consentPolicyFile } = require("./lib/consent-policy");
 
 const cwd = process.cwd();
 const projectRoot = findGitRoot(cwd) || cwd;
@@ -49,14 +52,14 @@ const isGlobal = process.argv.slice(3).includes("--global");
 
 function authenticationLine() {
   if (!isEventCutoverComplete()) return "upgrade held; event queue cutover incomplete; close older sessions and retry; preserve the queue if the hold persists";
-  if (getSignedOut()) return "signed out; run the signin skill";
+  if (getSignedOut()) return "signed out; run $skillmeter:signin";
   const terminal = licenseActivation.readStatus().terminal;
   if (terminal?.reason === licenseActivation.TERMINAL.REVOKED) {
-    return "the workspace no longer licenses you; run the signin skill with a workspace that does";
+    return "the workspace no longer licenses you; run $skillmeter:signin with a workspace that does";
   }
   const token = getLicenseToken();
-  if (!token) return "not signed in; run the signin skill";
-  if (terminal) return "the sign-in session ended; run the signin skill";
+  if (!token) return "not signed in; run $skillmeter:signin";
+  if (terminal) return "the sign-in session ended; run $skillmeter:signin";
   if (isLicenseRejected()) return "paused; server rejected the license, renewal due";
   if (isJwtExpired(token)) return "paused; license expired, renewal due";
   if (isLicenseTokenExpired(token)) return "renewal due; license still within the upload validity window";
@@ -76,27 +79,26 @@ function setGlobalPause(paused) {
   }
 }
 
-function sharedPauseLine() {
-  const policy = readSharedGlobalPolicy();
+function pauseLine() {
+  const policy = readGlobalConsent();
   if (policy.reason === "missing") return "paused; previously observed consent record is missing; restore it before capture or delivery";
   if (policy.errorCode === "POLICY_OBSERVATION_FAILED") return "paused; consent record observation unavailable; check plugin data permissions";
   if (policy.reason === "invalid") return "consent record invalid or unreadable; capture and delivery paused; repair the record";
-  if (policy.disabled) return "globally paused for Codex on this machine; resume with enable --global";
+  if (policy.disabled) return "globally paused for Codex on this machine; resume with $skillmeter:telemetry enable-global";
   return null;
 }
 
 // `state` picks the status card; `text` is the detailed capture policy line.
 function captureState() {
   const result = (state, text) => ({ state, text });
-  const shared = sharedPauseLine();
-  if (shared) return result("paused", shared);
-  if (getTelemetryGloballyDisabled()) return result("paused", "globally disabled");
+  // Covers the pause and a missing, invalid or unobservable record.
+  const pause = pauseLine();
+  if (pause) return result("paused", pause);
   const scope = getRepoScopeDecision(cwd);
-  const sharedRepository = getRepositoryPolicyDecision(cwd);
-  if (sharedRepository.reason === "shared_policy_missing") return result("paused", "paused; previously observed consent record is missing");
-  if (scope.allowed && sharedRepository.revoked) return result("off", "disabled by the organization or repository choice");
-  if (scope.allowed && sharedRepository.reason === "absent") return result("consent", "disabled; organization and repository consent required (run consent-preview)");
-  if (scope.allowed && !sharedRepository.allowed) return result("consent", "disabled; organization and repository choices must both be recorded and enabled");
+  const repository = getRepositoryPolicyDecision(cwd);
+  if (scope.allowed && repository.revoked) return result("off", "disabled by the organization or repository choice");
+  if (scope.allowed && repository.reason === "absent") return result("consent", "disabled; organization and repository consent required (run $skillmeter:signin)");
+  if (scope.allowed && !repository.allowed) return result("consent", "disabled; organization and repository choices must both be recorded and enabled");
   const gate = resolveTelemetryGate(getTelemetryOptIn(cwd), scope.allowed);
   if (gate.mode === "opted_out") return result("off", "disabled for this project");
   if (!scope.allowed) return result(scope.classification === "not_activated" ? "signin" : "scope", `excluded (${scope.classification})`);
@@ -188,12 +190,67 @@ function saveRepositoryChoice(value) {
   }
 }
 
+function consentStore() {
+  const { createConsentStore } = require("./lib/consent-store");
+  return createConsentStore({ file: consentPolicyFile(), observedFile: CONSENT_OBSERVED_FILE });
+}
+
+// One organization or repository choice; prints the result card.
+function recordConsent(options) {
+  refreshFromDisk();
+  const { applyOrganizationConsent, applyRepositoryConsent } = require("./lib/consent-apply");
+  const { reconcileConsentRevocations, observeKnownTranscriptConsent } = require("./logger.js");
+  const store = consentStore();
+  let cleaned = false;
+  const onCommitted = () => {
+    // Observe the saved choice before releasing the writer lock. Cleanup
+    // failures cannot roll back consent or authorize an upload.
+    try { cleaned = reconcileConsentRevocations(); observeKnownTranscriptConsent(); }
+    catch { cleaned = false; }
+  };
+  const isOrganization = options.organization !== undefined;
+  let policy;
+  if (isOrganization) {
+    const filter = getRepoScopeOrgFilter(cwd);
+    const allowedOrgs = getAllowedGitHubOrgs().filter(org => !filter || filter.includes(org));
+    policy = applyOrganizationConsent({ store, allowedOrgs, ...options, onCommitted });
+  } else {
+    policy = applyRepositoryConsent({ cwd, scope: getRepoScopeDecision(cwd), store, ...options, onCommitted });
+  }
+  const { consentSavedBanner } = require("./lib/banner");
+  process.stdout.write(consentSavedBanner({
+    kind: isOrganization ? "organization" : "repository",
+    target: isOrganization ? `@${options.organization.trim().toLowerCase()}` : options.repository.replace(/^github\.com\//, ""),
+    enabled: options.enabled,
+    revision: policy.revision,
+    capture: captureState(),
+    cleanupDeferred: !cleaned,
+    durabilityUnconfirmed: policy.durability === "unconfirmed",
+  }));
+}
+
+function reportConsentError(error) {
+  process.stderr.write(`SkillMeter: ${error.code || "CONSENT_UPDATE_FAILED"}: ${error.message}\n`);
+  process.exitCode = 1;
+}
+
+function setGlobal(paused) {
+  if (!setGlobalPause(paused)) return;
+  if (paused) {
+    process.stderr.write("SkillMeter: Telemetry paused for Codex on this machine\n");
+    process.stderr.write("SkillMeter: Pending uploads will remain queued until telemetry is resumed\n");
+    return;
+  }
+  const pause = pauseLine();
+  process.stderr.write(pause ? `SkillMeter: Global pause cleared, but ${pause}\n` : "SkillMeter: Telemetry resumed for Codex on this machine\n");
+}
+
 switch (action) {
   case "consent-preview": {
     refreshFromDisk();
-    const { createSharedPolicyStore } = require("./lib/shared-policy-store");
-    const { buildConsentPreview, formatConsentPreview } = require("./lib/shared-consent-preview");
-    const store = createSharedPolicyStore({ file: consentPolicyFile(), observedFile: CONSENT_OBSERVED_FILE });
+    const { createConsentStore } = require("./lib/consent-store");
+    const { buildConsentPreview, formatConsentPreview } = require("./lib/consent-preview");
+    const store = createConsentStore({ file: consentPolicyFile(), observedFile: CONSENT_OBSERVED_FILE });
     let policy = null, policyError = null;
     try { policy = store.readPolicy(); }
     catch (error) { policyError = { code: error.code || "POLICY_UNAVAILABLE", message: error.message }; }
@@ -202,70 +259,54 @@ switch (action) {
     break;
   }
   case "consent-set": {
-    refreshFromDisk();
-    const { createSharedPolicyStore } = require("./lib/shared-policy-store");
-    const { applyOrganizationConsent, applyRepositoryConsent, parseConsentChoiceArgs, CONSENT_SET_USAGE } = require("./lib/shared-consent-apply");
+    const { parseConsentChoiceArgs, CONSENT_SET_USAGE } = require("./lib/consent-apply");
     try {
       const options = parseConsentChoiceArgs(process.argv.slice(3));
       if (options.help) { process.stdout.write(`${CONSENT_SET_USAGE}\n`); break; }
-      const store = createSharedPolicyStore({ file: consentPolicyFile(), observedFile: CONSENT_OBSERVED_FILE });
-      const { reconcileSharedRevocations, observeKnownTranscriptConsent } = require("./logger.js");
-      let cleaned = false;
-      const onCommitted = () => {
-        // Observe the saved choice before releasing the writer lock. Cleanup
-        // failures cannot roll back consent or authorize an upload.
-        try { cleaned = reconcileSharedRevocations(); observeKnownTranscriptConsent(); }
-        catch { cleaned = false; }
-      };
-      let policy;
-      if (options.organization !== undefined) {
-        const filter = getRepoScopeOrgFilter(cwd);
-        const allowedOrgs = getAllowedGitHubOrgs().filter(org => !filter || filter.includes(org));
-        policy = applyOrganizationConsent({ store, allowedOrgs, ...options, onCommitted });
-      } else {
-        policy = applyRepositoryConsent({ cwd, scope: getRepoScopeDecision(cwd), store, ...options, onCommitted });
-      }
-      const { consentSavedBanner } = require("./lib/banner");
-      const isOrganization = options.organization !== undefined;
-      process.stdout.write(consentSavedBanner({
-        kind: isOrganization ? "organization" : "repository",
-        target: isOrganization ? `@${options.organization.trim().toLowerCase()}` : options.repository.replace(/^github\.com\//, ""),
-        enabled: options.enabled,
-        revision: policy.revision,
-        capture: captureState(),
-        cleanupDeferred: !cleaned,
-        durabilityUnconfirmed: policy.durability === "unconfirmed",
-      }));
+      recordConsent(options);
     } catch (error) {
-      process.stderr.write(`SkillMeter: ${error.code || "CONSENT_UPDATE_FAILED"}: ${error.message}\n`);
-      process.exitCode = 1;
+      reportConsentError(error);
     }
     break;
   }
   case "enable":
-    if (isGlobal) {
-      if (!setGlobalPause(false)) break;
-      const shared = sharedPauseLine();
-      process.stderr.write(shared ? `SkillMeter: Global pause cleared, but ${shared}\n` : "SkillMeter: Telemetry resumed for Codex on this machine\n");
-    } else {
-      if (!saveRepositoryChoice(true)) break;
-      process.stderr.write(`SkillMeter: Local restriction cleared for ${projectRoot}\n`);
-      process.stderr.write(`           (saved to ${SETTINGS_RELATIVE}; capture also needs organization and repository consent)\n`);
-      if (getTelemetryOptIn(cwd) !== true) {
-        process.stderr.write(`SkillMeter: Capture remains blocked: ${capturePolicyLine()}\n`);
-      }
-      if (getTelemetryGloballyDisabled()) process.stderr.write(`SkillMeter: ${sharedPauseLine()}\n`);
+  case "disable": {
+    const enabled = action === "enable";
+    if (isGlobal) { setGlobal(!enabled); break; }
+    // This repository's choice, as `/skillmeter:telemetry enable` records it
+    // in the Claude plugin. ON still needs the organization ON and the scope
+    // acknowledgement; the current revision is read here instead of passed.
+    try {
+      refreshFromDisk();
+      const scope = getRepoScopeDecision(cwd);
+      if (!scope.repoKey) throw Object.assign(new Error("This directory has no unambiguous licensed GitHub repository."), { code: "REPOSITORY_UNAVAILABLE" });
+      recordConsent({
+        repository: scope.repoKey,
+        enabled,
+        acknowledged: process.argv.slice(3).includes("--acknowledge-machine-scope"),
+        expectedRevision: consentStore().readPolicy()?.revision ?? null,
+      });
+    } catch (error) {
+      reportConsentError(error);
     }
     break;
-  case "disable":
-    if (isGlobal) {
-      if (!setGlobalPause(true)) break;
-      process.stderr.write("SkillMeter: Telemetry paused for Codex on this machine\n");
-      process.stderr.write("SkillMeter: Pending uploads will remain queued until telemetry is resumed\n");
-    } else {
-      if (!saveRepositoryChoice(false)) break;
-      process.stderr.write(`SkillMeter: New capture disabled for ${projectRoot}; queued repository payloads revoked (in-flight requests may finish)\n`);
+  }
+  case "enable-global":
+  case "disable-global":
+    setGlobal(action === "disable-global");
+    break;
+  case "unrestrict":
+    if (!saveRepositoryChoice(true)) break;
+    process.stderr.write(`SkillMeter: Local restriction cleared for ${projectRoot}\n`);
+    process.stderr.write(`           (saved to ${SETTINGS_RELATIVE}; capture also needs organization and repository consent)\n`);
+    if (getTelemetryOptIn(cwd) !== true) {
+      process.stderr.write(`SkillMeter: Capture remains blocked: ${capturePolicyLine()}\n`);
     }
+    if (getTelemetryGloballyDisabled()) process.stderr.write(`SkillMeter: ${pauseLine()}\n`);
+    break;
+  case "restrict":
+    if (!saveRepositoryChoice(false)) break;
+    process.stderr.write(`SkillMeter: New capture disabled for ${projectRoot}; queued repository payloads revoked (in-flight requests may finish)\n`);
     break;
   case "status": {
     // Status reads state only; it never changes the session or consent record.
@@ -286,6 +327,6 @@ switch (action) {
     break;
   }
   default:
-    process.stderr.write("Usage: node telemetry.js <enable|disable> [--global] | status [--details] | consent-preview [--json] | consent-set <on|off> (--organization <org> | --repository <key>) --revision <number|absent> [--acknowledge-machine-scope]\n");
+    process.stderr.write("Usage: node telemetry.js enable [--acknowledge-machine-scope] | disable | enable-global | disable-global | restrict | unrestrict | status [--details] | consent-preview [--json] | consent-set <on|off> (--organization <org> | --repository <key>) --revision <number|absent> [--acknowledge-machine-scope]\n");
     process.exit(1);
 }

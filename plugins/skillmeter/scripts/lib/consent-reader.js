@@ -1,13 +1,13 @@
 "use strict";
-const { createSharedPolicyStore } = require("./shared-policy-store");
-const { consentPolicyFile, evaluateSharedRepositoryPolicy: evaluateRepository } = require("./shared-telemetry-policy");
+const { createConsentStore } = require("./consent-store");
+const { consentPolicyFile, evaluateRepositoryConsent: evaluateRepository } = require("./consent-policy");
 
 // Runtime and controls use the same strict reader and durable client marker.
 // No policy repair or default grant occurs on read.
-function createSharedConsentReader(observedFile) {
-  function readSharedGlobalPolicy() {
+function createConsentReader(observedFile) {
+  function readGlobalConsent() {
     try {
-      const policy = createSharedPolicyStore({ file: consentPolicyFile(), observedFile }).readPolicy();
+      const policy = createConsentStore({ file: consentPolicyFile(), observedFile }).readPolicy();
       if (!policy) return { disabled: false, reason: "absent", boundary: null };
       return {
         policy, disabled: !policy.global.enabled,
@@ -19,11 +19,11 @@ function createSharedConsentReader(observedFile) {
         errorCode: error.code, boundary: error.code || "invalid" };
     }
   }
-  function readSharedRepositoryPolicy(scope) {
-    const shared = readSharedGlobalPolicy();
-    if (shared.reason === "missing") return { allowed: false, reason: "shared_policy_missing", stamp: null };
+  function readRepositoryConsent(scope) {
+    const shared = readGlobalConsent();
+    if (shared.reason === "missing") return { allowed: false, reason: "consent_record_missing", stamp: null };
     return evaluateRepository(scope, shared);
   }
-  return { readSharedGlobalPolicy, readSharedRepositoryPolicy };
+  return { readGlobalConsent, readRepositoryConsent };
 }
-module.exports = { createSharedConsentReader };
+module.exports = { createConsentReader };

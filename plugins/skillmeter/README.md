@@ -6,9 +6,21 @@ See the [installation and update guide](../../README.md#install) to get started.
 
 ## Sign in and controls
 
-In Codex, ask SkillMeter to sign you in, sign you out, show collection status,
-record consent for the repository you are in, or check whether it is in scope.
-The bundled skills are listed below.
+In Codex, run the skills by name, as the slash commands of SkillMeter for
+Claude Code:
+
+| Skill | What it does |
+| --- | --- |
+| `$skillmeter:signin` | Sign in, then choose telemetry for each licensed organization |
+| `$skillmeter:signout` | Sign this plugin out (other SkillMeter clients stay signed in) |
+| `$skillmeter:telemetry list` | Review and toggle known repositories |
+| `$skillmeter:telemetry status` | Show capture state, sign-in and the local queue |
+| `$skillmeter:telemetry enable` / `disable` | Turn the current repository on or off |
+| `$skillmeter:telemetry enable-global` / `disable-global` | Resume or pause all Codex collection on this machine |
+
+These three skills run only when named, so Codex never changes sign-in or
+consent on its own. The Codex-only `check-repo-scope`, `collect-export` and
+`review-export` skills also respond to plain requests.
 
 For terminal commands, set `PLUGIN_ROOT` to the **Installed plugin root** printed
 by `codex plugin add`. Replace the placeholder below with that exact path so the
@@ -19,8 +31,11 @@ export PLUGIN_ROOT="/absolute/path/to/installed/skillmeter"
 ```
 
 Commands use the same local queue as hooks: `PLUGIN_DATA` when set, otherwise
-the Codex data directory for that installation
-(`~/.codex/plugins/data/skillmeter-<marketplace>`). Queues are never kept
+the directory Codex last gave this installation's hooks (recorded in
+`~/.skillbench/clients/codex/plugin-data.json`), otherwise the Codex data
+directory for that installation
+(`~/.codex/plugins/data/skillmeter-<marketplace>`, created with owner-only access if
+Codex has not made it yet). Queues are never kept
 inside the versioned installation, which an update replaces. From a source
 checkout, set `PLUGIN_DATA` explicitly; without it the command stops with
 `persistent-plugin-data-unavailable`. If an older installation still holds
@@ -32,12 +47,19 @@ Run project controls from the repository you want to configure:
 | Task | Command |
 | --- | --- |
 | Sign in | `node "$PLUGIN_ROOT/bin/signin"` |
+| List local repositories of the licensed organizations and their choices (JSON, no paths) | `node "$PLUGIN_ROOT/scripts/repository_telemetry.js" list` |
+| Toggle listed repositories, onboard an organization, or turn it on or off (the skills guide the question and summary) | `node "$PLUGIN_ROOT/scripts/repository_telemetry.js" toggle\|onboard\|org …` |
 | Inspect sign-in claims and expiry (no raw token) | `node "$PLUGIN_ROOT/bin/sk-jwt"` |
 | Check capture policy, authentication and local queues | `node "$PLUGIN_ROOT/bin/sk-telemetry" status` |
+| Turn this repository on / off (ON needs the organization ON and `--acknowledge-machine-scope`) | `node "$PLUGIN_ROOT/bin/sk-telemetry" enable --acknowledge-machine-scope` / `disable` |
+| Pause / resume Codex collection and uploads | `node "$PLUGIN_ROOT/bin/sk-telemetry" disable-global` / `enable-global` |
+| Restrict this checkout locally / clear the restriction | `node "$PLUGIN_ROOT/bin/sk-telemetry" restrict` / `unrestrict` |
 | Preview consent choices and local restrictions | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-preview` |
-| Record an organization or repository choice (the `telemetry` skill guides preview, acknowledgement and apply) | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-set on\|off …` |
-| Restrict this checkout / clear the restriction | `node "$PLUGIN_ROOT/bin/sk-telemetry" disable` / `enable` |
-| Pause / resume Codex collection and uploads | `node "$PLUGIN_ROOT/bin/sk-telemetry" disable --global` / `enable --global` |
+| Record one organization or repository choice against a revision | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-set on\|off …` |
+
+`enable` and `disable` record this repository's choice, as in SkillMeter for
+Claude Code. In earlier versions they wrote only a local restriction; that is now
+`restrict` and `unrestrict`. `enable --global` and `disable --global` still work.
 | Sign out | `node "$PLUGIN_ROOT/bin/signout"` |
 
 Sign-in is a device flow through the SkillBench sign-in service: open the URL
@@ -45,6 +67,14 @@ it prints, approve, and pick the workspace when asked. Repository capture is
 limited to the GitHub organizations that workspace has connected (the license's
 `orgs`); `SKILLMETER_REPO_SCOPE_ORGS` and `skillmeter.repoScopeOrgs` can
 narrow that further but never widen it.
+
+After sign-in, `$skillmeter:signin` asks one telemetry question per licensed
+organization, as SkillMeter for Claude Code does: turn on the local
+repositories it found (from the working directory, Codex's trusted projects and
+past Codex sessions), authorize the organization only, or keep it off. Each
+answer is saved in one write and summarized as `Telemetry ON` and
+`Telemetry OFF` lists. Nothing is turned on without an explicit answer, and
+signing in again asks again.
 
 The session is this plugin's own (`~/.skillbench/clients/codex/session.json`):
 the sign-in service's refresh token renews the license, and signing in or out
@@ -146,14 +176,12 @@ Explicit organization or repository OFF revokes known queued payloads while
 preserving privacy cursors and other repositories' data. Global pause holds
 queues. Missing choices hold rather than revoke. A missing previously observed
 record, an invalid record or a failed observation marker blocks capture and
-delivery without repair. Legacy unattributed queues retain their existing
-behavior.
+delivery without repair. Event batches recorded before 0.11.0 were removed
+on the first run of 0.11.0.
 
 Observed disabled intervals and the initial transcript prefix are excluded from
 staging and baseline recovery. Consent changes can also exclude uncertain
-intervals, so native startup timing still matters. Authentication, organization
-controls, native validation and release acceptance remain separate from this
-consent integration. See the [consent contract](../../docs/repository-consent.md).
+intervals, so native startup timing still matters. See the [consent contract](../../docs/repository-consent.md).
 
 ## Data and privacy
 
@@ -196,12 +224,12 @@ preservation; otherwise, later batches remain content-only.
 | Symptom | Check |
 | --- | --- |
 | Reinstall still shows an old version | For a local marketplace, update the source checkout first; for a Git marketplace, run `marketplace upgrade`. |
-| Collection is paused or the repository is excluded | Check project/global settings and the license's GitHub organizations (`sk-jwt`). |
+| Collection is paused or the repository is excluded | Run `status`; for details run `status --details`, and check the license's GitHub organizations with `sk-jwt`. |
 | Uploads fail with 401/403 | Credentials and queued uploads are retained; background recovery requests a refreshed license. Check sign-in status if failures persist. |
 | Transcript delivery needs investigation | Use the [read-only inventory and recovery guide](integration/README.md#queue-and-recovery). |
 
-Token refresh is automatic during active retry-monitor sweeps and at session
-start. Delivery waits for a valid token. Renewal uses the sign-in service's
+Drains and the retry monitor renew the license before they send; session start
+does not. Delivery waits for a valid token. Renewal uses the sign-in service's
 refresh token; when the service ends the session, sign in again.
 
 Current limitations:
@@ -218,18 +246,20 @@ Current limitations:
 | --- | --- |
 | [signin](skills/signin/SKILL.md) | Sign in through the SkillBench sign-in service and choose a workspace |
 | [signout](skills/signout/SKILL.md) | End this plugin's session and stop uploads |
-| [telemetry](skills/telemetry/SKILL.md) | Show collection status; enable, disable, pause or resume collection |
+| [telemetry](skills/telemetry/SKILL.md) | Show collection status; record organization and repository consent; restrict, pause or resume collection |
 | [check-repo-scope](skills/check-repo-scope/SKILL.md) | Check whether the current repository is eligible |
 | [collect-export](skills/collect-export/SKILL.md) | Prepare a sanitized export for a one-off review |
 | [review-export](skills/review-export/SKILL.md) | Review an export before upload |
 
 ## Development settings
 
-Production routing normally needs no manual configuration. Development overrides:
+The environment is fixed by the installation: the internal channel uses dev
+(`~/.skillbench-dev`), the stable channel prod. No environment variable switches
+it. These overrides point one endpoint or directory elsewhere, for a local stack
+or isolated tests:
 
 | Variable | Purpose |
 | --- | --- |
-| `SKILLMETER_ENV=dev` | Use the dev sign-in service, license server and `~/.skillbench-dev` state together |
 | `SKILLMETER_BROKER_URL` | Sign-in service (HTTPS on skillbench.ai/.com, or loopback) |
 | `SKILLMETER_ACTIVATE_URL` | License server `/activate` (same restriction) |
 | `SKILLMETER_STATE_DIR` | State directory holding the device identity and this plugin's session and consent record |

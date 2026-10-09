@@ -3,11 +3,11 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { fixture } = require("../../../test-support/shared-policy.cjs");
-const modulePath = path.resolve(__dirname, "../scripts/lib/shared-consent-apply.js");
+const { fixture } = require("../../../test-support/consent-record.cjs");
+const modulePath = path.resolve(__dirname, "../scripts/lib/consent-apply.js");
 const setup = `
   const {applyRepositoryConsent} = require(${JSON.stringify(modulePath)});
-  const store = require(${JSON.stringify(path.resolve(__dirname, "../scripts/lib/shared-policy-store.js"))}).createSharedPolicyStore({file:policyFile,observedFile:logger.CONSENT_OBSERVED_FILE});
+  const store = require(${JSON.stringify(path.resolve(__dirname, "../scripts/lib/consent-store.js"))}).createConsentStore({file:policyFile,observedFile:logger.CONSENT_OBSERVED_FILE});
   const key='github.com/acme/widgets';
   policy.organizations.acme.consent_version=2;
   writePolicy(policy);
@@ -48,7 +48,7 @@ for (const raw of ['{"skillmeter":{"telemetry":false}}', '{']) {
   `));
 }
 
-test("descendant OFF prevents migration from that directory", t => fixture(t).run(setup + `
+test("descendant OFF prevents repository ON from that directory", t => fixture(t).run(setup + `
   const child=path.join(repo,'src');fs.mkdirSync(path.join(child,'.codex'),{recursive:true});
   fs.writeFileSync(path.join(child,'.codex/settings.local.json'),'{"skillmeter":{"telemetry":false}}');
   assert.throws(()=>apply({cwd:child,scope:logger.getRepoScopeDecision(child)}),{code:'LOCAL_CONSENT_CONFLICT'});
@@ -197,7 +197,7 @@ test("busy payload cleanup is reported as deferred after the choice is saved", t
     require(${JSON.stringify(path.resolve(__dirname, "../scripts/telemetry.js"))});
     assert.equal(JSON.parse(fs.readFileSync(policyFile)).repositories[key].enabled,false);
     assert.equal(fs.existsSync(chunk),true);
-    fs.unlinkSync(lock);logger.reconcileSharedRevocations();assert.equal(fs.existsSync(chunk),false);
+    fs.unlinkSync(lock);logger.reconcileConsentRevocations();assert.equal(fs.existsSync(chunk),false);
   `);
   assert.match(result.stdout,/\[ REPOSITORY OFF \]/);
   assert.match(result.stdout,/cleanup deferred/);
@@ -212,7 +212,7 @@ test("post-commit observer failure reports that consent was saved and does not r
 
 const orgSetup = `
   const {applyOrganizationConsent} = require(${JSON.stringify(modulePath)});
-  const store = require(${JSON.stringify(path.resolve(__dirname, "../scripts/lib/shared-policy-store.js"))}).createSharedPolicyStore({file:policyFile,observedFile:logger.CONSENT_OBSERVED_FILE});
+  const store = require(${JSON.stringify(path.resolve(__dirname, "../scripts/lib/consent-store.js"))}).createConsentStore({file:policyFile,observedFile:logger.CONSENT_OBSERVED_FILE});
   const applyOrg=opts=>applyOrganizationConsent({store,organization:'acme',allowedOrgs:['acme'],expectedRevision:null,enabled:true,acknowledged:true,...opts});
 `;
 

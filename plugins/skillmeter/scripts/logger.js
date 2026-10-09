@@ -14,8 +14,8 @@ const { sanitizeEventData, redactDeep } = require("./sanitizer");
 const credstore = require("./credstore");
 const transcriptQueue = require("./lib/transcript-delta");
 const { createRepositoryQueue } = require("./lib/repository-queue");
-const { createSharedConsentReader } = require("./lib/shared-consent-reader");
-const { readTelemetryChoice } = require("./lib/settings");
+const { createConsentReader } = require("./lib/consent-reader");
+const { readTelemetryChoice, SETTINGS_RELATIVE } = require("./lib/settings");
 const {
   getEndpointFromToken,
   getEndpointFromTokenAllowExpired,
@@ -24,7 +24,7 @@ const {
 } = require("./lib/jwt");
 const licenseActivation = require("./lib/license-activation");
 const { resolveOrgScope } = require("./lib/org-scope");
-const { consentPolicyFile } = require("./lib/shared-telemetry-policy");
+const { consentPolicyFile } = require("./lib/consent-policy");
 const canonicalScope = require("./lib/repo-scope");
 
 // Codex sets PLUGIN_ROOT and PLUGIN_DATA for plugin hooks. The CLAUDE_PLUGIN_*
@@ -42,8 +42,8 @@ const LOG_FILE = path.join(LOG_DIR, "events.jsonl");
 // Named for Codex's own record: the marker left by the former shared record
 // must not make this record look deleted.
 const CONSENT_OBSERVED_FILE = path.join(LOG_DIR, "consent-policy-observed");
-const { readSharedGlobalPolicy, readSharedRepositoryPolicy } =
-  createSharedConsentReader(CONSENT_OBSERVED_FILE);
+const { readGlobalConsent, readRepositoryConsent } =
+  createConsentReader(CONSENT_OBSERVED_FILE);
 const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const CODEX_SESSIONS_DIR = path.join(CODEX_HOME, "sessions");
 
@@ -63,9 +63,9 @@ const repositoryQueue = createRepositoryQueue(LOG_DIR, getOrCreateHashSalt, cwd 
   // Queued records retain their original repository identity even when the
   // checkout disappears or changes remotes. This never authorizes capture.
   if (knownKey) {
-    return readSharedRepositoryPolicy({ allowed: true, repoKey: knownKey, remoteOrg: knownKey.split("/")[1] });
+    return readRepositoryConsent({ allowed: true, repoKey: knownKey, remoteOrg: knownKey.split("/")[1] });
   }
-  return readSharedRepositoryPolicy(scope);
+  return readRepositoryConsent(scope);
 });
 
 const AGENT_NAME = "codex";
@@ -93,15 +93,15 @@ function getLicenseTokenUncached() { return credstore.getLicenseToken(); }
 
 // The global pause lives in Codex's consent record and pauses only Codex.
 function getTelemetryGloballyDisabled() {
-  return readSharedGlobalPolicy().disabled;
+  return readGlobalConsent().disabled;
 }
 
 function setTelemetryGloballyDisabled(disabled) {
   // Record even an off/on cycle with no intervening hook in this plugin.
   fs.mkdirSync(TRANSCRIPT_CAPTURES_DIR, { recursive: true, mode: 0o700 });
   transcriptQueue.writeDurable(path.join(TRANSCRIPT_CAPTURES_DIR, "global-boundary.json"), JSON.stringify(crypto.randomUUID()));
-  const { createSharedPolicyStore } = require("./lib/shared-policy-store");
-  const store = createSharedPolicyStore({ file: consentPolicyFile(), observedFile: CONSENT_OBSERVED_FILE });
+  const { createConsentStore } = require("./lib/consent-store");
+  const store = createConsentStore({ file: consentPolicyFile(), observedFile: CONSENT_OBSERVED_FILE });
   const current = store.readPolicy();
   const result = store.setGlobalEnabled(!disabled, { expectedRevision: current?.revision ?? null });
   observeKnownTranscriptConsent();
@@ -154,23 +154,6 @@ function purgeEventLogs() {
 // files, conservatively require review for an already-created broker session.
 function eventQueueEmpty() {
   return !eventQueueNames().some(name => /^events\.jsonl(?:\.\d+)?$/.test(name));
-}
-
-// Per-cwd settings
-
-// Project settings live under skillmeter in .codex/settings.local.json.
-// They control collection and development overrides; repository filters can only
-// narrow the GitHub identities stored at sign-in.
-const SETTINGS_RELATIVE = path.join(".codex", "settings.local.json");
-
-function readSettingsFile(cwd) {
-  try {
-    const settingsPath = path.join(cwd, SETTINGS_RELATIVE);
-    if (!fs.existsSync(settingsPath)) return null;
-    return JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-  } catch {
-    return null;
-  }
 }
 
 function hashHmac(str, salt) {
@@ -549,7 +532,7 @@ function transferAuthorizedEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEO
         markSent();
         return "sent";
       }
-      // Keep the shared token and queued batch on ingest rejection.
+      // Keep the session token and queued batch on ingest rejection.
       // Credential recovery belongs to the refresh/activation path.
       if (isAuthHttpStatus(res.status)) {
         // 402 is the organization's license state, which no rotation can fix;
@@ -599,7 +582,7 @@ function transcriptScope(cwd, token, observeOnly = false) {
   return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner,
     queueEpoch: route.epoch, sharedStamp: route.sharedDeliveryToken, sharedPolicySeen: route.sharedPolicySeen,
     // A changed repository identity must start a separate queue even before
-    // shared policy exists; held chunks must not block the new identity.
+    // any consent is recorded; held chunks must not block the new identity.
     consentStamp: owner + decision.repoRoot + (route.epoch || "") +
       (route.sharedPolicySeen || route.previousRepositories?.length ? route.sharedDeliveryToken : "") };
 }
@@ -609,7 +592,7 @@ function scopeStillAllowed(scope, token) {
       (scope.sharedStamp !== undefined || current.sharedPolicySeen)) return false;
   return current && (current.queueEpoch || 0) === (scope.queueEpoch || 0) && ["repoRoot", "org", "deviceId", "owner"].every(k => current[k] === scope[k]);
 }
-// Local settings and shared global decisions identify transitions without
+// Local settings and the global decision identify transitions without
 // depending on token rotation or unrelated repository policy revisions.
 function transcriptConsentStamp(cwd) {
   const root = findGitRoot(cwd) || path.resolve(cwd), revisions = [];
@@ -625,12 +608,12 @@ function transcriptConsentStamp(cwd) {
   const globalFile = path.join(TRANSCRIPT_CAPTURES_DIR, "global-boundary.json");
   const globalRevision = fs.existsSync(globalFile) ? JSON.parse(fs.readFileSync(globalFile, "utf8")) : null;
   // Existing signout/signin generation changes even for the same principal;
-  // ordinary refresh leaves it intact. Read it without changing shared auth.
+  // ordinary refresh leaves it intact. Read it without changing the session.
   const authGeneration = credstore.recoverySnapshot?.()?.generation ?? null;
   const stamp = [revisions, getTelemetryGloballyDisabled(), globalRevision, authGeneration];
-  const shared = readSharedGlobalPolicy();
-  if (shared.boundary !== null) stamp.push(shared.boundary);
-  const repository = readSharedRepositoryPolicy(getRepoScopeDecision(cwd));
+  const globalChoice = readGlobalConsent();
+  if (globalChoice.boundary !== null) stamp.push(globalChoice.boundary);
+  const repository = readRepositoryConsent(getRepoScopeDecision(cwd));
   if (repository.reason !== "absent") stamp.push(repository.stamp);
   return JSON.stringify(stamp);
 }
@@ -703,7 +686,7 @@ async function sendTranscriptChunk(meta, compressed, backendUrl, timeoutMs) {
     }
     if (res.status === 409 && (await res.json()).error === "transcript-baseline-missing") return "reset-required";
     if (isAuthHttpStatus(res.status) && res.status !== 402) markLicenseRejected(res.status);
-    // Auth rejection must not clear shared credentials or fall back to anonymous
+    // Auth rejection must not clear the session or fall back to anonymous
     // transcript upload. Keep this chunk and all later chunks for scoped retry.
     if (meta.queueDir) transcriptQueue.recordFailure(meta.queueDir, "delivery", `http-${res.status}`, { seq: meta.seq });
     console.error(`[skillmeter] Transcript chunk ${meta.seq}: HTTP ${res.status}; retained`);
@@ -1145,15 +1128,15 @@ async function drainPendingTranscripts(backendUrl, timeoutMs) {
 }
 
 // Local reconciliation only: no transmission or credential changes.
-function reconcileSharedRevocations() {
+function reconcileConsentRevocations() {
   let complete = true;
   try {
     if (repositoryQueue.hasRevoked(LOG_FILE)) sealEventLog();
     if (!repositoryQueue.purgeEvents()) complete = false;
-  } catch { complete = false; console.error("[skillmeter] Shared event revocation deferred; routing unavailable"); }
+  } catch { complete = false; console.error("[skillmeter] Event revocation deferred; routing unavailable"); }
   for (const dir of transcriptQueue.queueDirectories(TRANSCRIPT_CHUNKS_DIR)) {
     try { if (!transcriptQueue.purgeRevoked(dir, repositoryQueue.revokedScope)) complete = false; }
-    catch { complete = false; console.error("[skillmeter] Shared transcript revocation deferred; routing unavailable"); }
+    catch { complete = false; console.error("[skillmeter] Transcript revocation deferred; routing unavailable"); }
   }
   return complete;
 }
@@ -1161,7 +1144,7 @@ function reconcileSharedRevocations() {
 /** Drain both queues once; return the pre-drain count of queued items. */
 async function drainQueuesOnce(backendUrl, timeoutMs) {
   cleanupStaleFiles();
-  reconcileSharedRevocations();
+  reconcileConsentRevocations();
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Queue drain skipped (telemetry globally disabled)`);
     return 0;
@@ -1580,7 +1563,7 @@ function readStdin() {
 }
 
 // Explicit repository consent, following Claude's default-off capture rule.
-// Acknowledged shared grants replace local ON; local restrictions still apply.
+// Acknowledged organization and repository ON grant capture; local restrictions still apply.
 
 function telemetryCliCommand(action) {
   return `node ${JSON.stringify(path.join(PLUGIN_ROOT, "scripts", "telemetry.js"))} ${action}`;
@@ -1589,18 +1572,18 @@ function telemetryCliCommand(action) {
 function getRepositoryPolicyDecision(cwd) {
   // A record deleted after it was observed is reported by the reader through
   // the observation marker, not through routing state.
-  return readSharedRepositoryPolicy(getRepoScopeDecision(cwd));
+  return readRepositoryConsent(getRepoScopeDecision(cwd));
 }
 
 function getTelemetryOptIn(cwd) {
-  const shared = getRepositoryPolicyDecision(cwd);
-  if (shared.revoked) return false;
+  const record = getRepositoryPolicyDecision(cwd);
+  if (record.revoked) return false;
   // Local settings only restrict; the grant is the acknowledged record. A local
   // OFF reports as an opt-out even before any record exists.
   const local = getLocalTelemetryChoice(cwd);
   if (local === "off") return false;
-  if (!shared.allowed || local === "invalid") return null;
-  return shared.acknowledged ? true : null;
+  if (!record.allowed || local === "invalid") return null;
+  return record.acknowledged ? true : null;
 }
 
 function getLocalTelemetryChoice(cwd) {
@@ -1629,7 +1612,12 @@ function saveTelemetryOptIn(cwd, value) {
         throw new Error("Invalid project settings; repair the file before changing consent.");
       }
     }
-    content.skillmeter = { ...content.skillmeter, telemetry: value };
+    // A local setting only restricts, so clearing the restriction removes the
+    // key instead of writing an ON that would grant nothing.
+    const skillmeter = { ...content.skillmeter };
+    if (value) delete skillmeter.telemetry;
+    else skillmeter.telemetry = false;
+    content.skillmeter = skillmeter;
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     return () => transcriptQueue.writeDurable(settingsPath, JSON.stringify(content, null, 2) + "\n");
   });
@@ -1648,16 +1636,15 @@ function saveTelemetryOptIn(cwd, value) {
 // In-context consent notice: printed to a Codex hook's stderr channel when a
 // project has no consent. No decision is saved until the user records one.
 function writeTelemetryConsentFallback(cwd, stream = process.stderr) {
-  const shared = getRepositoryPolicyDecision(cwd);
-  if (shared.revoked || ["shared_policy_missing", "invalid"].includes(shared.reason)) {
-    stream.write("SkillMeter: The organization or repository consent record blocks capture. Check telemetry status; local enable cannot override it.\n");
+  const record = getRepositoryPolicyDecision(cwd);
+  if (record.revoked || ["consent_record_missing", "invalid"].includes(record.reason)) {
+    stream.write("SkillMeter: The organization or repository consent record blocks capture. Check telemetry status; unrestrict cannot override it.\n");
     return;
   }
   stream.write(
     [
       `SkillMeter: Telemetry is not configured for ${cwd}`,
-      "SkillMeter: Review and record organization and repository consent with:",
-      `  ${telemetryCliCommand("consent-preview")}`,
+      "SkillMeter: Choose telemetry with $skillmeter:signin, or check it with:",
       `  ${telemetryCliCommand("status")}`,
       "",
     ].join("\n")
@@ -1746,7 +1733,7 @@ async function runHook(eventName, buildData, options = {}) {
     console.error("[skillmeter] Transcript consent observation failed; capture deferred");
     return exit(0);
   }
-  if (readSharedRepositoryPolicy(getRepoScopeDecision(cwd)).revoked) reconcileSharedRevocations();
+  if (readRepositoryConsent(getRepoScopeDecision(cwd)).revoked) reconcileConsentRevocations();
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] ${eventName}: skipped (telemetry globally disabled)`);
     return exit(0);
@@ -1866,7 +1853,7 @@ module.exports = {
   stageTranscriptForUpload,
   observeTranscriptConsent,
   observeKnownTranscriptConsent,
-  reconcileSharedRevocations,
+  reconcileConsentRevocations,
   requestTranscriptCapture,
   stageRequestedTranscripts,
   TRANSCRIPT_CHUNKS_DIR,
@@ -1910,7 +1897,7 @@ module.exports = {
   cleanupStaleFiles,
   getTelemetryOptIn,
   getLocalTelemetryChoice,
-  readSharedGlobalPolicy,
+  readGlobalConsent,
   getRepositoryPolicyDecision,
   saveTelemetryOptIn,
   writeTelemetryConsentFallback,

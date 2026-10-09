@@ -1,6 +1,6 @@
 # Per-Client Sessions: a Hydra Refresh Token, with the License as a Cache
 
-**Status:** Proposed. Adopts by reference
+**Status:** Proposed; implemented in Codex 0.11.0 (#105). Adopts by reference
 [Claude Code plugin ADR 005](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/main/docs/adr/005-per-client-session.md)
 (proposed 2026-09-27; implemented in Claude 0.40.0 and 0.40.1 and verified
 end to end in dev and prod). This file is the Codex design, and it is a
@@ -10,6 +10,10 @@ with no compatibility path.
 the global pause moved from the shared `<state>/telemetry-policy.json` to
 `<state>/clients/codex/telemetry-policy.json`. The file table and the global
 pause section below describe the state before that change.
+**Amended 2026-09-28 (internal channel, #116):** `SKILLMETER_ENV` no longer
+selects the environment. The installation's channel does: the internal build
+uses dev, the stable build prod. Mentions of `SKILLMETER_ENV=dev` below are
+historical.
 
 ## Why a cutover, not a migration
 

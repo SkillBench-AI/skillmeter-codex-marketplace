@@ -157,7 +157,9 @@ function sandbox(t, { prefix = "codex-sandbox", credentials = DEFAULT_CREDENTIAL
   fs.writeFileSync(preloadFile, preload);
   const env = {
     ...process.env, HOME: root, USERPROFILE: root, CODEX_HOME: path.join(root, ".codex"),
-    PLUGIN_ROOT, PLUGIN_DATA: data, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, CLAUDE_PLUGIN_DATA: data,
+    // Codex also exports CLAUDE_PLUGIN_*; distinct paths keep a regression to
+    // reading them visible.
+    PLUGIN_ROOT, PLUGIN_DATA: data, CLAUDE_PLUGIN_ROOT: path.join(root, "claude-root"), CLAUDE_PLUGIN_DATA: path.join(root, "claude-data"),
     SKILLMETER_STATE_DIR: state, SKILLMETER_REPO_SCOPE_ORGS: "", SKILLMETER_BACKEND_URL: "",
     SKILLMETER_ACTIVATE_URL: "", NODE_OPTIONS: "", TEST_SPAWNS: path.join(root, "spawns"), ...extraEnv,
   };

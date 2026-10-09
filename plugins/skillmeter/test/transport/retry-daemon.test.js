@@ -4,7 +4,7 @@
 const { isolateHome, tempDir, writeCredentials, makeJwt, SCRIPTS } = require("../../test-support/plugin.cjs");
 isolateHome({ device_id: "TEST-DEVICE", hash_salt: "deadbeef" });
 process.env.PLUGIN_DATA = tempDir("sk-daemon-data");
-for (const name of ["SKILLMETER_BACKEND_URL", "SKILLMETER_ACTIVATE_URL", "SKILLMETER_BROKER_URL", "SKILLMETER_ENV"]) delete process.env[name];
+for (const name of ["SKILLMETER_BACKEND_URL", "SKILLMETER_ACTIVATE_URL", "SKILLMETER_BROKER_URL"]) delete process.env[name];
 
 const path = require("node:path");
 const { execFile } = require("node:child_process");
