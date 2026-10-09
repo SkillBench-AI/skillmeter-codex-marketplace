@@ -268,7 +268,13 @@ function createConsentStore({ file, observedFile }) {
       throw error("ACKNOWLEDGEMENT_REQUIRED", "Enabling requires acknowledgement of machine-wide consent scope.");
     }
     return mutate(policy => {
-      policy.organizations[orgKey] = { ...decision(true, policy.organizations[orgKey]), consent_version: 2 };
+      // An organization already ON keeps its record: its decided_at is part of
+      // every repository's consent stamp, so re-deciding it would read as a
+      // changed choice and hold the queues of repositories already ON.
+      const organization = policy.organizations[orgKey];
+      if (organization?.enabled !== true || organization.consent_version !== 2) {
+        policy.organizations[orgKey] = { ...decision(true, organization), consent_version: 2 };
+      }
       for (const key of keys) {
         policy.repositories[key] = {
           ...decision(repositoriesEnabled, policy.repositories[key]),

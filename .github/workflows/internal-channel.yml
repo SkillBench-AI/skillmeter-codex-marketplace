@@ -21,7 +21,8 @@ permissions:
 
 jobs:
   publish:
-    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    # A manual run rebuilds from next only, the branch this channel follows.
+    if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/next') || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

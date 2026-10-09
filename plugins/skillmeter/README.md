@@ -64,11 +64,11 @@ Run project controls from the repository you want to configure:
 | Restrict this checkout locally / clear the restriction | `node "$PLUGIN_ROOT/bin/sk-telemetry" restrict` / `unrestrict` |
 | Preview consent choices and local restrictions | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-preview` |
 | Record one organization or repository choice against a revision | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-set on\|off …` |
+| Sign out | `node "$PLUGIN_ROOT/bin/signout"` |
 
 `enable` and `disable` record this repository's choice, as in SkillMeter for
 Claude Code. In earlier versions they wrote only a local restriction; that is now
 `restrict` and `unrestrict`. `enable --global` and `disable --global` still work.
-| Sign out | `node "$PLUGIN_ROOT/bin/signout"` |
 
 Sign-in is a device flow through the SkillBench sign-in service: open the URL
 it prints, approve, and pick the workspace when asked. Repository capture is
