@@ -6,6 +6,7 @@ const {
   spawnRetryDaemon,
   cleanupStaleFiles,
   purgeEventLogs,
+  eventQueueEmpty,
   writeTelemetryConsentFallback,
   PLUGIN_ROOT,
   PLUGIN_VERSION,
@@ -14,15 +15,14 @@ const credstore = require("./credstore");
 const licenseActivation = require("./lib/license-activation");
 const { detectHarness } = require("./harness.js");
 
-// The first run of this version starts without a session: GitHub sign-in is
-// gone and nothing carries over, so what an earlier version queued is dropped
-// rather than sent under a later sign-in (ADR 005). Renewal is not done here;
-// the drains renew before they send.
+// Retry incomplete legacy cleanup before capture or delivery becomes possible.
+// Renewal is not done here; the drains renew before they send.
 function prepareSession() {
-  try {
-    if (credstore.ensureSessionFile()) purgeEventLogs();
-  } catch {}
+  try { return credstore.completeEventCutover(purgeEventLogs, eventQueueEmpty); }
+  catch { return false; }
 }
+
+const CUTOVER_HOLD = "SkillMeter upgrade is on hold: event queue cutover is incomplete. Close older Codex sessions and retry. If this persists, preserve the queue and contact support before resetting or signing out.";
 
 // A missing license, or one whose session the sign-in service ended.
 function signInRequired() {
@@ -49,6 +49,10 @@ function buildSessionStartEvent(input, ctx) {
 
 // Report the capture decision already resolved by runHook.
 function onGate({ gate, cwd }) {
+  if (!credstore.isEventCutoverComplete()) {
+    process.stderr.write(CUTOVER_HOLD + "\n");
+    return;
+  }
   if (signInRequired()) {
     process.stderr.write(`SkillMeter v${PLUGIN_VERSION} (sign-in required; run $skillmeter:signin)\n`);
     process.stdout.write("SkillMeter is not signed in, so nothing is being recorded. Ask the user to run $skillmeter:signin.\n");
@@ -95,4 +99,4 @@ if (require.main === module) {
   main();
 }
 
-module.exports = { prepareSession, buildSessionStartEvent, onGate, main };
+module.exports = { CUTOVER_HOLD, prepareSession, buildSessionStartEvent, onGate, main };

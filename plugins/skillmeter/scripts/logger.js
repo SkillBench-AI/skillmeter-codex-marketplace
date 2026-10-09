@@ -127,9 +127,14 @@ async function tryRefreshLicense(deviceId) {
 // Transcripts need no purge: their queue owner includes the license's tenant
 // and user, and delivery refuses a mismatch. Batches locked by an upload in
 // flight are left; returns false when any were.
+function eventQueueNames() {
+  try { return fs.readdirSync(LOG_DIR); }
+  catch (error) { if (error.code === "ENOENT") return []; throw error; }
+}
+
 function purgeEventLogs() {
   let complete = true;
-  const names = fs.existsSync(LOG_DIR) ? fs.readdirSync(LOG_DIR) : [];
+  const names = eventQueueNames();
   for (const name of names) {
     if (!/^events\.jsonl(?:\.\d+)?(?:\.sent)?$/.test(name)) continue;
     const file = path.join(LOG_DIR, name);
@@ -143,6 +148,12 @@ function purgeEventLogs() {
     finally { release(); }
   }
   return complete;
+}
+
+// Sent artifacts cannot be replayed. Pending files, including empty active
+// files, conservatively require review for an already-created broker session.
+function eventQueueEmpty() {
+  return !eventQueueNames().some(name => /^events\.jsonl(?:\.\d+)?$/.test(name));
 }
 
 function hashHmac(str, salt) {
@@ -1816,6 +1827,7 @@ module.exports = {
   setTelemetryGloballyDisabled,
   tryRefreshLicense,
   purgeEventLogs,
+  eventQueueEmpty,
   hashHmac,
   sanitizeToolData,
   getTimestamp,
