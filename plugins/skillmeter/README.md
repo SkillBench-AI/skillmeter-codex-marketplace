@@ -19,7 +19,15 @@ Claude Code:
 | `$skillmeter:telemetry enable-global` / `disable-global` | Resume or pause all Codex collection on this machine |
 
 These three skills run only when named, so Codex never changes sign-in or
-consent on its own. The Codex-only `check-repo-scope`, `collect-export` and
+consent on its own.
+
+The onboarding question and the repository list are shown as forms with a
+picker, through the plugin's bundled MCP server (`skillmeter`, started from
+`.mcp.json`) and MCP elicitation. Nothing is saved unless the form is accepted.
+Codex declines forms without showing them when approvals are off (for example
+`--yolo`, `approval_policy = "never"` or `codex exec`); the skills then ask in
+text instead. The server can be turned off with
+`[plugins."skillmeter@<marketplace>".mcp_servers.skillmeter] enabled = false`. The Codex-only `check-repo-scope`, `collect-export` and
 `review-export` skills also respond to plain requests.
 
 For terminal commands, set `PLUGIN_ROOT` to the **Installed plugin root** printed

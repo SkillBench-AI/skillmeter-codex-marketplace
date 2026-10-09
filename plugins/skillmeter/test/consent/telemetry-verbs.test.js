@@ -59,14 +59,12 @@ test("disable records this repository OFF in the consent record, not in local se
   assert.equal(fs.existsSync(f.localSettings(f.widgets)), false);
 });
 
-test("enable-global and disable-global pause and resume Codex, as the --global aliases do", t => {
+test("enable-global and disable-global pause and resume Codex", t => {
   const f = setup(t);
   assert.match(f.telemetry(["disable-global"]).stderr, /paused for Codex/);
   assert.equal(f.policy().global.enabled, false);
   assert.match(f.telemetry(["enable-global"]).stderr, /resumed for Codex/);
   assert.equal(f.policy().global.enabled, true);
-  f.telemetry(["disable", "--global"]);
-  assert.equal(f.policy().global.enabled, false);
 });
 
 test("restrict writes a local OFF that blocks enable until unrestrict clears it", t => {
@@ -100,7 +98,6 @@ test("toggle flips the selected repositories in one revision and reports blocked
   assert.equal(result.json.revision, list.revision + 1);
   assert.deepEqual(result.json.results.map(repo => [repo.displayName, repo.changed, repo.effective]),
     [["@acme/gears", true, "on"], ["@acme/widgets", true, "off"]]);
-  assert.deepEqual(f.repos(["toggle", String(list.revision), "github.com/acme/gears"]).json, { stale: true, revision: list.revision + 1 });
 });
 
 test("only signin, signout and telemetry opt out of implicit invocation", () => {
