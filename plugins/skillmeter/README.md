@@ -168,7 +168,7 @@ A recognized GitHub repository and an allowed remote owner are required:
 - Consent cannot bring an out-of-scope repository into scope.
 - The global pause overrides every choice. There is no OS consent pop-up.
 
-`enable` / `disable` without `--global` read and write
+`restrict` / `unrestrict` read and write
 `<git-root>/.codex/settings.local.json`, including from subdirectories. Local
 OFF and malformed settings restrict capture; a local ON grants nothing on its
 own. Record choices cover all clones and worktrees with the same canonical
