@@ -76,6 +76,18 @@ test("onboard records organization and repositories ON in one revision, after ac
   assert.equal(saved.repositories["github.com/acme/gears"].enabled, true);
 });
 
+test("enabling new repositories keeps an organization that is already ON unchanged", t => {
+  const { cli, policy } = setup(t);
+  assert.equal(cli(["onboard", "absent", "acme", "enabled", "github.com/acme/widgets", "--acknowledge-machine-scope"]).status, 0);
+  const before = policy();
+  const result = cli(["onboard", String(before.revision), "acme", "enabled", "github.com/acme/gears", "--acknowledge-machine-scope"]);
+  assert.equal(result.status, 0, result.stderr);
+  const after = policy();
+  assert.deepEqual(after.organizations.acme, before.organizations.acme, "the organization's stamp does not move");
+  assert.deepEqual(after.repositories["github.com/acme/widgets"], before.repositories["github.com/acme/widgets"]);
+  assert.equal(after.repositories["github.com/acme/gears"].enabled, true);
+});
+
 test("organization only authorizes the organization and records the listed repositories OFF", t => {
   const { cli, policy } = setup(t);
   const result = cli(["onboard", "absent", "acme", "disabled", "github.com/acme/widgets", "--acknowledge-machine-scope"]);
