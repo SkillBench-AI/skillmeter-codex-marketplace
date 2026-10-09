@@ -157,6 +157,31 @@ test("an ON choice without the Codex acknowledgement still needs a choice", () =
   ]);
 });
 
+test("a local restriction counts for its own checkout, not for other clones of the repository", () => {
+  const keys = { "/w/a1": "github.com/acme/a", "/w/a2": "github.com/acme/a", "/w/b1": "github.com/acme/b", "/w/b2": "github.com/acme/b", "/w/c1": "github.com/acme/c" };
+  const off = new Set(["/w/a1", "/w/b1", "/w/c1"]);
+  const inventoryFrom = currentRoot => buildInventory({
+    roots: Object.keys(keys),
+    allowedOrgs: ["acme"],
+    policy: { revision: 3, global: { enabled: true }, organizations: { acme: ON }, repositories: { "github.com/acme/a": ON } },
+    getScope: root => ({ allowed: true, repoKey: keys[root], remoteOrg: "acme" }),
+    getLocalChoice: root => off.has(root) ? "off" : "unset",
+    globalPaused: false,
+    currentRoot,
+  });
+  const view = inventory => Object.fromEntries(inventory.repositories.map(repo => [repo.key, [repo.localRestriction, repo.effective, repo.blockedBy ?? null]]));
+
+  // From the unrestricted clone of a: it is captured here, whatever the other clone says.
+  assert.deepEqual(view(inventoryFrom("/w/a2"))["github.com/acme/a"], [false, "on", null]);
+  // From the restricted clone of a: its own setting wins.
+  assert.deepEqual(view(inventoryFrom("/w/a1"))["github.com/acme/a"], [true, "off", "local_restriction"]);
+  // Elsewhere: b has an unrestricted clone, c does not.
+  const elsewhere = view(inventoryFrom("/w/other"));
+  assert.equal(elsewhere["github.com/acme/b"][0], false);
+  assert.equal(elsewhere["github.com/acme/c"][0], true);
+  assert.equal(Object.hasOwn(inventoryFrom(null).repositories[0], "checkouts"), false, "no counters in the output");
+});
+
 test("discovery reads only absolute session and project paths", () => {
   const dir = tempDir("sk-onboard-files");
   const config = path.join(dir, "config.toml");

@@ -104,15 +104,17 @@ function choice(record) {
  * @param {(root: string) => object} options.getScope repository scope decision
  * @param {(root: string) => string} options.getLocalChoice local setting of a checkout
  * @param {boolean} options.globalPaused
+ * @param {string|null} [options.currentRoot] the current checkout's root, as discovered
  */
-function buildInventory({ roots, allowedOrgs, policy, getScope, getLocalChoice, globalPaused }) {
+function buildInventory({ roots, allowedOrgs, policy, getScope, getLocalChoice, globalPaused, currentRoot = null }) {
   const allowed = new Set(allowedOrgs);
   const repositories = new Map();
-  const add = (key, restricted) => {
-    const [, org, name] = key.split("/");
-    const current = repositories.get(key);
-    if (current) { current.localRestriction ||= restricted; return; }
-    repositories.set(key, { key, org, displayName: `@${org}/${name}`, localRestriction: restricted });
+  const entry = key => {
+    if (!repositories.has(key)) {
+      const [, org, name] = key.split("/");
+      repositories.set(key, { key, org, displayName: `@${org}/${name}`, checkouts: 0, restricted: 0, current: null });
+    }
+    return repositories.get(key);
   };
 
   for (const root of roots) {
@@ -121,17 +123,29 @@ function buildInventory({ roots, allowedOrgs, policy, getScope, getLocalChoice, 
     if (!scope?.allowed || !scope.repoKey || !allowed.has(scope.remoteOrg)) continue;
     let local = "invalid";
     try { local = getLocalChoice(root); } catch {}
-    add(scope.repoKey, local === "off" || local === "invalid");
+    const restricted = local === "off" || local === "invalid";
+    const repo = entry(scope.repoKey);
+    repo.checkouts += 1;
+    if (restricted) repo.restricted += 1;
+    if (root === currentRoot) repo.current = restricted;
   }
   // Keep recorded choices visible after their checkout is gone, as the Claude
   // plugin does, so a decision is never hidden by discovery.
   for (const raw of Object.keys(policy?.repositories || {})) {
     const key = normalizeRepoKey(raw);
-    if (key && allowed.has(key.split("/")[1])) add(key, false);
+    if (key && allowed.has(key.split("/")[1])) entry(key);
   }
 
+  // A local restriction belongs to one checkout. The current checkout answers
+  // for its own repository; another repository counts as restricted only when
+  // every checkout found for it is, so one restricted clone does not hide a
+  // repository that can still be captured elsewhere.
+  const restrictionOf = repo => repo.current !== null ? repo.current
+    : repo.checkouts > 0 && repo.restricted === repo.checkouts;
+
   const organizations = policy?.organizations || {};
-  const list = [...repositories.values()].map(repo => {
+  const list = [...repositories.values()].map(({ key, org, displayName, ...found }) => {
+    const repo = { key, org, displayName, localRestriction: restrictionOf(found) };
     const consent = choice(policy?.repositories?.[repo.key]);
     const orgConsent = choice(organizations[repo.org]);
     const on = !globalPaused && orgConsent === true && consent === true && !repo.localRestriction;
@@ -165,8 +179,11 @@ function loadInventory({ cwd = process.cwd(), discover = true } = {}) {
   const store = createConsentStore({ file: consentPolicyFile(), observedFile: logger.CONSENT_OBSERVED_FILE });
   const policy = store.readPolicy();
   const filter = logger.getRepoScopeOrgFilter(cwd);
+  let currentRoot = null;
+  try { currentRoot = fs.realpathSync.native(logger.findGitRoot(cwd) || ""); } catch {}
   const inventory = buildInventory({
     roots: discover ? discoverRepositoryRoots({ codexHome: logger.CODEX_HOME, currentCwd: cwd, findGitRoot: logger.findGitRoot }) : [],
+    currentRoot: discover ? currentRoot : null,
     allowedOrgs: credstore.getAllowedGitHubOrgs().filter(org => !filter || filter.includes(org)),
     policy,
     getScope: logger.getRepoScopeDecision,
