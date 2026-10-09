@@ -6,9 +6,29 @@ See the [installation and update guide](../../README.md#install) to get started.
 
 ## Sign in and controls
 
-In Codex, ask SkillMeter to sign you in, sign you out, show collection status,
-record consent for the repository you are in, or check whether it is in scope.
-The bundled skills are listed below.
+In Codex, run the skills by name, as the slash commands of SkillMeter for
+Claude Code:
+
+| Skill | What it does |
+| --- | --- |
+| `$skillmeter:signin` | Sign in, then choose telemetry for each licensed organization |
+| `$skillmeter:signout` | Sign this plugin out (other SkillMeter clients stay signed in) |
+| `$skillmeter:telemetry list` | Review and toggle known repositories |
+| `$skillmeter:telemetry status` | Show capture state, sign-in and the local queue |
+| `$skillmeter:telemetry enable` / `disable` | Turn the current repository on or off |
+| `$skillmeter:telemetry enable-global` / `disable-global` | Resume or pause all Codex collection on this machine |
+
+These three skills run only when named, so Codex never changes sign-in or
+consent on its own.
+
+The onboarding question and the repository list are shown as forms with a
+picker, through the plugin's bundled MCP server (`skillmeter`, started from
+`.mcp.json`) and MCP elicitation. Nothing is saved unless the form is accepted.
+Codex declines forms without showing them when approvals are off (for example
+`--yolo`, `approval_policy = "never"` or `codex exec`); the skills then ask in
+text instead. The server can be turned off with
+`[plugins."skillmeter@<marketplace>".mcp_servers.skillmeter] enabled = false`. The Codex-only `check-repo-scope`, `collect-export` and
+`review-export` skills also respond to plain requests.
 
 For terminal commands, set `PLUGIN_ROOT` to the **Installed plugin root** printed
 by `codex plugin add`. Replace the placeholder below with that exact path so the
@@ -35,19 +55,34 @@ Run project controls from the repository you want to configure:
 | Task | Command |
 | --- | --- |
 | Sign in | `node "$PLUGIN_ROOT/bin/signin"` |
+| List local repositories of the licensed organizations and their choices (JSON, no paths) | `node "$PLUGIN_ROOT/scripts/repository_telemetry.js" list` |
+| Toggle listed repositories, onboard an organization, or turn it on or off (the skills guide the question and summary) | `node "$PLUGIN_ROOT/scripts/repository_telemetry.js" toggle\|onboard\|org …` |
 | Inspect sign-in claims and expiry (no raw token) | `node "$PLUGIN_ROOT/bin/sk-jwt"` |
 | Check capture policy, authentication and local queues | `node "$PLUGIN_ROOT/bin/sk-telemetry" status` |
+| Turn this repository on / off (ON needs the organization ON and `--acknowledge-machine-scope`) | `node "$PLUGIN_ROOT/bin/sk-telemetry" enable --acknowledge-machine-scope` / `disable` |
+| Pause / resume Codex collection and uploads | `node "$PLUGIN_ROOT/bin/sk-telemetry" disable-global` / `enable-global` |
+| Restrict this checkout locally / clear the restriction | `node "$PLUGIN_ROOT/bin/sk-telemetry" restrict` / `unrestrict` |
 | Preview consent choices and local restrictions | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-preview` |
-| Record an organization or repository choice (the `telemetry` skill guides preview, acknowledgement and apply) | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-set on\|off …` |
-| Restrict this checkout / clear the restriction | `node "$PLUGIN_ROOT/bin/sk-telemetry" disable` / `enable` |
-| Pause / resume Codex collection and uploads | `node "$PLUGIN_ROOT/bin/sk-telemetry" disable --global` / `enable --global` |
+| Record one organization or repository choice against a revision | `node "$PLUGIN_ROOT/bin/sk-telemetry" consent-set on\|off …` |
 | Sign out | `node "$PLUGIN_ROOT/bin/signout"` |
+
+`enable` and `disable` record this repository's choice, as in SkillMeter for
+Claude Code. In earlier versions they wrote only a local restriction; that is now
+`restrict` and `unrestrict`. `enable --global` and `disable --global` still work.
 
 Sign-in is a device flow through the SkillBench sign-in service: open the URL
 it prints, approve, and pick the workspace when asked. Repository capture is
 limited to the GitHub organizations that workspace has connected (the license's
 `orgs`); `SKILLMETER_REPO_SCOPE_ORGS` and `skillmeter.repoScopeOrgs` can
 narrow that further but never widen it.
+
+After sign-in, `$skillmeter:signin` asks one telemetry question per licensed
+organization, as SkillMeter for Claude Code does: turn on the local
+repositories it found (from the working directory, Codex's trusted projects and
+past Codex sessions), authorize the organization only, or keep it off. Each
+answer is saved in one write and summarized as `Telemetry ON` and
+`Telemetry OFF` lists. Nothing is turned on without an explicit answer, and
+signing in again asks again.
 
 The session is this plugin's own (`~/.skillbench/clients/codex/session.json`):
 the sign-in service's refresh token renews the license, and signing in or out
@@ -65,6 +100,16 @@ sealed event batches are still removed 30 days after sealing, paused or not.
 
 Upgrading from a version that signed in with GitHub starts signed out: nothing
 is carried over, and event batches recorded under the old sign-in are dropped.
+Cutover completion is recorded only after all legacy event batches are cleared.
+A locked batch keeps capture, delivery and sign-in on hold; close older Codex
+sessions and retry. An existing broker session without a completion record is
+ambiguous when event batches remain: the plugin holds those batches rather than
+deleting potentially new events. An empty event queue can complete cutover
+without discarding data. Preserve a verified backup and resolve its disposition with support
+before resetting state or signing out. This hold is not a recovery workflow and
+does not disable the existing age-based cleanup. Do not run old plugin workers
+alongside the upgrade: they do not honor the new completion gate.
+
 Upgrading from a version that used the machine-wide shared consent record
 starts with no Codex consent: record the organization and repository again.
 Event batches queued under the shared record are held and expire at the
@@ -123,7 +168,7 @@ A recognized GitHub repository and an allowed remote owner are required:
 - Consent cannot bring an out-of-scope repository into scope.
 - The global pause overrides every choice. There is no OS consent pop-up.
 
-`enable` / `disable` without `--global` read and write
+`restrict` / `unrestrict` read and write
 `<git-root>/.codex/settings.local.json`, including from subdirectories. Local
 OFF and malformed settings restrict capture; a local ON grants nothing on its
 own. Record choices cover all clones and worktrees with the same canonical

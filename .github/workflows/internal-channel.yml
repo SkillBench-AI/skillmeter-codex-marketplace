@@ -21,12 +21,13 @@ permissions:
 
 jobs:
   publish:
-    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    # A manual run rebuilds from next only, the branch this channel follows.
+    if: (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/next') || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.workflow_run.head_sha || 'next' }}
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
           fetch-depth: 1
       - uses: actions/setup-node@v4
         with:
@@ -37,7 +38,7 @@ jobs:
         run: node .github/scripts/validate-manifests.mjs
       - name: Publish the internal branch
         env:
-          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || 'next' }}
+          SOURCE_SHA: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"

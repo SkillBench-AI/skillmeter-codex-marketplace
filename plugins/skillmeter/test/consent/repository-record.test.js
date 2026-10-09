@@ -220,7 +220,7 @@ test("CLI identifies shared blockers and local enable leaves shared OFF untouche
   const raw=JSON.stringify(f.policy(true,{repositories:{'github.com/acme/widgets':{enabled:false}}}));
   fs.writeFileSync(f.policyFile,raw);
   assert.match(f.cli(['status']).stderr,/disabled by the organization or repository choice/);
-  assert.match(f.cli(['enable']).stderr,/Capture remains blocked: disabled by the organization or repository choice/);
+  assert.match(f.cli(['unrestrict']).stderr,/Capture remains blocked: disabled by the organization or repository choice/);
   assert.equal(fs.readFileSync(f.policyFile,'utf8'),raw);
 });
 

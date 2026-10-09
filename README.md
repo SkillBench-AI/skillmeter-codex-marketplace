@@ -27,12 +27,13 @@ codex plugin add skillmeter@skillbench
 ```
 
 Restart Codex and start a new session. Review and enable the plugin's hooks if
-Codex prompts you. Then ask Codex:
+Codex prompts you. Then run:
 
-> Use SkillMeter's signin skill to sign me in.
+> $skillmeter:signin
 
-Then review the collection notice and record organization and repository
-consent for the repository you want to capture using the [project controls](plugins/skillmeter/README.md#sign-in-and-controls).
+After sign-in it asks which of your organization's repositories send
+telemetry. Change them later with `$skillmeter:telemetry`; see the
+[project controls](plugins/skillmeter/README.md#sign-in-and-controls).
 
 Sign-in opens the SkillBench sign-in service, where you pick your workspace.
 This plugin keeps its own session, separate from SkillMeter for Claude Code. See
