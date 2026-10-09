@@ -1,34 +1,29 @@
 # Repository capture consent
 
-Consent decisions for every SkillMeter client are recorded in [ADR 004](adr/004-shared-consent.md); this document describes the capture gate this plugin implements today.
+Codex keeps its own consent record,
+`<state>/clients/codex/telemetry-policy.json`, as decided in
+[ADR 006](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/main/docs/adr/006-per-client-consent.md).
+It never reads the Claude plugin's record. An allowed GitHub owner makes a
+repository eligible; consent remains separate. Capture needs organization and
+repository ON in the Codex record, both at `consent_version: 2` (recorded with
+the scope acknowledgement). No record, or a missing choice, grants nothing.
 
-Codex follows the explicit repository opt-in rule in Claude's
-[capture policy](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/a50a38e98dc1302cb8a952adac00ee90e0d9f55a/skillmeter/scripts/lib/telemetry-policy.js).
-An allowed GitHub owner makes a repository eligible; it does not enable capture.
-The repository choice must be the boolean `true`. Missing or invalid choices
-stay off, and explicit opt-out, scope exclusion and global pause block capture.
-
-The existing Codex gate is adapted rather than copying Claude's complete gate:
-the latter also depends on its shared policy store and license-validity check.
-This change does not alter Codex's credential lifecycle or expiry behavior.
-
-| Boundary | Codex behavior / remaining difference from Claude |
+| Boundary | Codex behavior |
 | --- | --- |
-| Repository choice | Stored at the checkout's Git root in `.codex/settings.local.json`. Subdirectory commands use the same file. Separate clones and linked worktrees still need separate choices; canonical identity and the shared policy store remain follow-up work. |
-| Legacy subdirectory choices | A subdirectory opt-out continues to restrict capture there. A subdirectory opt-in cannot authorize the repository. Nested Git repositories have independent choices. |
-| Organization consent | Existing signed-in identity scope and optional narrowing remain. Claude's separate organization authorization record is not adopted here. |
-| Revocation and queued data | Repository disable revokes indexed queued events and transcript chunks while preserving cursors and consent journals. Mixed event batches retain permitted repositories. A durable local generation prevents disable/re-enable from restoring revoked payloads. In-flight requests can finish; busy cleanup retries on drain. Unattributed legacy events retain their previous behavior. |
-| Disabled transcript intervals | A durable byte-range journal excludes the prefix at first observation and ranges observed while capture is disabled. Repository controls update known active sources; local global controls also record transitions. Staging and baseline resets use the same exclusions. Unknown transitions in another client remain a shared-policy gap. |
-| Global pause | Stops new capture and transmission while retaining queued data. Existing global controls and shared credential fields remain unchanged. |
+| Organization and repository choices | `consent-preview` shows the choices and local restrictions; `consent-set` writes an explicit organization or repository choice with expected revision and ON acknowledgement. Repository ON requires organization ON. |
+| Local settings | `.codex/settings.local.json` only restricts: local OFF or invalid settings block even an acknowledged grant; local ON grants nothing. |
+| Subdirectories and identity | A descendant OFF remains restrictive. Clones/worktrees use canonical GitHub identity. Nested repositories are independent. |
+| Organization scope | Organization ON is accepted only for an organization the license covers after optional narrowing. |
+| Queues | Explicit OFF revokes known payloads, including while paused. Missing choices hold. Changed positive decisions or acknowledgement versions hold old stamped payloads. Unrelated repository edits preserve authorization. In-flight requests may finish; busy cleanup is deferred. Event batches recorded before 0.11.0 were removed on its first run. |
+| Global pause | `global.enabled` in the Codex record blocks Codex capture and delivery while retaining queues. It does not pause other clients. |
+| Invalid or disappeared record | The runtime and controls share a strict reader and durable observation marker. Invalid records or marker failures hold capture/delivery without normalizing or rewriting the record. |
 
-This is a capture-gate change, not complete parity with
-[Claude's collection contract](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/a50a38e98dc1302cb8a952adac00ee90e0d9f55a/skillmeter/README.md#collection-scope).
-Do not present it as retroactive consent isolation or enable a new surface's
-uploads on this basis. Work-specific consent and delivery are separate.
+ChatGPT Work transcript delivery remains unsupported; consent does not bypass that
+capability boundary.
 
-Run `node --test plugins/skillmeter/test/repository-consent-boundary.test.js`
-for synthetic hook/CLI boundary tests, then `npm run check` for the full suite.
-These checks do not prove native hook approval, production receipt or reporting.
+Run `node --test plugins/skillmeter/test/consent-gates.test.js` for the
+grant boundary tests, then `npm run check` for the full suite. Synthetic checks
+do not prove installed hook trust, production receipt or reporting.
 
 ## Transcript interval boundary
 
@@ -57,28 +52,75 @@ normal token refresh preserves the generation and capture continuity. Repository
 revocation starts a new capture generation: server resets cannot reconstruct the
 pre-revocation prefix. Previously delivered remote data is not deleted.
 
-This is local interval enforcement, not a shared policy implementation. An
-external client toggling global consent off and on without an intervening Codex
-observation cannot be detected by the legacy boolean alone. Shared revisions and
-cross-client revocation remain follow-ups. No scoring or normalization
-interpretation changes are included.
+A global decision's `decided_at` change closes the unobserved interval,
+including an OFF/ON cycle between Codex hooks. The policy's overall `revision`
+does not close intervals: another repository's choice must not discard this
+repository's authorized records. Writers that restore an identical global record
+leave no transition evidence; those unobserved cycles cannot be detected.
 
+## Consent record
+
+Codex reads and writes schema version 1 at `clients/codex/telemetry-policy.json`
+under `SKILLMETER_STATE_DIR`, or `~/.skillbench` (`~/.skillbench-dev` in the internal
+channel build). The schema matches the Claude plugin's record so the two
+stay easy to compare; neither client reads the other's file. Global OFF retains
+queues. Organization/repository OFF purges indexed payloads while retaining
+privacy cursors.
+
+A record that has never been observed grants nothing. Removing a previously
+observed record holds data and blocks capture until it is readable again. Both
+organization and repository acknowledgement versions participate in the
+consent boundary. Existing malformed, unreadable or unsupported-version records
+pause capture and delivery without rewriting them.
+
+Upgrading from the machine-wide shared record starts with no Codex choices.
+Event batches stamped under the shared record are held: while no Codex record
+exists nothing grants them, and recording consent rotates the delivery token so
+they never match it. They expire at the 30-day retention limit without being
+sent.
+
+Run the record boundary tests:
+
+```sh
+node --test plugins/skillmeter/test/consent/global-pause.test.js plugins/skillmeter/test/consent/repository-record.test.js
+```
+
+Canonical identity parsing follows Claude's pinned `repo-scope.js`: matching
+origin wins, otherwise one unambiguous matching repository is required. SSH
+aliases and Git `insteadOf` rewrites are supported. Codex retains its existing
+stricter rejection of empty/unreadable `commondir`; long-lived processes reload
+remote-resolution configuration so a changed alias is not cached as permission.
+
+Only an observed OFF deletes queued data. A changed positive decision may be an
+unobserved OFF/ON cycle or just reaffirmation: older stamped payloads are held,
+not uploaded or deleted. Capture starts a new consent interval; resets cannot
+reconstruct the uncertain prefix. Unrelated repository decisions do not affect
+this queue. Requests already in flight can finish. Background drains and blocked
+hooks reconcile revocations, including quarantined and active event data.
+
+`consent-set` writes through the record's lock and expected revision and
+preserves local settings. A local ON grants nothing.
 
 ## Queued repository data
 
 The local queue adapter follows Claude's
-[payload-removal and cursor-retention contract](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/9c7e33e86f862d59ff20001ff52cd639f637c6b4/skillmeter/scripts/lib/repository-queue.js).
+[payload-removal and cursor-retention contract](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/30659641c0ecd7aa4f1b41d8624ad0620d9eab93/skillmeter/scripts/lib/repository-queue.js).
 Codex uses a private routing index because its existing event files can contain
 multiple repositories. Hook records carry a local generation, removed before
 upload. The index stores checkout paths locally; it is not sent to the collector.
-Symlink aliases share a generation, while separate checkouts retain separate
-consent choices. Every event delivery and retry checks known repository consent.
+Symlink aliases share a local generation. Separate checkouts retain local
+restrictions but share the canonical repository choice. Every event delivery and retry checks known repository consent.
 Missing or corrupt routing fails closed without using the retry budget.
 Temporarily unauthorized rows remain queued while permitted rows are delivered.
 Acknowledgment atomically retains the held portion at the original path; salvage,
 retry exhaustion and age quarantine operate only on the deliverable portion.
-Retry counts reset when that portion changes. The existing age limit still
-applies when a held record becomes eligible again. Failed local acknowledgment
+Retry counts reset when that portion changes. The 14-day retry age still applies
+when a held record becomes eligible again. Sealed event batches are removed
+after 30 days from sealing, including held rows. Cleanup runs before the global
+pause check, uses the batch lock, and does not extend retention when a mixed
+batch is rewritten. Transcript chunks and legacy snapshots remain excluded from
+automatic expiration; their retention contract must be settled separately.
+Failed local acknowledgment
 can repeat an upload, consistent with the queue's existing at-least-once delivery.
 Authorization is checked once per directory per attempt, never cached across
 attempts. Revocation cleanup skips authorization checks and includes sent and quarantined
@@ -90,9 +132,8 @@ capture with a diagnostic, and the control command reports that it needs a retry
 Global pause retains payloads. Explicit repository disable during a global pause
 still revokes that repository. Direct settings edits enforce the current capture
 and delivery gate but do not supply the durable off/on generation recorded by the
-CLI. Unknown legacy event ownership, separate organization consent and shared
-policy migration are not implemented here. Unattributed legacy batches keep their
-existing delivery behavior; this is not a guarantee of retroactive isolation.
+CLI. Event batches recorded before 0.11.0, which carry no repository routing,
+were removed on the first run of 0.11.0.
 
-Run `node --test plugins/skillmeter/test/queue-revocation.test.js` for mixed-batch,
+Run `node --test plugins/skillmeter/test/consent/queue-revocation.test.js` for mixed-batch,
 retry, cursor preservation, in-flight revocation and disable/re-enable checks.

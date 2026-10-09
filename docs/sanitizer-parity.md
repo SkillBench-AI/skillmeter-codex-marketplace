@@ -1,9 +1,9 @@
 # Codex sanitizer parity
 
 The on-device engine, rule table and path vocabulary follow
-[Claude ADR002](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/ac93536df5f7f272d6f9ececad5875ea3560b5ea/docs/adr/002-two-stage-sanitization.md),
-policy **3.1.1**. Their bytes and the shared fixture corpora are pinned to Claude
-commit `ac93536df5f7f272d6f9ececad5875ea3560b5ea` in
+[Claude ADR002](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/a883b34f0228928ea3626f46f36750181eb72579/docs/adr/002-two-stage-sanitization.md),
+policy **3.1.2**. Their bytes and the shared fixture corpora are pinned to Claude
+commit `a883b34f0228928ea3626f46f36750181eb72579` in
 [`source.json`](../plugins/skillmeter/test/fixtures/claude-3.1/source.json).
 `npm run check` verifies those hashes and runs the policy and queue tests.
 Update shared policy in Claude first, then refresh these files and the pin.

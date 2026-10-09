@@ -1,17 +1,17 @@
 {
   "repository": "SkillBench-AI/skillmeter-claude-code-marketplace",
-  "revision": "ac93536df5f7f272d6f9ececad5875ea3560b5ea",
-  "policyVersion": "3.1.1",
+  "revision": "a883b34f0228928ea3626f46f36750181eb72579",
+  "policyVersion": "3.1.2",
   "files": [
     {
       "local": "scripts/lib/sanitize.js",
       "upstream": "scripts/lib/sanitize.js",
-      "sha256": "bc7af53a7cdaa92a0471f645b9784495ede26924a1d7605b06108d94f611db75"
+      "sha256": "aa2389899c9418be11a4b608b156ac5f3d8b38d02e75fbab842a9db016f30fec"
     },
     {
       "local": "scripts/lib/rules.js",
       "upstream": "scripts/lib/rules.js",
-      "sha256": "74f821d52450a7c7be7c10f2a2c1f6c5958a1d8e2314c8bcaebca83600ea0669"
+      "sha256": "468cd666aadeae78daad3c329deaa9dbe37a6498c54e550a9f0a8c354aa04991"
     },
     {
       "local": "scripts/lib/path-vocabulary.json",

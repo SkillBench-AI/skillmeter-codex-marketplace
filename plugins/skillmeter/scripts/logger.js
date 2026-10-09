@@ -14,30 +14,36 @@ const { sanitizeEventData, redactDeep } = require("./sanitizer");
 const credstore = require("./credstore");
 const transcriptQueue = require("./lib/transcript-delta");
 const { createRepositoryQueue } = require("./lib/repository-queue");
+const { createConsentReader } = require("./lib/consent-reader");
+const { readTelemetryChoice, SETTINGS_RELATIVE } = require("./lib/settings");
 const {
   getEndpointFromToken,
   getEndpointFromTokenAllowExpired,
   isJwtExpired,
   decodeJwtPayload,
 } = require("./lib/jwt");
-const { trySilentGhActivate, refreshExpiredJwt } = require("./lib/license-activation");
+const licenseActivation = require("./lib/license-activation");
 const { resolveOrgScope } = require("./lib/org-scope");
+const { consentPolicyFile } = require("./lib/consent-policy");
+const canonicalScope = require("./lib/repo-scope");
 
-// Codex sets PLUGIN_ROOT for plugin-bundled hooks and also exports
-// CLAUDE_PLUGIN_ROOT for compatibility with existing plugin hook scripts.
-const PLUGIN_ROOT =
-  process.env.PLUGIN_ROOT ||
-  process.env.CLAUDE_PLUGIN_ROOT ||
-  path.resolve(__dirname, "..");
+// Codex sets PLUGIN_ROOT and PLUGIN_DATA for plugin hooks. The CLAUDE_PLUGIN_*
+// copies it also exports are ignored: a shell inside Claude Code inherits
+// Claude's values, and Codex state must never land in Claude's directories.
+const PLUGIN_ROOT = process.env.PLUGIN_ROOT || path.resolve(__dirname, "..");
 
-// PLUGIN_DATA is a writable per-plugin directory Codex provides. We keep the
-// rotating event log there when available so installed plugins remain
-// read-only on disk.
-const PLUGIN_DATA =
-  process.env.PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA || PLUGIN_ROOT;
+// PLUGIN_DATA is a writable per-plugin directory Codex provides to hooks.
+// Without it the host layout decides; queues are never kept in the installation.
+const { resolvePluginDataRoot } = require("./lib/plugin-data-root");
+const PLUGIN_DATA = resolvePluginDataRoot(PLUGIN_ROOT);
 
 const LOG_DIR = path.join(PLUGIN_DATA, "logs");
 const LOG_FILE = path.join(LOG_DIR, "events.jsonl");
+// Named for Codex's own record: the marker left by the former shared record
+// must not make this record look deleted.
+const CONSENT_OBSERVED_FILE = path.join(LOG_DIR, "consent-policy-observed");
+const { readGlobalConsent, readRepositoryConsent } =
+  createConsentReader(CONSENT_OBSERVED_FILE);
 const CODEX_HOME = process.env.CODEX_HOME || path.join(os.homedir(), ".codex");
 const CODEX_SESSIONS_DIR = path.join(CODEX_HOME, "sessions");
 
@@ -52,6 +58,14 @@ const TRANSCRIPT_CAPTURES_DIR = path.join(LOG_DIR, "transcripts", "captures-v1")
 const repositoryQueue = createRepositoryQueue(LOG_DIR, getOrCreateHashSalt, cwd => {
   credstore.refreshFromDisk();
   return resolveTelemetryGate(getTelemetryOptIn(cwd), getRepoScopeDecision(cwd).allowed).capture;
+}, (cwd, knownKey) => {
+  const scope = getRepoScopeDecision(cwd);
+  // Queued records retain their original repository identity even when the
+  // checkout disappears or changes remotes. This never authorizes capture.
+  if (knownKey) {
+    return readRepositoryConsent({ allowed: true, repoKey: knownKey, remoteOrg: knownKey.split("/")[1] });
+  }
+  return readRepositoryConsent(scope);
 });
 
 const AGENT_NAME = "codex";
@@ -70,119 +84,70 @@ const PLUGIN_VERSION = (() => {
   }
 })();
 
-function getDeviceId() {
-  return credstore.getDeviceId(LOG_DIR);
-}
+function getDeviceId() { return credstore.getDeviceId(); }
+function getOrCreateHashSalt() { return credstore.getOrCreateHashSalt(); }
+function getLicenseToken() { return credstore.getLicenseToken(); }
+// The upload path's name for the same read: the session is read from disk on
+// every call, so a long-lived drain sees another process renew or sign out.
+function getLicenseTokenUncached() { return credstore.getLicenseToken(); }
 
-function getOrCreateHashSalt() {
-  return credstore.getOrCreateHashSalt(LOG_DIR);
-}
-
-function getLicenseToken() {
-  return credstore.getLicenseToken(LOG_DIR);
-}
-
-// Uncached read for the upload path. The retry daemon can outlive several
-// sign-ins, so it must see a token another process refreshed rather than the
-// snapshot credstore cached when this process started.
-function getLicenseTokenUncached() {
-  return credstore.getLicenseTokenUncached(LOG_DIR);
-}
-
+// The global pause lives in Codex's consent record and pauses only Codex.
 function getTelemetryGloballyDisabled() {
-  return credstore.getTelemetryDisabled();
+  return readGlobalConsent().disabled;
 }
 
 function setTelemetryGloballyDisabled(disabled) {
   // Record even an off/on cycle with no intervening hook in this plugin.
   fs.mkdirSync(TRANSCRIPT_CAPTURES_DIR, { recursive: true, mode: 0o700 });
   transcriptQueue.writeDurable(path.join(TRANSCRIPT_CAPTURES_DIR, "global-boundary.json"), JSON.stringify(crypto.randomUUID()));
-  const result = credstore.setTelemetryDisabled(disabled);
+  const { createConsentStore } = require("./lib/consent-store");
+  const store = createConsentStore({ file: consentPolicyFile(), observedFile: CONSENT_OBSERVED_FILE });
+  const current = store.readPolicy();
+  const result = store.setGlobalEnabled(!disabled, { expectedRevision: current?.revision ?? null });
   observeKnownTranscriptConsent();
   return result;
 }
 
-// License recovery tries /refresh before GitHub activation. SessionStart and
-// background drains call this helper; failures leave queued data for later retry.
-
+// The one renewal path (ADR 005): the drains and the retry sweep call this
+// before sending. A rejection by the collector forces a renewal of a license
+// that still looks fresh locally. Failures leave queued data for later.
 async function tryRefreshLicense(deviceId) {
-  // Preserve legacy migration, then snapshot the shared file rather than the
-  // token this daemon cached before another process signed in or out.
-  getLicenseTokenUncached();
-  const expected = credstore.recoverySnapshot();
-  if (expected.signedOut || !deviceId || expected.deviceId !== deviceId) return null;
-  const current = expected.token;
-  // Skip refresh for healthy tokens unless ingest has rejected the credential.
-  if (current && !credstore.isLicenseTokenExpired(current) && !isLicenseRejected()) {
-    return current;
-  }
-  // /refresh first when we have a token to rotate. refreshExpiredJwt returns
-  // null on 410 (sliding window), 404 (endpoint not deployed), 401 (bad
-  // signature), or any network/parse error — falling through to gh in all cases.
-  if (current) {
-    const fresh = await refreshExpiredJwt(current, deviceId, expected);
-    if (fresh) {
-      clearLicenseRejected();
-      return fresh;
-    }
-  }
-
-  // A discarded refresh must not fall through to activation and undo the
-  // newer sign-in, token rotation, or sign-out that caused the discard.
-  if (!credstore.isRecoveryCurrent(expected)) return null;
-  try {
-    const activated = await trySilentGhActivate(deviceId, { expected });
-    if (activated) clearLicenseRejected();
-    return activated;
-  } catch {
-    return null;
-  }
+  const before = credstore.getLicenseToken();
+  const token = await licenseActivation.ensureFreshLicense(deviceId, {
+    force: isLicenseRejected(),
+    onRevoked: () => purgeEventLogs(),
+  });
+  if (token && token !== before) clearLicenseRejected();
+  return token;
 }
 
-// Per-cwd settings
-
-// Project settings live under skillmeter in .codex/settings.local.json.
-// They control collection and development overrides; repository filters can only
-// narrow the GitHub identities stored at sign-in.
-const SETTINGS_RELATIVE = path.join(".codex", "settings.local.json");
-
-function readSettingsFile(cwd) {
-  try {
-    const settingsPath = path.join(cwd, SETTINGS_RELATIVE);
-    if (!fs.existsSync(settingsPath)) return null;
-    return JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-  } catch {
-    return null;
+// Event batches are not bound to the license they were recorded under, so a
+// session that ends for good (sign-out, or a workspace that no longer licenses
+// the user) deletes them rather than sending them under the next sign-in.
+// Transcripts need no purge: their queue owner includes the license's tenant
+// and user, and delivery refuses a mismatch. Batches locked by an upload in
+// flight are left; returns false when any were.
+function purgeEventLogs() {
+  let complete = true;
+  const names = fs.existsSync(LOG_DIR) ? fs.readdirSync(LOG_DIR) : [];
+  for (const name of names) {
+    if (!/^events\.jsonl(?:\.\d+)?(?:\.sent)?$/.test(name)) continue;
+    const file = path.join(LOG_DIR, name);
+    const batch = file.replace(/\.sent$/, "");
+    const release = transcriptQueue.acquireLock(`${batch}.lock`);
+    if (!release) { complete = false; continue; }
+    try {
+      fs.rmSync(file, { force: true });
+      clearBatchMeta(batch);
+    } catch { complete = false; }
+    finally { release(); }
   }
+  return complete;
 }
 
 function hashHmac(str, salt) {
   if (!str || !salt) return "";
   return crypto.createHmac("sha256", salt).update(str).digest("hex").slice(0, 12);
-}
-
-function extractGitHubOrgFromRemote(remoteUrl) {
-  if (!remoteUrl || typeof remoteUrl !== "string") return "";
-
-  const trimmed = remoteUrl.trim();
-  const sshMatch = trimmed.match(/^git@github\.com:([^/]+)\/.+?(?:\.git)?$/i);
-  if (sshMatch) return sshMatch[1].toLowerCase();
-
-  const httpsMatch = trimmed.match(
-    /^(?:ssh:\/\/)?(?:git@)?github\.com[:/]([^/]+)\/.+?(?:\.git)?$/i
-  );
-  if (httpsMatch) return httpsMatch[1].toLowerCase();
-
-  try {
-    const normalized = trimmed.startsWith("http")
-      ? trimmed
-      : trimmed.replace(/^ssh:\/\//i, "https://");
-    const url = new URL(normalized);
-    if (url.hostname.toLowerCase() !== "github.com") return "";
-    return (url.pathname.split("/").filter(Boolean)[0] || "").toLowerCase();
-  } catch {
-    return "";
-  }
 }
 
 function findGitRoot(startPath) {
@@ -207,72 +172,16 @@ function findGitRoot(startPath) {
   }
 }
 
-function resolveGitDir(repoRoot) {
-  if (!repoRoot) return "";
-
-  const gitPath = path.join(repoRoot, ".git");
-  try {
-    const stats = fs.statSync(gitPath);
-    if (stats.isDirectory()) return gitPath;
-    if (!stats.isFile()) return "";
-
-    const content = fs.readFileSync(gitPath, "utf8");
-    const match = content.match(/^gitdir:\s*(.+)\s*$/im);
-    return match ? path.resolve(repoRoot, match[1]) : "";
-  } catch {
-    return "";
-  }
-}
-
-function getRemoteUrlsForRepo(repoRoot) {
-  const gitDir = resolveGitDir(repoRoot);
-  if (!gitDir) return [];
-
-  try {
-    // Like Claude's repo-scope helper, linked worktrees read shared remotes.
-    let configRoot = gitDir;
-    const commonFile = path.join(gitDir, "commondir");
-    if (fs.existsSync(commonFile)) {
-      const commonDir = fs.readFileSync(commonFile, "utf8").trim();
-      if (!commonDir) return [];
-      configRoot = path.resolve(gitDir, commonDir);
-    }
-    const configPath = path.join(configRoot, "config");
-    const configContent = fs.readFileSync(configPath, "utf8");
-    const urls = [];
-    let inRemoteSection = false;
-
-    for (const line of configContent.split(/\r?\n/)) {
-      if (/^\s*\[remote ".+"\]\s*$/.test(line)) {
-        inRemoteSection = true;
-        continue;
-      }
-      if (/^\s*\[.+\]\s*$/.test(line)) {
-        inRemoteSection = false;
-        continue;
-      }
-      if (!inRemoteSection) continue;
-
-      const urlMatch = line.match(/^\s*url\s*=\s*(.+?)\s*$/);
-      if (urlMatch) urls.push(urlMatch[1]);
-    }
-
-    return urls;
-  } catch {
-    return [];
-  }
-}
-
-// Intersect configured repository scope with stored GitHub identities.
-// Unconfigured scope keeps all stored identities. Resolution is shared with
-// sign-in through lib/org-scope (environment before project settings).
+// Configured repository filters (environment before project settings). They
+// can only narrow the license's organizations.
 function getRepoScopeOrgFilter(cwd) {
   return resolveOrgScope({ cwd });
 }
 
-// Allow GitHub repositories owned by a stored identity, optionally narrowed by
-// configured filters. Missing identities, non-Git directories, non-GitHub remotes
-// and other owners are excluded.
+// Allow GitHub repositories owned by an organization the license covers (its
+// `orgs` claim), optionally narrowed by configured filters. No license, a
+// license covering none, non-Git directories, non-GitHub remotes and other
+// owners are excluded.
 function getRepoScopeDecision(cwd) {
   const signedInOrgs = credstore.getAllowedGitHubOrgs();
   if (signedInOrgs.length === 0) {
@@ -287,42 +196,8 @@ function getRepoScopeDecision(cwd) {
     ? signedInOrgs.filter((org) => orgFilter.includes(org))
     : signedInOrgs;
 
-  const repoRoot = findGitRoot(cwd);
-  if (!repoRoot) {
-    return { allowed: false, scope: "unknown", classification: "no_repository" };
-  }
-
-  const remoteOrgs = getRemoteUrlsForRepo(repoRoot)
-    .map((remoteUrl) => extractGitHubOrgFromRemote(remoteUrl))
-    .filter(Boolean);
-
-  if (remoteOrgs.length === 0) {
-    return {
-      allowed: false,
-      scope: "unknown",
-      classification: "no_github_remote",
-      repoRoot,
-    };
-  }
-
-  const matchingOrg = remoteOrgs.find((org) => allowedOrgs.includes(org));
-  if (matchingOrg) {
-    return {
-      allowed: true,
-      scope: "approved",
-      classification: "github_org_match",
-      repoRoot,
-      remoteOrg: matchingOrg,
-    };
-  }
-
-  return {
-    allowed: false,
-    scope: "external",
-    classification: "github_org_mismatch",
-    repoRoot,
-    remoteOrg: remoteOrgs[0],
-  };
+  canonicalScope._resetConfigCache();
+  return canonicalScope.getRepoScopeDecision(cwd, allowedOrgs, findGitRoot);
 }
 
 // Compatibility helper for callers that sanitize tool data independently.
@@ -429,7 +304,7 @@ const EVENT_TIMEOUT =
   parseInt(process.env.SKILLMETER_TIMEOUT || "10", 10) * 1000;
 const TRANSCRIPT_TIMEOUT = 30_000;
 
-// Retention for sent event logs, poison batches and orphaned event sidecars.
+// Retention for sealed/sent event logs, poison batches and orphaned sidecars.
 // Transcript chunks and legacy snapshots are excluded from automatic cleanup.
 const CLEANUP_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -646,7 +521,7 @@ function transferAuthorizedEventLog(logFile, backendUrl, timeoutMs = EVENT_TIMEO
         markSent();
         return "sent";
       }
-      // Keep the shared token and queued batch on ingest rejection.
+      // Keep the session token and queued batch on ingest rejection.
       // Credential recovery belongs to the refresh/activation path.
       if (isAuthHttpStatus(res.status)) {
         // 402 is the organization's license state, which no rotation can fix;
@@ -681,27 +556,33 @@ function transcriptScope(cwd, token, observeOnly = false) {
   const salt = getOrCreateHashSalt(), deviceId = getDeviceId();
   if (!salt || !deviceId) return null;
   const claims = decodeJwtPayload(token);
-  const identity = claims.broker_sub || claims.github_id || claims.user_alt_id;
-  // Broker licences identify the user with broker_sub; sub names the tenant.
-  // Without a stable principal, token rotation cannot reuse this queue. Never
-  // deliver one principal's queued transcript as another user.
+  // A broker license (ADR 005) names the user in broker_sub and the tenant in
+  // sub. Without a stable principal, token rotation cannot reuse this queue.
+  // Never deliver one principal's queued transcript as another user.
+  const identity = claims.broker_sub;
   const owner = transcriptQueue.hmac(salt, JSON.stringify([claims.iss, claims.aud, claims.sub, identity || token]));
-  let queueEpoch;
-  try { queueEpoch = repositoryQueue.epoch(decision.repoRoot); }
+  let route;
+  try { route = repositoryQueue.register(cwd, decision.repoRoot); }
   catch {
     console.error("[skillmeter] Transcript routing unavailable; capture deferred");
     return null;
   }
   if (!observeOnly && (!decision.allowed || !resolveTelemetryGate(getTelemetryOptIn(cwd), true).capture)) return null;
-  return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner, queueEpoch,
-    consentStamp: owner + decision.repoRoot + (queueEpoch || "") };
+  return { cwd: path.resolve(cwd), repoRoot: decision.repoRoot, org: decision.remoteOrg, deviceId, owner,
+    queueEpoch: route.epoch, sharedStamp: route.sharedDeliveryToken, sharedPolicySeen: route.sharedPolicySeen,
+    // A changed repository identity must start a separate queue even before
+    // any consent is recorded; held chunks must not block the new identity.
+    consentStamp: owner + decision.repoRoot + (route.epoch || "") +
+      (route.sharedPolicySeen || route.previousRepositories?.length ? route.sharedDeliveryToken : "") };
 }
 function scopeStillAllowed(scope, token) {
   const current = transcriptScope(scope.cwd, token);
+  if (current && current.sharedStamp !== scope.sharedStamp &&
+      (scope.sharedStamp !== undefined || current.sharedPolicySeen)) return false;
   return current && (current.queueEpoch || 0) === (scope.queueEpoch || 0) && ["repoRoot", "org", "deviceId", "owner"].every(k => current[k] === scope[k]);
 }
-// Local settings revisions identify transitions without depending on token
-// rotation. Shared policy storage and cross-client transitions are separate.
+// Local settings and the global decision identify transitions without
+// depending on token rotation or unrelated repository policy revisions.
 function transcriptConsentStamp(cwd) {
   const root = findGitRoot(cwd) || path.resolve(cwd), revisions = [];
   let current = path.resolve(cwd);
@@ -716,9 +597,14 @@ function transcriptConsentStamp(cwd) {
   const globalFile = path.join(TRANSCRIPT_CAPTURES_DIR, "global-boundary.json");
   const globalRevision = fs.existsSync(globalFile) ? JSON.parse(fs.readFileSync(globalFile, "utf8")) : null;
   // Existing signout/signin generation changes even for the same principal;
-  // ordinary refresh leaves it intact. Read it without changing shared auth.
+  // ordinary refresh leaves it intact. Read it without changing the session.
   const authGeneration = credstore.recoverySnapshot?.()?.generation ?? null;
-  return JSON.stringify([revisions, getTelemetryGloballyDisabled(), globalRevision, authGeneration]);
+  const stamp = [revisions, getTelemetryGloballyDisabled(), globalRevision, authGeneration];
+  const globalChoice = readGlobalConsent();
+  if (globalChoice.boundary !== null) stamp.push(globalChoice.boundary);
+  const repository = readRepositoryConsent(getRepoScopeDecision(cwd));
+  if (repository.reason !== "absent") stamp.push(repository.stamp);
+  return JSON.stringify(stamp);
 }
 function observeTranscriptConsent(source, cwd, verifyReplacement = false) {
   const scope = transcriptScope(cwd, undefined, true);
@@ -789,10 +675,9 @@ async function sendTranscriptChunk(meta, compressed, backendUrl, timeoutMs) {
     }
     if (res.status === 409 && (await res.json()).error === "transcript-baseline-missing") return "reset-required";
     if (isAuthHttpStatus(res.status) && res.status !== 402) markLicenseRejected(res.status);
-    // Auth rejection must not clear shared credentials or fall back to anonymous
+    // Auth rejection must not clear the session or fall back to anonymous
     // transcript upload. Keep this chunk and all later chunks for scoped retry.
-    if (meta.queueDir) transcriptQueue.writeDurable(path.join(meta.queueDir, "diagnostic.json"),
-      JSON.stringify({ code: `http-${res.status}`, seq: meta.seq, at: new Date().toISOString() }));
+    if (meta.queueDir) transcriptQueue.recordFailure(meta.queueDir, "delivery", `http-${res.status}`, { seq: meta.seq });
     console.error(`[skillmeter] Transcript chunk ${meta.seq}: HTTP ${res.status}; retained`);
     return isAuthHttpStatus(res.status) ? "auth" : "retry";
   } catch { return "retry"; }
@@ -824,8 +709,7 @@ async function uploadPendingTranscript(pendingPath, deviceId, backendUrl, timeou
 function recordTranscriptQueueFailure(dir) {
   console.error("[skillmeter] Transcript queue unavailable; retained for retry");
   try {
-    transcriptQueue.writeDurable(path.join(dir, "diagnostic.json"),
-      JSON.stringify({ code: "queue-unavailable", at: new Date().toISOString() }));
+    transcriptQueue.recordFailure(dir, "delivery", "queue-unavailable");
   } catch {
     console.error("[skillmeter] Could not persist transcript queue diagnostic");
   }
@@ -1232,11 +1116,24 @@ async function drainPendingTranscripts(backendUrl, timeoutMs) {
   return count;
 }
 
-/**
- * Drain both durable queues once. Returns the number of queued items found
- * (pre-drain), which callers use to decide whether work remains.
- */
+// Local reconciliation only: no transmission or credential changes.
+function reconcileConsentRevocations() {
+  let complete = true;
+  try {
+    if (repositoryQueue.hasRevoked(LOG_FILE)) sealEventLog();
+    if (!repositoryQueue.purgeEvents()) complete = false;
+  } catch { complete = false; console.error("[skillmeter] Event revocation deferred; routing unavailable"); }
+  for (const dir of transcriptQueue.queueDirectories(TRANSCRIPT_CHUNKS_DIR)) {
+    try { if (!transcriptQueue.purgeRevoked(dir, repositoryQueue.revokedScope)) complete = false; }
+    catch { complete = false; console.error("[skillmeter] Transcript revocation deferred; routing unavailable"); }
+  }
+  return complete;
+}
+
+/** Drain both queues once; return the pre-drain count of queued items. */
 async function drainQueuesOnce(backendUrl, timeoutMs) {
+  cleanupStaleFiles();
+  reconcileConsentRevocations();
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] Queue drain skipped (telemetry globally disabled)`);
     return 0;
@@ -1419,7 +1316,7 @@ function spawnRetryDaemon() {
 // Cleanup + final-session sealing
 
 /**
- * Delete old sent event logs, poison batches and orphaned event files.
+ * Delete old sealed/sent event logs, poison batches and orphaned event files.
  * Keep transcript chunks and legacy snapshots available for selected recovery.
  */
 function cleanupStaleFiles() {
@@ -1429,6 +1326,20 @@ function cleanupStaleFiles() {
   if (fs.existsSync(LOG_DIR)) {
     try {
       for (const f of fs.readdirSync(LOG_DIR)) {
+        if (/^events\.jsonl\.\d+$/.test(f)) {
+          const batch = path.join(LOG_DIR, f);
+          // Partitioning a mixed batch rewrites its mtime. Its seal timestamp
+          // remains fixed, so a hold cannot extend retention on every retry.
+          if (now - batchSealTimeMs(batch) <= CLEANUP_MAX_AGE_MS) continue;
+          const release = transcriptQueue.acquireLock(`${batch}.lock`);
+          if (!release) continue;
+          try {
+            if (fs.existsSync(batch)) fs.unlinkSync(batch);
+            clearBatchMeta(batch);
+            console.error("[skillmeter] Expired sealed event batch after 30-day retention");
+          } finally { release(); }
+          continue;
+        }
         // Uploaded batches, plus orphaned attempt-meta sidecars whose batch has
         // already been sent or quarantined (so they never leak).
         if (/^events\.jsonl\.\d+\.sent$/.test(f)) {
@@ -1641,33 +1552,40 @@ function readStdin() {
 }
 
 // Explicit repository consent, following Claude's default-off capture rule.
-// Storage remains checkout-local until the shared policy/queue adapter lands.
+// Acknowledged organization and repository ON grant capture; local restrictions still apply.
 
 function telemetryCliCommand(action) {
   return `node ${JSON.stringify(path.join(PLUGIN_ROOT, "scripts", "telemetry.js"))} ${action}`;
 }
 
+function getRepositoryPolicyDecision(cwd) {
+  // A record deleted after it was observed is reported by the reader through
+  // the observation marker, not through routing state.
+  return readRepositoryConsent(getRepoScopeDecision(cwd));
+}
+
 function getTelemetryOptIn(cwd) {
+  const record = getRepositoryPolicyDecision(cwd);
+  if (record.revoked) return false;
+  // Local settings only restrict; the grant is the acknowledged record. A local
+  // OFF reports as an opt-out even before any record exists.
+  const local = getLocalTelemetryChoice(cwd);
+  if (local === "off") return false;
+  if (!record.allowed || local === "invalid") return null;
+  return record.acknowledged ? true : null;
+}
+
+function getLocalTelemetryChoice(cwd) {
   const root = findGitRoot(cwd) || path.resolve(cwd);
   let current = path.resolve(cwd);
-  // Preserve legacy subdirectory opt-outs; a child cannot widen root consent.
   while (current !== root) {
-    const content = readSettingsFile(current);
-    if (fs.existsSync(path.join(current, SETTINGS_RELATIVE))) {
-      if (!content || typeof content !== "object" || Array.isArray(content)) return null;
-      const settings = content.skillmeter;
-      if (settings !== undefined && (
-        !settings || typeof settings !== "object" || Array.isArray(settings) ||
-        (settings.telemetry !== undefined && typeof settings.telemetry !== "boolean")
-      )) return null;
-      if (settings?.telemetry === false) return false;
-    }
+    const choice = readTelemetryChoice(current);
+    if (choice === "off" || choice === "invalid") return choice;
     const parent = path.dirname(current);
-    if (parent === current) return null;
+    if (parent === current) return "invalid";
     current = parent;
   }
-  const choice = readSettingsFile(root)?.skillmeter?.telemetry;
-  return typeof choice === "boolean" ? choice : null;
+  return readTelemetryChoice(root);
 }
 
 function saveTelemetryOptIn(cwd, value) {
@@ -1683,7 +1601,12 @@ function saveTelemetryOptIn(cwd, value) {
         throw new Error("Invalid project settings; repair the file before changing consent.");
       }
     }
-    content.skillmeter = { ...content.skillmeter, telemetry: value };
+    // A local setting only restricts, so clearing the restriction removes the
+    // key instead of writing an ON that would grant nothing.
+    const skillmeter = { ...content.skillmeter };
+    if (value) delete skillmeter.telemetry;
+    else skillmeter.telemetry = false;
+    content.skillmeter = skillmeter;
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     return () => transcriptQueue.writeDurable(settingsPath, JSON.stringify(content, null, 2) + "\n");
   });
@@ -1700,15 +1623,17 @@ function saveTelemetryOptIn(cwd, value) {
 }
 
 // In-context consent notice: printed to a Codex hook's stderr channel when a
-// project has no explicit opt-in. No decision is saved until the user runs
-// `telemetry.js enable|disable`.
+// project has no consent. No decision is saved until the user records one.
 function writeTelemetryConsentFallback(cwd, stream = process.stderr) {
+  const record = getRepositoryPolicyDecision(cwd);
+  if (record.revoked || ["consent_record_missing", "invalid"].includes(record.reason)) {
+    stream.write("SkillMeter: The organization or repository consent record blocks capture. Check telemetry status; unrestrict cannot override it.\n");
+    return;
+  }
   stream.write(
     [
       `SkillMeter: Telemetry is not configured for ${cwd}`,
-      "SkillMeter: Enable or disable telemetry for this project with:",
-      `  ${telemetryCliCommand("enable")}`,
-      `  ${telemetryCliCommand("disable")}`,
+      "SkillMeter: Choose telemetry with $skillmeter:signin, or check it with:",
       `  ${telemetryCliCommand("status")}`,
       "",
     ].join("\n")
@@ -1797,6 +1722,7 @@ async function runHook(eventName, buildData, options = {}) {
     console.error("[skillmeter] Transcript consent observation failed; capture deferred");
     return exit(0);
   }
+  if (readRepositoryConsent(getRepoScopeDecision(cwd)).revoked) reconcileConsentRevocations();
   if (getTelemetryGloballyDisabled()) {
     console.error(`[skillmeter] ${eventName}: skipped (telemetry globally disabled)`);
     return exit(0);
@@ -1860,7 +1786,7 @@ async function runHook(eventName, buildData, options = {}) {
     );
   }
 
-  logInfo(eventName, sessionId, data, deviceId, { epoch: route.epoch });
+  logInfo(eventName, sessionId, data, deviceId, { epoch: route.epoch, sharedStamp: route.sharedDeliveryToken });
   console.error(
     `[skillmeter] ${eventName}: logged (session=${String(sessionId).slice(0, 8)}…)`
   );
@@ -1889,6 +1815,7 @@ module.exports = {
   getTelemetryGloballyDisabled,
   setTelemetryGloballyDisabled,
   tryRefreshLicense,
+  purgeEventLogs,
   hashHmac,
   sanitizeToolData,
   getTimestamp,
@@ -1913,6 +1840,8 @@ module.exports = {
   collectTranscriptPaths,
   stageTranscriptForUpload,
   observeTranscriptConsent,
+  observeKnownTranscriptConsent,
+  reconcileConsentRevocations,
   requestTranscriptCapture,
   stageRequestedTranscripts,
   TRANSCRIPT_CHUNKS_DIR,
@@ -1955,6 +1884,9 @@ module.exports = {
   // Cleanup
   cleanupStaleFiles,
   getTelemetryOptIn,
+  getLocalTelemetryChoice,
+  readGlobalConsent,
+  getRepositoryPolicyDecision,
   saveTelemetryOptIn,
   writeTelemetryConsentFallback,
   resolveTelemetryGate,
@@ -1968,6 +1900,7 @@ module.exports = {
   PLUGIN_VERSION,
   LOG_DIR,
   LOG_FILE,
+  CONSENT_OBSERVED_FILE,
   CODEX_HOME,
   CODEX_SESSIONS_DIR,
   TRANSCRIPTS_PENDING_DIR,
