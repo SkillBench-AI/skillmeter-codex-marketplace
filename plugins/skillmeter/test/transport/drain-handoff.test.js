@@ -11,7 +11,7 @@ function preloadFixture() {
   const fs = require("fs"), cp = require("child_process"), path = require("path");
   const root = process.env.TEST_ROOT;
   const record = (file, value) => fs.appendFileSync(path.join(root, file), JSON.stringify(value) + "\n");
-  cp.execSync = () => { throw Error("unexpected shell/Keychain access"); };
+  cp.execSync = () => { throw Error("unexpected shell access"); };
   cp.spawn = (_, args) => {
     if (!args[0].endsWith("/drain_once.js")) throw Error("unexpected background worker");
     record("spawns.jsonl", {});
@@ -21,9 +21,11 @@ function preloadFixture() {
     if (!fs.existsSync(path.join(root, "injected"))) {
       fs.writeFileSync(path.join(root, "injected"), "");
       if (process.env.TEST_INJECT === "paused") {
-        const file = path.join(root, ".skillbench/credentials.json");
-        const credentials = JSON.parse(fs.readFileSync(file, "utf8"));
-        fs.writeFileSync(file, JSON.stringify({ ...credentials, telemetry_disabled: true }));
+        // Another process pauses Codex in its consent record; the grants stay.
+        const file = path.join(root, ".skillbench/clients/codex/telemetry-policy.json");
+        const policy = JSON.parse(fs.readFileSync(file, "utf8"));
+        policy.global = { enabled: false, decided_at: 2, source: "user" }; policy.revision++;
+        fs.writeFileSync(file, JSON.stringify(policy));
       }
       fs.appendFileSync(process.env.TEST_SOURCE, JSON.stringify({ type: "response_item",
         payload: { type: "message", role: "user", content: "final overlapping turn" } }) + "\n");

@@ -5,23 +5,29 @@ const {
   spawnDetachedDrain,
   spawnRetryDaemon,
   cleanupStaleFiles,
-  tryRefreshLicense,
+  purgeEventLogs,
   writeTelemetryConsentFallback,
-  getDeviceId,
-  getTelemetryGloballyDisabled,
   PLUGIN_ROOT,
   PLUGIN_VERSION,
 } = require("./logger.js");
+const credstore = require("./credstore");
+const licenseActivation = require("./lib/license-activation");
 const { detectHarness } = require("./harness.js");
 
-// Await refresh before evaluating capture scope or building SessionStart.
-// Refresh errors are ignored; upload callers still enforce token validity.
-async function prepareSession() {
-  const deviceId = getDeviceId();
-  if (!deviceId || getTelemetryGloballyDisabled()) return;
+// The first run of this version starts without a session: no earlier
+// credentials carry over, so what an earlier version queued is dropped rather
+// than sent under a later sign-in (ADR 005). Renewal is not done here;
+// the drains renew before they send.
+function prepareSession() {
   try {
-    await tryRefreshLicense(deviceId);
+    if (credstore.ensureSessionFile()) purgeEventLogs();
   } catch {}
+}
+
+// A missing license, or one whose session the sign-in service ended.
+function signInRequired() {
+  if (!credstore.isSignedIn()) return true;
+  return licenseActivation.readStatus().terminal !== null;
 }
 
 function buildSessionStartEvent(input, ctx) {
@@ -43,6 +49,12 @@ function buildSessionStartEvent(input, ctx) {
 
 // Report the capture decision already resolved by runHook.
 function onGate({ gate, cwd }) {
+  if (signInRequired()) {
+    process.stderr.write(`SkillMeter v${PLUGIN_VERSION} (sign-in required; run $skillmeter:signin)\n`);
+    process.stdout.write("SkillMeter is not signed in, so nothing is being recorded. Ask the user to run $skillmeter:signin.\n");
+    cleanupStaleFiles();
+    return;
+  }
   if (gate.capture) {
     process.stderr.write(`SkillMeter v${PLUGIN_VERSION} (activated)\n`);
     // Recover prior queues before appending this SessionStart event.
@@ -74,13 +86,9 @@ function runSessionStartHook() {
   return runHook("SessionStart", buildSessionStartEvent, { onGate });
 }
 
-// Attempt refresh before logging; a refresh failure must not skip the hook.
 function main() {
-  return prepareSession()
-    .catch(() => {})
-    .finally(() => {
-      runSessionStartHook().catch(() => process.exit(1));
-    });
+  prepareSession();
+  return runSessionStartHook().catch(() => process.exit(1));
 }
 
 if (require.main === module) {

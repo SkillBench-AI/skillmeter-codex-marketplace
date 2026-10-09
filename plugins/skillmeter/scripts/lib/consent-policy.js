@@ -1,7 +1,6 @@
 "use strict";
 
 const fs = require("fs");
-const os = require("os");
 const path = require("path");
 
 // ENOENT can mean a missing file or an unresolved link in any parent path.
@@ -23,17 +22,17 @@ function policyPathIsAbsent(file) {
   }
 }
 
-function sharedPolicyFile() {
-  const stateDir = process.env.SKILLMETER_STATE_DIR ||
-    path.join(os.homedir(), process.env.SKILLMETER_ENV === "dev" ? ".skillbench-dev" : ".skillbench");
-  return path.join(stateDir, "telemetry-policy.json");
+// Codex's own consent record, next to its session (ADR 006 in the Claude
+// plugin repository). Other clients' records are never read.
+function consentPolicyFile() {
+  return path.join(require("./config").sessionDir(), "telemetry-policy.json");
 }
 
-// Unknown records hold delivery; explicit OFF revokes. Only acknowledged
-// organization and repository grants can replace a required local opt-in.
-function evaluateSharedRepositoryPolicy(scope, shared) {
+// Unknown records hold delivery; explicit OFF revokes. Capture needs
+// acknowledged organization and repository grants; no record grants nothing.
+function evaluateRepositoryConsent(scope, shared) {
   const key = scope.repoKey;
-  if (shared.reason === "absent") return { key, allowed: true, reason: "absent", stamp: key ? JSON.stringify([key, null]) : null };
+  if (shared.reason === "absent") return { key, allowed: false, reason: "absent", stamp: key ? JSON.stringify([key, null]) : null };
   if (!scope.allowed || !key) return { allowed: false, reason: "scope_unavailable", stamp: null };
   if (!shared.policy) return { allowed: false, reason: "invalid", stamp: null };
   const { organizations, repositories } = shared.policy;
@@ -46,7 +45,7 @@ function evaluateSharedRepositoryPolicy(scope, shared) {
   const revoked = (valid(organization) && !organization.enabled) || (valid(repository) && !repository.enabled);
   // Preserve a known OFF even when the other choice is absent.
   if (!revoked && (!valid(organization) || !valid(repository))) {
-    return { allowed: false, reason: "shared_choice_required", stamp: null };
+    return { allowed: false, reason: "choice_required", stamp: null };
   }
   const recordStamp = record => {
     if (!valid(record)) return null;
@@ -61,9 +60,9 @@ function evaluateSharedRepositoryPolicy(scope, shared) {
     allowed: !revoked,
     revoked,
     acknowledged: !revoked && organization?.consent_version === 2 && repository?.consent_version === 2,
-    reason: revoked ? "shared_opt_out" : "enabled",
+    reason: revoked ? "choice_off" : "enabled",
     stamp: JSON.stringify([key, recordStamp(organization), recordStamp(repository)]),
   };
 }
 
-module.exports = { evaluateSharedRepositoryPolicy, policyPathIsAbsent, sharedPolicyFile };
+module.exports = { evaluateRepositoryConsent, policyPathIsAbsent, consentPolicyFile };

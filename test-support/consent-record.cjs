@@ -5,6 +5,7 @@ const os = require("node:os");
 const path = require("node:path");
 const { spawnSync } = require("node:child_process");
 const plugin = path.resolve(__dirname, "../plugins/skillmeter");
+const { writeCredentials, license, consentPolicyFileIn } = require(path.join(plugin, "test-support/plugin.cjs"));
 
 function fixture(t) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "codex-shared-policy-"));
@@ -14,15 +15,15 @@ function fixture(t) {
   fs.writeFileSync(path.join(repo, ".git/config"), '[remote "origin"]\nurl = https://github.com/acme/widgets.git\n');
   fs.mkdirSync(path.join(repo, ".codex"));
   fs.writeFileSync(path.join(repo, ".codex/settings.local.json"), '{"skillmeter":{"telemetry":true}}');
-  fs.mkdirSync(state);
-  fs.writeFileSync(path.join(state, "credentials.json"), JSON.stringify({
-    device_id: "SYNTHETIC", hash_salt: "fixture-salt", allowed_github_orgs: ["acme"],
-    license_jwt: "e30." + Buffer.from(JSON.stringify({ sub: "tenant", github_id: "synthetic", exp: 4102444800, aud: "https://acme.meter.skillbench.ai" })).toString("base64url") + ".fixture",
-  }));
-  const policyFile = path.join(state, "telemetry-policy.json");
+  writeCredentials(root, { device_id: "SYNTHETIC", hash_salt: "fixture-salt",
+    license_jwt: license({ broker_sub: "synthetic" }), refresh_token: "synthetic-refresh" }, { stateDir: state });
+  // Codex's own record; the former machine-wide shared path is never read.
+  const policyFile = consentPolicyFileIn(state), legacyPolicyFile = path.join(state, "telemetry-policy.json");
+  fs.mkdirSync(path.dirname(policyFile), { recursive: true });
+  const on = { enabled: true, decided_at: 1, source: "user", consent_version: 2 };
   const policy = (enabled = true, extra = {}) => ({ schema_version: 1, revision: 1,
-    global: { enabled, decided_at: 1, source: "user" }, organizations: { acme: { enabled: true } },
-    repositories: { "github.com/acme/widgets": { enabled: true } }, ...extra });
+    global: { enabled, decided_at: 1, source: "user" }, organizations: { acme: on },
+    repositories: { "github.com/acme/widgets": on }, ...extra });
   function run(code, cwd = repo) {
     const prelude = `
       const assert = require('node:assert/strict'), fs = require('node:fs'), path = require('node:path');
@@ -30,7 +31,7 @@ function fixture(t) {
       require('node:child_process').spawn = () => ({ pid: 999999, unref() {} });
       global.fetch = async () => assert.fail('unexpected network');
       const logger = require(${JSON.stringify(path.join(plugin, "scripts/logger.js"))});
-      const repo = process.cwd(), policyFile = ${JSON.stringify(policyFile)};
+      const repo = process.cwd(), policyFile = ${JSON.stringify(policyFile)}, legacyPolicyFile = ${JSON.stringify(legacyPolicyFile)};
       const writePolicy = value => fs.writeFileSync(policyFile, JSON.stringify(value));
       const policy = ${JSON.stringify(policy())};
       const source = ${JSON.stringify(path.join(root, "synthetic.jsonl"))};
@@ -48,6 +49,6 @@ function fixture(t) {
     return result;
   }
   const cli = args => run(`process.argv = ['node','telemetry.js',...${JSON.stringify(args)}]; require(${JSON.stringify(path.join(plugin, "scripts/telemetry.js"))});`);
-  return { root, repo, state, policyFile, policy, run, cli };
+  return { root, repo, state, policyFile, legacyPolicyFile, policy, run, cli };
 }
 module.exports = { fixture };

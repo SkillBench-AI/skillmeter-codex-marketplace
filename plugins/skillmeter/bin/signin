@@ -1,14 +1,11 @@
 #!/usr/bin/env node
 /**
- * Run GitHub sign-in from the terminal. Usage: node bin/signin [--org org].
+ * Sign in through the SkillMeter sign-in service from the terminal.
+ * Usage: node bin/signin.
  */
 const path = require("path");
 
-const PLUGIN_ROOT =
-  process.env.PLUGIN_ROOT ||
-  process.env.CLAUDE_PLUGIN_ROOT ||
-  path.resolve(__dirname, "..");
+const PLUGIN_ROOT = process.env.PLUGIN_ROOT || path.resolve(__dirname, "..");
 process.env.PLUGIN_ROOT = PLUGIN_ROOT;
-process.env.CLAUDE_PLUGIN_ROOT = PLUGIN_ROOT;
 
 require(path.join(PLUGIN_ROOT, "scripts", "signin.js"));

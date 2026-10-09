@@ -7,6 +7,10 @@ const path = require("node:path");
 const zlib = require("node:zlib");
 const { spawnSync } = require("node:child_process");
 
+// A shell inside Claude Code inherits CLAUDE_PLUGIN_DATA. The runtime ignores
+// it; clearing it keeps a regression from writing into a real plugin's directory.
+delete process.env.CLAUDE_PLUGIN_DATA;
+
 const PLUGIN_ROOT = path.resolve(__dirname, "..");
 const SCRIPTS = path.join(PLUGIN_ROOT, "scripts");
 const FIXTURES = path.join(PLUGIN_ROOT, "test", "fixtures");
@@ -21,11 +25,44 @@ function makeJwt(claims) {
   return `${part({ alg: "none", typ: "JWT" })}.${part(claims)}.sig`;
 }
 
-function writeCredentials(home, credentials) {
-  const dir = path.join(home, ".skillbench");
-  fs.mkdirSync(dir, { recursive: true });
-  const file = path.join(dir, "credentials.json");
-  fs.writeFileSync(file, JSON.stringify(credentials) + "\n");
+// A broker-issued license (ADR 005). `orgs` is the repository scope; `org.login`
+// is the tenant slug a renewal pins.
+function license(claims = {}) {
+  return makeJwt({ exp: 4102444800, sub: "tenant", broker_sub: "person", org: { login: "acme" },
+    orgs: ["acme"], aud: "https://acme.meter.skillbench.ai", ...claims });
+}
+
+// Session fields live in this plugin's own file; everything else is the shared
+// device identity (and other clients' fields) in credentials.json.
+const SESSION_FIELDS = ["license_jwt", "refresh_token", "auth_generation", "signed_out"];
+const sessionFileIn = stateDir => path.join(stateDir, "clients", "codex", "session.json");
+const consentPolicyFileIn = stateDir => path.join(stateDir, "clients", "codex", "telemetry-policy.json");
+
+// Codex's consent record with acknowledged organization and repository ON for
+// each repository key, as consent-set would leave it.
+function grantConsent(stateDir, repoKeys, { revision = 1 } = {}) {
+  const keys = [].concat(repoKeys);
+  const on = { enabled: true, decided_at: 1, source: "user", consent_version: 2 };
+  const file = consentPolicyFileIn(stateDir);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(file, JSON.stringify({
+    schema_version: 1, revision, global: { enabled: true, decided_at: 1, source: "user" },
+    organizations: Object.fromEntries(keys.map(key => [key.split("/")[1], on])),
+    repositories: Object.fromEntries(keys.map(key => [key, on])),
+  }));
+  return file;
+}
+
+// Write a device the way the plugin stores it. The session file is always
+// written, so the first-run cutover does not run in tests that did not ask for it.
+function writeCredentials(home, credentials, { stateDir = path.join(home, ".skillbench") } = {}) {
+  const identity = {}, session = {};
+  for (const [key, value] of Object.entries(credentials)) (SESSION_FIELDS.includes(key) ? session : identity)[key] = value;
+  fs.mkdirSync(stateDir, { recursive: true });
+  const file = path.join(stateDir, "credentials.json");
+  fs.writeFileSync(file, JSON.stringify(identity) + "\n");
+  fs.mkdirSync(path.dirname(sessionFileIn(stateDir)), { recursive: true });
+  fs.writeFileSync(sessionFileIn(stateDir), JSON.stringify(session) + "\n");
   return file;
 }
 
@@ -34,6 +71,7 @@ function isolateHome(credentials) {
   const home = tempDir("skillmeter-home");
   process.env.HOME = home;
   process.env.USERPROFILE = home;
+  process.env.PLUGIN_DATA = path.join(home, "plugin-data");
   if (credentials) writeCredentials(home, credentials);
   return home;
 }
@@ -81,9 +119,8 @@ function chunkQueue(t, { scope, salt = "synthetic-salt", defaults = {} } = {}) {
 }
 
 const DEFAULT_CREDENTIALS = {
-  device_id: "SYNTHETIC", hash_salt: "synthetic-salt", allowed_github_orgs: ["acme"],
-  license_jwt: makeJwt({ exp: 4102444800, sub: "tenant", github_id: "person", org: { login: "acme" },
-    aud: "https://acme.meter.skillbench.ai" }),
+  device_id: "SYNTHETIC", hash_salt: "synthetic-salt",
+  license_jwt: license(), refresh_token: "synthetic-refresh",
 };
 
 // Blocks network and shell access; records background spawns in TEST_SPAWNS.
@@ -107,14 +144,22 @@ function sandbox(t, { prefix = "codex-sandbox", credentials = DEFAULT_CREDENTIAL
   fs.mkdirSync(path.join(repo, ".git"), { recursive: true });
   fs.writeFileSync(path.join(repo, ".git", "config"), `[remote "origin"]\nurl = ${remote}\n`);
   if (telemetry !== undefined) writeSettings(repo, { telemetry });
+  // Local ON no longer grants capture; the consent record does.
+  const remoteRepo = /github\.com[:/]([^/]+)\/([^/]+?)(?:\.git)?$/.exec(remote || "");
+  if (telemetry === true && remoteRepo) {
+    grantConsent(state, `github.com/${remoteRepo[1].toLowerCase()}/${remoteRepo[2].toLowerCase()}`);
+  }
   const credentialFile = path.join(state, "credentials.json");
-  const saveCredentials = patch => fs.writeFileSync(credentialFile, JSON.stringify({ ...credentials, ...patch }));
+  const sessionFile = sessionFileIn(state);
+  const saveCredentials = patch => writeCredentials(root, { ...credentials, ...patch }, { stateDir: state });
   saveCredentials({});
   const preloadFile = path.join(root, "preload.cjs");
   fs.writeFileSync(preloadFile, preload);
   const env = {
     ...process.env, HOME: root, USERPROFILE: root, CODEX_HOME: path.join(root, ".codex"),
-    PLUGIN_ROOT, PLUGIN_DATA: data, CLAUDE_PLUGIN_ROOT: PLUGIN_ROOT, CLAUDE_PLUGIN_DATA: data,
+    // Codex also exports CLAUDE_PLUGIN_*; distinct paths keep a regression to
+    // reading them visible.
+    PLUGIN_ROOT, PLUGIN_DATA: data, CLAUDE_PLUGIN_ROOT: path.join(root, "claude-root"), CLAUDE_PLUGIN_DATA: path.join(root, "claude-data"),
     SKILLMETER_STATE_DIR: state, SKILLMETER_REPO_SCOPE_ORGS: "", SKILLMETER_BACKEND_URL: "",
     SKILLMETER_ACTIVATE_URL: "", NODE_OPTIONS: "", TEST_SPAWNS: path.join(root, "spawns"), ...extraEnv,
   };
@@ -126,7 +171,7 @@ function sandbox(t, { prefix = "codex-sandbox", credentials = DEFAULT_CREDENTIAL
   }
   const script = (name, { args = [], ...options } = {}) => spawn([path.join(SCRIPTS, name), ...args], options);
   return {
-    root, repo, data, state, credentials, credentialFile, saveCredentials, env, preload: preloadFile, spawn, script,
+    root, repo, data, state, credentials, credentialFile, sessionFile, saveCredentials, env, preload: preloadFile, spawn, script,
     settings: path.join(repo, ".codex", "settings.local.json"),
     events: () => readJsonl(path.join(data, "logs", "events.jsonl")),
     spawned: () => fs.existsSync(path.join(root, "spawns")),
@@ -135,6 +180,6 @@ function sandbox(t, { prefix = "codex-sandbox", credentials = DEFAULT_CREDENTIAL
 
 module.exports = {
   PLUGIN_ROOT, SCRIPTS, FIXTURES, DEFAULT_CREDENTIALS, STRICT_PRELOAD,
-  tempDir, makeJwt, writeCredentials, isolateHome, writeSettings, makeRepo,
+  tempDir, makeJwt, license, sessionFileIn, consentPolicyFileIn, grantConsent, writeCredentials, isolateHome, writeSettings, makeRepo,
   transcriptLine, gunzipRecords, readJsonl, chunkQueue, sandbox,
 };

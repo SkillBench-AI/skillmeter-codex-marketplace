@@ -1,7 +1,7 @@
 "use strict";
-// Synthetic contract fixtures promoted into the default regression suite.
+// Synthetic fixtures for the repository choice in the Codex consent record.
 const { test } = require("node:test");
-const { fixture } = require("../../../../test-support/shared-policy.cjs");
+const { fixture } = require("../../../../test-support/consent-record.cjs");
 
 for (const scope of ["organizations", "repositories"]) {
   const key = scope === "organizations" ? "acme" : "github.com/acme/widgets";
@@ -55,7 +55,7 @@ test("an unobserved shared OFF/ON cycle holds old payloads without restoring del
     fs.appendFileSync(source,line('old authorization')); const old=stage(); assert.ok(old);
     writePolicy({...policy,revision:2,repositories:{'github.com/acme/widgets':{enabled:false,decided_at:2}}});
     fs.appendFileSync(source,line('disabled content'));
-    writePolicy({...policy,revision:3,repositories:{'github.com/acme/widgets':{enabled:true,decided_at:3}}});
+    writePolicy({...policy,revision:3,repositories:{'github.com/acme/widgets':{enabled:true,decided_at:3,consent_version:2}}});
     const received=[]; global.fetch=async(_,opts)=>{received.push(...require('node:zlib').gunzipSync(opts.body).toString().trim().split('\\n').map(JSON.parse));return {ok:true};};
     await logger.processPendingTranscript(old,'SYNTHETIC','https://collector.invalid',1000);
     assert.equal(fs.existsSync(old),true); assert.equal(received.length,0);
@@ -70,18 +70,18 @@ test("a changed positive organization decision holds earlier queued data", t => 
   fixture(t).run(`
     writePolicy(policy); fs.writeFileSync(source,''); logger.observeTranscriptConsent(source,repo);
     fs.appendFileSync(source,line('old')); const old=stage(); assert.ok(old);
-    writePolicy({...policy,organizations:{acme:{enabled:true,decided_at:3}}});
+    writePolicy({...policy,organizations:{acme:{enabled:true,decided_at:3,consent_version:2}}});
     await logger.processPendingTranscript(old,'SYNTHETIC','https://collector.invalid',1000);
     assert.equal(fs.existsSync(old),true);
   `);
 });
 
-test("shared ON cannot authorize an unselected clone or override a local opt-out", t => {
+test("a local opt-out restricts an acknowledged grant until it is removed", t => {
   fixture(t).run(`
     writePolicy(policy); logger.saveTelemetryOptIn(repo,false);
     assert.equal(logger.getTelemetryOptIn(repo),false);
     fs.unlinkSync(path.join(repo,'.codex/settings.local.json'));
-    assert.equal(logger.getTelemetryOptIn(repo),null);
+    assert.equal(logger.getTelemetryOptIn(repo),true);
   `);
 });
 
@@ -129,7 +129,7 @@ test("mixed event delivery drops shared-disabled A and preserves B, including af
   fixture(t).run(`
     const b=path.join(path.dirname(repo),'b'); fs.mkdirSync(path.join(b,'.git'),{recursive:true});
     fs.writeFileSync(path.join(b,'.git/config'),'[remote "origin"]\\nurl = https://github.com/acme/other.git\\n');
-    policy.repositories['github.com/acme/other']={enabled:true}; writePolicy(policy);
+    policy.repositories['github.com/acme/other']={enabled:true,consent_version:2}; writePolicy(policy);
     logger.saveTelemetryOptIn(repo,true); logger.saveTelemetryOptIn(b,true);
     const event=(cwd,name)=>logger.logInfo('Stop',name,{cwd:logger.hashHmac(cwd,'fixture-salt'),repo_root:logger.hashHmac(cwd,'fixture-salt')},'SYNTHETIC');
     event(repo,'a');event(b,'b'); const file=logger.sealEventLog();
@@ -148,7 +148,7 @@ test("mixed event delivery drops shared-disabled A and preserves B, including af
   `);
 });
 
-test("removing an observed shared policy holds queued data instead of restoring local permission", t => {
+test("removing an observed record holds queued data instead of granting capture", t => {
   fixture(t).run(`
     writePolicy(policy); fs.writeFileSync(source,''); logger.observeTranscriptConsent(source,repo);
     fs.appendFileSync(source,line('authorized')); const chunk=stage(); const before=fs.readFileSync(chunk);
@@ -201,11 +201,11 @@ test("a changed positive decision holds old events without blocking a different 
   fixture(t).run(`
     const b=path.join(path.dirname(repo),'b'); fs.mkdirSync(path.join(b,'.git'),{recursive:true});
     fs.writeFileSync(path.join(b,'.git/config'),'[remote "origin"]\\nurl = https://github.com/acme/other.git\\n');
-    policy.repositories['github.com/acme/other']={enabled:true}; writePolicy(policy);
+    policy.repositories['github.com/acme/other']={enabled:true,consent_version:2}; writePolicy(policy);
     logger.saveTelemetryOptIn(repo,true); logger.saveTelemetryOptIn(b,true);
     for(const [cwd,name] of [[repo,'a'],[b,'b']]) logger.logInfo('Stop',name,{cwd:logger.hashHmac(cwd,'fixture-salt'),repo_root:logger.hashHmac(cwd,'fixture-salt')},'SYNTHETIC');
     const file=logger.sealEventLog();
-    writePolicy({...policy,repositories:{...policy.repositories,'github.com/acme/widgets':{enabled:true,decided_at:3}}});
+    writePolicy({...policy,repositories:{...policy.repositories,'github.com/acme/widgets':{enabled:true,decided_at:3,consent_version:2}}});
     const received=[]; global.fetch=async(_,o)=>{received.push(require('node:zlib').gunzipSync(o.body).toString());return {ok:true};};
     await logger.processSealedBatch(file,'https://collector.invalid',1000);
     assert.equal(received.length,1); assert.equal(received[0].includes('"session_id":"a"'),false);
@@ -219,16 +219,16 @@ test("CLI identifies shared blockers and local enable leaves shared OFF untouche
   const f=fixture(t), fs=require('node:fs'), assert=require('node:assert/strict');
   const raw=JSON.stringify(f.policy(true,{repositories:{'github.com/acme/widgets':{enabled:false}}}));
   fs.writeFileSync(f.policyFile,raw);
-  assert.match(f.cli(['status']).stderr,/disabled by shared/);
-  assert.match(f.cli(['enable']).stderr,/Capture remains blocked: disabled by shared/);
+  assert.match(f.cli(['status']).stderr,/disabled by the organization or repository choice/);
+  assert.match(f.cli(['unrestrict']).stderr,/Capture remains blocked: disabled by the organization or repository choice/);
   assert.equal(fs.readFileSync(f.policyFile,'utf8'),raw);
 });
 
-test("CLI reports an observed policy disappearing without requesting another local opt-in", t => {
+test("CLI reports an observed record disappearing", t => {
   const f=fixture(t), fs=require('node:fs'), assert=require('node:assert/strict');
   fs.writeFileSync(f.policyFile,JSON.stringify(f.policy()));
   f.run("await logger.runHook('PreToolUse',()=>({synthetic:true}));"); fs.unlinkSync(f.policyFile);
-  assert.match(f.cli(['status']).stderr,/previously observed shared policy is missing/);
+  assert.match(f.cli(['status']).stderr,/previously observed consent record is missing/);
 });
 
 test("shared OFF purges indexed transcript payloads after the checkout was removed", t => {
@@ -247,7 +247,7 @@ test("restoring an older shared policy cannot release held events from its old a
     writePolicy(policy); logger.saveTelemetryOptIn(repo,true);
     logger.logInfo('Stop','old',{cwd:logger.hashHmac(repo,'fixture-salt'),repo_root:logger.hashHmac(repo,'fixture-salt')},'SYNTHETIC');
     const file=logger.sealEventLog(), before=fs.readFileSync(file);
-    writePolicy({...policy,repositories:{'github.com/acme/widgets':{enabled:true,decided_at:2}}});
+    writePolicy({...policy,repositories:{'github.com/acme/widgets':{enabled:true,decided_at:2,consent_version:2}}});
     assert.equal(await logger.processSealedBatch(file,'https://collector.invalid',1000),'held');
     writePolicy(policy);
     assert.equal(await logger.processSealedBatch(file,'https://collector.invalid',1000),'held');
@@ -258,7 +258,7 @@ test("restoring an older shared policy cannot release held events from its old a
 
 test("revocation uses the queued repository identity after its remote changes", t => {
   fixture(t).run(`
-    policy.repositories['github.com/acme/other']={enabled:true}; writePolicy(policy);
+    policy.repositories['github.com/acme/other']={enabled:true,consent_version:2}; writePolicy(policy);
     fs.writeFileSync(source,''); logger.observeTranscriptConsent(source,repo);
     fs.appendFileSync(source,line('old repository')); const chunk=stage(); assert.ok(chunk);
     const cursor=path.join(path.dirname(path.dirname(chunk)),'cursor.json'); const before=fs.readFileSync(cursor);
@@ -273,7 +273,7 @@ test("revocation uses the queued repository identity after its remote changes", 
 
 test("a later opt-out purges the prior remote's events without purging new repository events", t => {
   fixture(t).run(`
-    policy.repositories['github.com/acme/other']={enabled:true}; writePolicy(policy);
+    policy.repositories['github.com/acme/other']={enabled:true,consent_version:2}; writePolicy(policy);
     logger.saveTelemetryOptIn(repo,true);
     const event=name=>logger.logInfo('Stop',name,{cwd:logger.hashHmac(repo,'fixture-salt'),repo_root:logger.hashHmac(repo,'fixture-salt')},'SYNTHETIC');
     event('old'); const old=logger.sealEventLog();
@@ -291,7 +291,7 @@ test("a later opt-out purges the prior remote's events without purging new repos
 
 test("revoking the new remote keeps prior-repository payloads held", t => {
   fixture(t).run(`
-    policy.repositories['github.com/acme/other']={enabled:true}; writePolicy(policy);
+    policy.repositories['github.com/acme/other']={enabled:true,consent_version:2}; writePolicy(policy);
     logger.saveTelemetryOptIn(repo,true);
     logger.logInfo('Stop','prior',{cwd:logger.hashHmac(repo,'fixture-salt'),repo_root:logger.hashHmac(repo,'fixture-salt')},'SYNTHETIC');
     const old=logger.sealEventLog(), before=fs.readFileSync(old);
@@ -304,9 +304,9 @@ test("revoking the new remote keeps prior-repository payloads held", t => {
 });
 
 
-test("an allowed remote change without shared policy does not block later transcript delivery", t => {
+test("a remote change to another enabled repository delivers new text and holds the prior payload", t => {
   fixture(t).run(`
-    assert.equal(fs.existsSync(policyFile),false);
+    policy.repositories['github.com/acme/other']={enabled:true,consent_version:2}; writePolicy(policy);
     fs.writeFileSync(source,''); logger.observeTranscriptConsent(source,repo);
     fs.appendFileSync(source,line('old repository')); const old=stage(); assert.ok(old);
     const oldBytes=fs.readFileSync(old);
@@ -318,6 +318,14 @@ test("an allowed remote change without shared policy does not block later transc
     await logger.drainPendingTranscripts('https://collector.invalid',1000);
     assert.deepEqual(received.filter(r=>r.type==='response_item').map(r=>r.payload.content),['new repository']);
     assert.deepEqual(fs.readFileSync(old),oldBytes,'prior repository payload remains held');
-    assert.equal(fs.existsSync(policyFile),false,'no policy is invented');
+  `);
+});
+
+test("no consent record captures nothing in a locally enabled checkout", t => {
+  fixture(t).run(`
+    assert.equal(fs.existsSync(policyFile),false);
+    fs.writeFileSync(source,''); logger.observeTranscriptConsent(source,repo);
+    fs.appendFileSync(source,line('no record')); assert.equal(stage(),null);
+    assert.equal(fs.existsSync(policyFile),false,'no record is invented');
   `);
 });

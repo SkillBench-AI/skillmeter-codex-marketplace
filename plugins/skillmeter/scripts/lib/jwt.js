@@ -74,9 +74,33 @@ function readEndpointClaim(token) {
   return null;
 }
 
+/**
+ * The GitHub accounts the license covers: the tenant's SkillBench app
+ * installations, from the `orgs` claim, lower-cased. This is the only source of
+ * repository scope. A missing or malformed claim covers nothing.
+ */
+function getLicenseOrgs(token) {
+  const claims = decodeJwtPayload(token);
+  if (!claims || !Array.isArray(claims.orgs)) return [];
+  return [...new Set(claims.orgs.filter(org => typeof org === "string")
+    .map(org => org.trim().toLowerCase()).filter(Boolean))];
+}
+
+/**
+ * The tenant the license is for, as its slug in `org.login`. A renewal sends it
+ * back to /activate so it cannot move the license to another workspace. Never
+ * a repository owner.
+ */
+function getLicenseTenantSlug(token) {
+  const login = decodeJwtPayload(token)?.org?.login;
+  return typeof login === "string" ? login.trim() : "";
+}
+
 module.exports = {
   JWT_EXPIRY_GRACE_SECONDS,
   decodeJwtPayload,
+  getLicenseOrgs,
+  getLicenseTenantSlug,
   isJwtExpired,
   getEndpointFromToken,
   getEndpointFromTokenAllowExpired,

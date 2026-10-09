@@ -1,120 +1,149 @@
 ---
 name: telemetry
-description: Show SkillMeter collection status for the current repository, record a shared consent choice for it, or enable, disable, pause and resume Codex telemetry.
+description: Review and toggle SkillMeter telemetry for local organization repositories, show status, turn the current repository on or off, or pause and resume Codex telemetry.
 ---
 
-Run these controls from the repository the user is asking about. The script
-resolves the nearest Git root from the working directory and takes no path
-argument. It prints to stderr; report the output verbatim in a fenced code
-block and add nothing it does not say.
+`<plugin-root>` in the commands below is this plugin's installed root: the
+absolute path of the directory two levels above this `SKILL.md`. Substitute it
+yourself; `$PLUGIN_ROOT` is not set in the shell that runs skill commands.
 
-## Status
+The user runs this skill as `$skillmeter:telemetry`, optionally followed by one
+of `list` (the default), `status`, `enable`, `disable`, `enable-global` or
+`disable-global`, the same commands as `/skillmeter:telemetry` in SkillMeter
+for Claude Code. Map a request in other words to one of them. These controls
+change only SkillMeter for Codex; Claude Code keeps its own choices.
+
+Run the commands from the repository the user is asking about; the scripts
+resolve the nearest Git root and take no path. Show each command's output
+verbatim in a fenced code block and add nothing it does not say. Change a
+choice only when the user explicitly asks; never pick ON or OFF for them.
+
+The scope statement, shown before anything is turned on:
+
+> This choice applies to SkillMeter for Codex on this machine and to every
+> clone or worktree of the repository. It does not change SkillMeter for
+> Claude Code.
+
+Pass `--acknowledge-machine-scope` only after the user has seen that statement
+in this conversation and confirmed the change that turns something on.
+
+## list
 
 ```sh
-node "$PLUGIN_ROOT/scripts/telemetry.js" status
+node "<plugin-root>/scripts/repository_telemetry.js" list
 ```
 
-`status` is read-only and changes no credentials or settings. It reports the
-capture policy for this repository, delivery authentication, and the local
-upload queue across repositories. It does not verify hook execution, server
+Parse the JSON. It has no local paths; never infer or request them. If the
+command fails, report the error and change nothing. If `repositories` is
+empty, report that no local repositories of the licensed organizations were
+found.
+
+Report the global state and how many repositories are on and off. List every
+repository with an `action` as a numbered line: `ON` or `OFF` (its
+`effective`), its exact `displayName`, and what selecting it does (`action`).
+List repositories without an `action` separately with their `blockedBy`:
+`paused` (resume with `enable-global`), `organization_off` or
+`organization_choice_required` (choose with `$skillmeter:signin`), or
+`local_restriction` (this checkout's local OFF; see `unrestrict`). Before the
+numbered list, mention that `enable` inside a repository turns that one on
+without the list.
+
+Ask the user which numbers to toggle; when any selected entry would turn on,
+show the scope statement with the question. End the message and wait for the
+reply. A reply with no recognizable number changes nothing. Then run one
+command with the exact `key` of every selected entry and the `revision` from
+the same list:
+
+```sh
+node "<plugin-root>/scripts/repository_telemetry.js" toggle REVISION KEY... --acknowledge-machine-scope
+```
+
+Omit `--acknowledge-machine-scope` when every selected entry turns off. Never
+pass display names, paths, numbers or custom text as keys. If the result has
+`stale: true`, run `list` again, show the new list and ask again; never apply
+the old selection. Report every result: `changed`, `effective`, and `reason`
+for a repository that was not changed. If `cleanupDeferred` is true, say that
+queued-data cleanup finishes at the next upload attempt.
+
+## status
+
+```sh
+node "<plugin-root>/scripts/telemetry.js" status
+```
+
+`status` is read-only. It prints a short card: the capture state for this
+repository, the reason when capture is not on, sign-in, and the local upload
+queue. Run `status --details` only when the user asks for diagnostics; it adds
+transcript health and delivery lines. Neither verifies hook execution, server
 acceptance or report generation; do not claim delivery from an empty queue.
 
-## Enable or disable this repository
+## enable and disable
 
-Change a repository choice only when the user explicitly asks for it. If the
-status line says a repository choice is required, describe what is collected
-(see the plugin README) and wait for the user's decision. Sign-in and an
-in-scope repository do not imply consent.
+Turn the current repository on or off:
 
 ```sh
-node "$PLUGIN_ROOT/scripts/telemetry.js" enable
-node "$PLUGIN_ROOT/scripts/telemetry.js" disable
+node "<plugin-root>/scripts/telemetry.js" enable --acknowledge-machine-scope
+node "<plugin-root>/scripts/telemetry.js" disable
 ```
 
-The choice is stored per checkout in `.codex/settings.local.json`; clones and
-linked worktrees need their own choice. Before running `disable`, tell the user
-that it removes this repository's queued, unsent payloads, that requests already
-in flight may finish, and that re-enabling does not restore removed payloads.
-Enabling cannot bring an out-of-scope
-repository into scope, and the global pause still applies.
+Before `enable`, show the scope statement and wait for confirmation. Before
+`disable`, tell the user that it removes the queued, unsent payloads this
+plugin attributed to the repository, for every clone and worktree; that
+requests already in flight may finish; and that turning it on again does not
+restore removed payloads. Each command prints a result card.
 
-## Shared consent for this repository
+If a command fails, relay the code and message, then act on it:
 
-Use this when the user wants one choice for this repository across every
-SkillMeter client and every clone or worktree on this machine. Change it only
-when the user explicitly asks. Never pick ON or OFF for them.
-
-1. Preview. `consent-preview` is read-only.
-
-   ```sh
-   node "$PLUGIN_ROOT/scripts/telemetry.js" consent-preview --json
-   ```
-
-   Tell the user, in plain words: the `repository` key, the `sharedRevision`,
-   every entry in `localChoices`, and every `notices` message. Stop and relay
-   the notices instead of asking for a choice when `repository` is null
-   (`repository_unavailable`) or when the result has no `sharedRevision`
-   property at all: that means the shared policy is unreadable, malformed or
-   missing after it was seen, and it must be repaired first. A `sharedRevision`
-   of `null` is different: no shared policy exists yet.
-
-2. Ask for an explicit choice: ON or OFF for this repository.
-
-3. For ON, show this statement verbatim and ask the user to confirm it:
-
-   > Telemetry choices apply to every SkillMeter client on this machine
-   > (Claude Code and Codex) and to every clone or worktree of the repository.
-
-   Pass `--acknowledge-machine-scope` only after the user confirms that
-   statement in this conversation. Never infer it from the ON request itself.
-   For OFF, tell the user that it removes the queued, unsent payloads this
-   plugin attributed to the repository, for every clone and worktree; that
-   cleanup blocked by an upload in progress is deferred to the next drain,
-   which rechecks consent before sending; that older data queued without a
-   repository keeps its previous behaviour; that requests already in flight may
-   finish; and that turning it on again does not restore removed payloads.
-   OFF needs no acknowledgement.
-
-4. Apply, using the key and revision from that same preview. Use `absent` when
-   `sharedRevision` is null.
-
-   ```sh
-   node "$PLUGIN_ROOT/scripts/telemetry.js" consent-set on --repository KEY --revision REVISION --acknowledge-machine-scope
-   node "$PLUGIN_ROOT/scripts/telemetry.js" consent-set off --repository KEY --revision REVISION
-   ```
-
-   Report the output verbatim in a fenced code block.
-
-If the command fails, relay the code and message, then act on it:
-
-- `STALE_POLICY`: the shared choices changed. Run the preview again, show the
-  new state and ask again. Never retry the old revision.
-- `REPOSITORY_CHANGED` or `REPOSITORY_UNAVAILABLE`: run the preview again from
-  the repository the user means; check sign-in, organization scope and remotes.
-- `ACKNOWLEDGEMENT_REQUIRED`: the statement above was not confirmed.
+- `ORGANIZATION_CONSENT_REQUIRED`: the organization has no ON choice yet. Tell
+  the user to run `$skillmeter:signin`, which asks for it.
+- `ACKNOWLEDGEMENT_REQUIRED`: the scope statement was not confirmed.
 - `LOCAL_CONSENT_CONFLICT`: a local OFF or invalid setting in this checkout
-  still restricts it. Show each `localChoices` entry whose choice is `off` or
-  `invalid`, with its path relative to the repository root. The user must edit
-  or remove that exact file before shared ON; `enable` writes only the root
-  file and cannot resolve a descendant or an unparsable file. Do not edit or
-  delete these files yourself unless the user asks.
-- `ORGANIZATION_CONSENT_REQUIRED`: the organization has not been authorized at
-  consent version 2. That happens in the Claude Code plugin's telemetry
-  controls; this command cannot authorize an organization.
-- `INVALID_ARGUMENTS`: check the key and revision against the preview.
+  restricts it. `unrestrict` clears a root-level OFF; a descendant or
+  unparsable `.codex/settings.local.json` must be edited by the user. Do not
+  edit or delete these files yourself unless the user asks.
+- `REPOSITORY_UNAVAILABLE`: no licensed GitHub repository resolves here;
+  suggest `status` and the check-repo-scope skill.
+- `STALE_POLICY`: run the command again once; another writer changed the
+  record.
 
-A saved choice does not prove hook execution or delivery. Local restrictions
-still apply, and legacy shared choices keep the per-checkout requirement.
+## enable-global and disable-global
 
-## Pause or resume all collection on this machine
+Pause or resume all Codex collection on this machine:
 
 ```sh
-node "$PLUGIN_ROOT/scripts/telemetry.js" disable --global
-node "$PLUGIN_ROOT/scripts/telemetry.js" enable --global
+node "<plugin-root>/scripts/telemetry.js" disable-global
+node "<plugin-root>/scripts/telemetry.js" enable-global
 ```
 
-The global pause stops capture and uploads for every repository and keeps
-queued data. Requests already in flight may finish. Resuming allows later
-delivery attempts when authentication and connectivity permit; it does not
-guarantee delivery. After any change, run `status` and report the new capture
-policy line.
+The pause stops Codex capture and uploads for every repository and keeps
+queued data. It does not pause SkillMeter for Claude Code. Requests already in
+flight may finish. Resuming allows later delivery attempts when sign-in and
+consent permit; it does not guarantee delivery. Run `status` afterwards and
+show its card.
+
+## Codex-only controls
+
+Use these only when the user asks for them by name or the steps above point to
+them.
+
+- `restrict` / `unrestrict`: write or clear a local OFF in this checkout's
+  `.codex/settings.local.json`. A local OFF blocks capture in this checkout even
+  when the repository is ON; `unrestrict` never turns anything on. Before
+  `restrict`, give the same warning as for `disable`.
+
+  ```sh
+  node "<plugin-root>/scripts/telemetry.js" restrict
+  node "<plugin-root>/scripts/telemetry.js" unrestrict
+  ```
+
+- `consent-preview` shows the repository key, the record revision, every
+  local choice along the path, and notices. It is read-only. `consent-set`
+  records one organization or repository choice against that revision;
+  `consent-set --help` prints its arguments. Prefer `$skillmeter:signin` for
+  organizations and `enable`/`disable` for repositories.
+
+  ```sh
+  node "<plugin-root>/scripts/telemetry.js" consent-preview --json
+  ```
+
+A saved choice does not prove hook execution or delivery.

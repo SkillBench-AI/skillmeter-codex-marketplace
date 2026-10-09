@@ -1,5 +1,5 @@
 "use strict";
-// Only synthetic files/credentials. Never consult the user's Keychain or sessions.
+// Only synthetic files/credentials. Never consult the user's sessions.
 const fs = require("node:fs"), os = require("node:os"), path = require("node:path");
 const { execFileSync, spawnSync } = require("node:child_process");
 const { test, beforeEach, after } = require("node:test");
@@ -11,10 +11,14 @@ delete process.env.SKILLMETER_BACKEND_URL;
 const repo = path.join(root, "repo");
 execFileSync("git", ["init", "--quiet", repo]);
 execFileSync("git", ["-C", repo, "remote", "add", "origin", "https://github.com/synthetic/repo.git"]);
-const store = path.join(root, ".skillbench/credentials.json"); fs.mkdirSync(path.dirname(store));
-const jwt = (sub = "synthetic-user", exp = 4102444800, extra = {}) => "e30." + Buffer.from(JSON.stringify({ sub, github_id: sub, exp, aud: "https://synthetic.meter.skillbench.com", ...extra })).toString("base64url") + ".fixture";
-const credentials = { device_id: "SYNTHETIC-DEVICE", hash_salt: "fixture-salt", license_jwt: jwt(), allowed_github_orgs: ["synthetic"] };
-const save = patch => fs.writeFileSync(store, JSON.stringify({ ...credentials, ...patch }));
+const { writeCredentials, sessionFileIn, consentPolicyFileIn, grantConsent } = require("../../test-support/plugin.cjs");
+const stateDir = path.join(root, ".skillbench"), identityFile = path.join(stateDir, "credentials.json"), sessionFile = sessionFileIn(stateDir);
+// A broker license: `broker_sub` is the user, `orgs` the repository scope.
+const jwt = (user = "synthetic-user", exp = 4102444800, extra = {}) => "e30." + Buffer.from(JSON.stringify({ sub: "synthetic-tenant", broker_sub: user, org: { login: "synthetic" }, orgs: ["synthetic"], exp, aud: "https://synthetic.meter.skillbench.com", ...extra })).toString("base64url") + ".fixture";
+const credentials = { device_id: "SYNTHETIC-DEVICE", hash_salt: "fixture-salt", license_jwt: jwt(), refresh_token: "synthetic-refresh" };
+const save = patch => writeCredentials(root, { ...credentials, ...patch }, { stateDir });
+const policyFile = consentPolicyFileIn(stateDir), repoKey = "github.com/synthetic/repo";
+const snapshot = () => [identityFile, sessionFile].map(file => fs.readFileSync(file));
 save({});
 const logger = require("../../scripts/logger");
 const queue = require("../../scripts/lib/transcript-delta");
@@ -24,7 +28,9 @@ const line = message => JSON.stringify({ type: "response_item", payload: { type:
 const stage = () => logger.stageTranscriptForUpload(source, { cwd: repo });
 const upload = file => logger.processPendingTranscript(file, credentials.device_id, "https://collector.invalid/logs/codex", 1000);
 beforeEach(() => {
+  // Start each test with acknowledged organization and repository consent.
   save({}); fs.rmSync(logger.LOG_DIR, { recursive: true, force: true });
+  grantConsent(stateDir, repoKey);
   fs.rmSync(path.join(repo, ".codex"), { recursive: true, force: true });
   logger.saveTelemetryOptIn(repo, true);
   fs.writeFileSync(source, "");
@@ -35,15 +41,19 @@ beforeEach(() => {
 after(() => { global.fetch = realFetch; fs.rmSync(root, { recursive: true, force: true }); });
 
 for (const [name, change] of [
-  ["global disable", () => save({ telemetry_disabled: true })],
+  ["global disable", () => logger.setTelemetryGloballyDisabled(true)],
   ["signout", () => save({ signed_out: true })],
-  ["org narrowing in another process", () => save({ allowed_github_orgs: [] })],
+  ["org removed from the license in another process", () => save({ license_jwt: jwt("synthetic-user", 4102444800, { orgs: [] }) })],
   ["changed user", () => save({ license_jwt: jwt("another-user") })],
   ["changed device", () => save({ device_id: "ANOTHER-DEVICE" })],
   ["expired token", () => save({ license_jwt: jwt("synthetic-user", 1) })],
   ["missing token", () => save({ license_jwt: "" })],
   ["project opt-out", () => { fs.mkdirSync(path.join(repo, ".codex"), { recursive: true }); fs.writeFileSync(path.join(repo, ".codex/settings.local.json"), '{"skillmeter":{"telemetry":false}}'); }],
-  ["removed repository choice", () => fs.unlinkSync(path.join(repo, ".codex/settings.local.json"))],
+  ["removed repository choice", () => {
+    const policy = JSON.parse(fs.readFileSync(policyFile, "utf8"));
+    delete policy.repositories[repoKey]; policy.revision++;
+    fs.writeFileSync(policyFile, JSON.stringify(policy));
+  }],
 ]) test(`${name} blocks queued upload without consuming it`, async () => {
   const file = stage(); assert.ok(file); change();
   assert.equal(await upload(file), "skip"); assert.equal(fs.existsSync(file), true);
@@ -57,18 +67,18 @@ test("token refresh for the same principal resumes pending chunks", async () => 
 });
 
 for (const status of [400, 401, 402, 403, 413, 429, 500]) test(`HTTP ${status} retains chunk and credentials without anonymous retry`, async () => {
-  const file = stage(), before = fs.readFileSync(store); let calls = 0;
+  const file = stage(), before = snapshot(); let calls = 0;
   global.fetch = async () => { calls++; return { ok: false, status }; };
   const outcome = await upload(file);
   assert.equal(outcome, [401, 402, 403].includes(status) ? "auth" : "retry");
   assert.equal(logger.isLicenseRejected(), [401, 403].includes(status));
   assert.equal(calls, 1); assert.equal(fs.existsSync(file), true);
-  assert.deepEqual(fs.readFileSync(store), before);
+  assert.deepEqual(snapshot(), before);
 });
 
 test("scope is rechecked between each ordered chunk", async () => {
   const file = stage(); fs.appendFileSync(source, line("second")); stage(); let calls = 0;
-  global.fetch = async () => { calls++; save({ allowed_github_orgs: [] }); return { ok: true }; };
+  global.fetch = async () => { calls++; save({ license_jwt: jwt("synthetic-user", 4102444800, { orgs: [] }) }); return { ok: true }; };
   await upload(file); assert.equal(calls, 1); assert.equal(logger.listPendingTranscripts().length, 1);
 });
 
@@ -122,16 +132,6 @@ test("cleanup and dry-run inventory preserve old transcript copies", () => {
   assert.deepEqual([pending, poison].map(f => fs.readFileSync(f)), before);
 });
 
-
-test("tenant sub cannot substitute for user identity", async () => {
-  save({ license_jwt: jwt("same-tenant", 4102444800, {github_id: 101}) });
-  fs.rmSync(logger.TRANSCRIPT_CHUNKS_DIR, {recursive:true,force:true});
-  fs.writeFileSync(source, ""); logger.observeTranscriptConsent(source, repo);
-  fs.appendFileSync(source, line("tenant-scoped message"));
-  const file = stage(); assert.ok(file);
-  save({ license_jwt: jwt("same-tenant", 4102444800, {github_id: 202}) });
-  assert.equal(await upload(file), "skip"); assert.equal(fs.existsSync(file), true);
-});
 
 test("missing server baseline requests a durable full reset and resumes", async () => {
   let file = stage(); global.fetch = async () => ({ok:true}); await upload(file);
@@ -242,9 +242,7 @@ test("chunk routing and authorization use one current credential snapshot", asyn
 });
 
 for (const changedPrincipal of [false, true]) test(`broker credential rotation ${changedPrincipal ? "blocks a different user" : "preserves the same user's queue"}`, async () => {
-  const brokerToken = (user, jti) => jwt("tenant-uuid", 4102444800, {
-    github_id: undefined, broker_sub: user, jti,
-  });
+  const brokerToken = (user, jti) => jwt(user, 4102444800, { jti });
   save({ license_jwt: brokerToken("broker-user-a", "old") });
   fs.rmSync(logger.TRANSCRIPT_CHUNKS_DIR, {recursive:true,force:true});
   fs.writeFileSync(source, ""); logger.observeTranscriptConsent(source, repo);
@@ -356,7 +354,9 @@ test("repository disable/re-enable without hooks excludes the interval through a
   assert.match(reset, /authorized after enable/);
 });
 
-test("local global pause retains queued chunks but excludes newly written interval", () => {
+test("global pause retains queued chunks but excludes newly written interval", () => {
+  fs.writeFileSync(source, ""); logger.observeTranscriptConsent(source, repo);
+  fs.appendFileSync(source, line("synthetic first message"));
   logger.requestTranscriptCapture({ cwd: repo, session_id: "pause", transcript_path: source });
   const previous = stage(), bytes = fs.readFileSync(previous);
   logger.setTelemetryGloballyDisabled(true);
@@ -405,11 +405,18 @@ test("a disabled native hook observes offsets without logging content or launchi
 
 test("enable advances an unselected source before any upload hint exists", () => {
   fs.rmSync(path.join(repo,".codex"),{recursive:true,force:true});
-  fs.rmSync(logger.TRANSCRIPT_CHUNKS_DIR,{recursive:true,force:true});
+  fs.rmSync(logger.LOG_DIR,{recursive:true,force:true});
+  const policy = JSON.parse(fs.readFileSync(policyFile,"utf8"));
+  delete policy.repositories[repoKey];
+  fs.writeFileSync(policyFile,JSON.stringify(policy));
   fs.writeFileSync(source,line("UNSELECTED-HISTORY"));
   logger.observeTranscriptConsent(source,repo);
   assert.equal(fs.existsSync(logger.TRANSCRIPT_CAPTURES_DIR),false);
-  logger.saveTelemetryOptIn(repo,true);
+  // Enable the way consent-set does: observe known sources under the writer lock.
+  const { createConsentStore } = require("../../scripts/lib/consent-store");
+  createConsentStore({ file: policyFile, observedFile: logger.CONSENT_OBSERVED_FILE })
+    .setRepositoryOverride(repoKey, true, { expectedRevision: policy.revision, acknowledged: true,
+      onCommitted: () => logger.observeKnownTranscriptConsent() });
   fs.appendFileSync(source,line("FIRST-AUTHORIZED-PROMPT"));
   assert.deepEqual(recordsIn([stage()]).map(r=>r.payload.content),["FIRST-AUTHORIZED-PROMPT"]);
 });
@@ -420,8 +427,8 @@ test("same-principal signout/signin excludes the signed-out span without interve
   global.fetch = async () => ({ok:true}); await upload(file);
   storeApi.signOut();
   fs.appendFileSync(source,line("SIGNED-OUT-EXCLUDED"));
-  storeApi.markEngaged();
-  assert.equal(storeApi.commitSignin({jwt:credentials.license_jwt,orgs:credentials.allowed_github_orgs}),true);
+  const generation = storeApi.markEngaged();
+  assert.notEqual(storeApi.commitSignin({jwt:credentials.license_jwt,refreshToken:"synthetic-refresh",generation}),false);
   assert.equal(stage(),null, "first post-signin observation closes the unknown interval");
   fs.appendFileSync(source,line("authorized after signin observation"));
   const next=stage();
