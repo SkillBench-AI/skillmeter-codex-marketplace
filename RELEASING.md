@@ -1,7 +1,17 @@
 # Releasing SkillMeter for Codex
 
-The marketplace serves `main`: merged changes reach users when they update.
-Version tags separately publish GitHub Releases and source archives.
+The stable marketplace serves `main`, which moves only at releases. Pull requests
+target `next`; the internal channel follows `next` (see below). Version tags
+publish GitHub Releases and source archives.
+
+## Branches
+
+- `next`: the development branch and the base of feature pull requests.
+- `main`: what customers install. A release bumps the version on `next`, then
+  opens a pull request from `next` to `main`. Merge it with a merge commit, not a
+  squash, so `main` and `next` keep one history.
+- A hotfix goes to `main` in its own release pull request and is merged back
+  into `next` right after, so the two never diverge.
 
 ## Version and tag
 
@@ -40,7 +50,7 @@ publishes automatically; replace its generated title and body with the approved
 notes afterward.
 
 Release notes are public. They say what changed for the user; the PRs hold the
-rest. Use [0.8.0](https://github.com/SkillBench-AI/skillmeter-codex-marketplace/releases/tag/v0.8.0)
+rest. Use [0.12.3](https://github.com/SkillBench-AI/skillmeter-codex-marketplace/releases/tag/v0.12.3)
 as the model for length and tone.
 
 - Title: `SkillMeter X.Y.Z`
@@ -63,8 +73,17 @@ as the model for length and tone.
 Keep internal coordination and rollout history in Linear. Public notes should
 contain only information users need to update and use the plugin.
 
+## Internal channel
+
+No release step is needed for the internal channel. The `Internal channel`
+workflow rebuilds the `internal` branch after CI passes on each `next` push,
+using `.github/scripts/make-internal-channel.mjs --build <run number>`. The
+build's version is `<next patch>-internal.<run number>`; `next` and `main`
+always keep a release version. Never commit `plugins/skillmeter/channel.json`;
+a test fails if it is present.
+
 ## Checks
 
 `npm run check` runs version validation, manifest validation and Node tests.
-[PR CI](.github/workflows/ci.yml) tests Node 20 and 22. For optional local hooks,
+[PR CI](.github/workflows/ci.yml) tests Node 22 and 24. For optional local hooks,
 install [pre-commit](https://pre-commit.com/) and run `pre-commit install`.

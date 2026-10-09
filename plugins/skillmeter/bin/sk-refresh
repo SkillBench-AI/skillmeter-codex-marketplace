@@ -1,28 +1,25 @@
 #!/usr/bin/env node
 /**
- * Clear the stored license and start sign-in again.
- * Usage: node bin/sk-refresh.
+ * Renew the stored license now, through the sign-in service, even if it still
+ * looks valid. Usage: node bin/sk-refresh.
  */
 const path = require("path");
 
-const PLUGIN_ROOT =
-  process.env.PLUGIN_ROOT ||
-  process.env.CLAUDE_PLUGIN_ROOT ||
-  path.resolve(__dirname, "..");
+const PLUGIN_ROOT = process.env.PLUGIN_ROOT || path.resolve(__dirname, "..");
 process.env.PLUGIN_ROOT = PLUGIN_ROOT;
-process.env.CLAUDE_PLUGIN_ROOT = PLUGIN_ROOT;
 
 const credstore = require(path.join(PLUGIN_ROOT, "scripts", "credstore.js"));
+const { ensureFreshLicense } = require(path.join(PLUGIN_ROOT, "scripts", "lib", "license-activation.js"));
+const { purgeEventLogs } = require(path.join(PLUGIN_ROOT, "scripts", "logger.js"));
 
-const existing = credstore.getLicenseToken();
-if (existing) {
-  process.stderr.write("sk-refresh: clearing stored license JWT\n");
-  credstore.setLicenseToken("");
-} else {
-  process.stderr.write("sk-refresh: no stored license; running fresh activation\n");
-}
-
-// Requiring signin.js runs its top-level entrypoint immediately. With the
-// license cleared above it falls through to the silent-gh / device-flow
-// pipeline and re-mints a fresh license + per-tenant endpoint.
-require(path.join(PLUGIN_ROOT, "scripts", "signin.js"));
+(async () => {
+  const before = credstore.getLicenseToken();
+  if (!before) {
+    process.stderr.write("sk-refresh: not signed in; run the SkillMeter sign-in flow\n");
+    process.exit(1);
+  }
+  const after = await ensureFreshLicense(credstore.getDeviceId(), { force: true, onRevoked: purgeEventLogs });
+  const renewed = !!after && after !== before;
+  process.stderr.write(renewed ? "sk-refresh: license renewed\n" : "sk-refresh: license not renewed; see the message above\n");
+  process.exit(renewed ? 0 : 1);
+})();

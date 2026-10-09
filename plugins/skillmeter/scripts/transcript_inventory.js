@@ -24,7 +24,7 @@ function inventory(dataDir) {
     chunkDiagnostics: reasons, sessions, downstream: "unknown" };
 }
 if (require.main === module) {
-  const data = process.env.PLUGIN_DATA || process.env.CLAUDE_PLUGIN_DATA;
+  const data = process.env.PLUGIN_DATA;
   if (!data) { console.error("Set PLUGIN_DATA to the queue to inventory; no default home scan."); process.exitCode = 1; }
   else console.log(JSON.stringify(inventory(data), null, 2));
 }

@@ -34,11 +34,12 @@ require.cache[credentialModule] = {
     getLicenseTokenUncached: () => token,
     getSignedOut: () => false,
     getAllowedGitHubOrgs: () => ["synthetic"],
-    getTelemetryDisabled: () => false,
-    setLicenseToken: () => assert.fail("Fixture must never change authentication"),
+    ...Object.fromEntries(["commitSignin", "commitRotation", "commitRefresh", "dropSession", "signOut", "mutateSession"]
+      .map(name => [name, () => assert.fail("Fixture must never change authentication")])),
   },
 };
 const logger = require("../../scripts/logger");
+require("../../test-support/plugin.cjs").grantConsent(process.env.SKILLMETER_STATE_DIR, "github.com/synthetic/repo");
 logger.saveTelemetryOptIn(dataDir, true);
 const realFetch = global.fetch;
 

@@ -1,6 +1,8 @@
 # One Consent Record Shared by Every Client on a Machine
 
-**Status:** Adopted by reference. Canonical text:
+**Status:** Superseded on 2026-09-28 by [ADR 006](006-per-client-consent.md):
+Codex keeps its own consent record. The text below is kept as history.
+Previously adopted by reference. Canonical text:
 [Claude Code plugin ADR 004](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/blob/main/docs/adr/004-shared-consent.md)
 (Accepted 2026-09-25, [PR #129](https://github.com/SkillBench-AI/skillmeter-claude-code-marketplace/pull/129)).
 The decisions on migration, invalid policy and queued data restate Juho's
@@ -21,7 +23,7 @@ never a client (decision 3).
 | --- | --- | --- |
 | Where the repository choice lives | `<git-root>/.codex/settings.local.json`, per checkout; clones and worktrees need separate choices (#48) | `~/.skillbench/telemetry-policy.json`, keyed `github.com/org/repo`, one choice per machine (decision 1) |
 | Organization authorization | none; eligibility is the license's organizations, optionally narrowed by `SKILLMETER_REPO_SCOPE_ORGS` | explicit organization ON is the parent of every repository choice (decision 2) |
-| Global pause | `telemetry_disabled` in the credential file, also set by sign-out; #55 adds the shared `global.enabled` as a second gate, read-only | one field, `global.enabled` (decision 1) |
+| Global pause | the shared `global.enabled` only, read and written by `sk-telemetry disable/enable --global`; sign-out no longer pauses (ADR 005) | one field, `global.enabled` (decision 1) |
 | Shared ON | never used as permission; #55 and #56 read shared OFF only and keep the local opt-in | shared ON authorizes every client after the one-time scope acknowledgement (decisions 3 and 4) |
 | Malformed or missing shared policy | #55 and #56 fail closed on a malformed file. A missing policy keeps local consent only while this client has never observed one; once a policy has been observed, a durable marker makes its disappearance hold capture and delivery, across restarts, until a readable policy is back. Deleting the shared policy never restores a local grant | the same, adopted for every client (decision 5) |
 | Send-time re-check | transcript chunks re-check scope before each send (`scopeStillAllowed`); event batches re-check the global pause and license only, so a batch sealed before a repository OFF can still drain (#52 adds the consent re-check on retry) | every queued item re-evaluates the full gate before transmission (decision 2) |

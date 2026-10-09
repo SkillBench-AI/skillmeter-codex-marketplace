@@ -2,7 +2,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
-const { fixture } = require("../../../../test-support/shared-policy.cjs");
+const { fixture } = require("../../../../test-support/consent-record.cjs");
 
 test("shared global OFF blocks capture and both queues without consuming queued bytes", t => {
   fixture(t).run(`
@@ -34,7 +34,7 @@ for (const raw of ['{', 'null', '[]', '{"schema_version":2,"global":{"enabled":t
   });
 }
 
-test("absent shared policy preserves local consent; shared ON cannot override local OFF", t => {
+test("the gate honors a local OFF and the pause is written to the consent record", t => {
   fixture(t).run(`
     assert.equal(logger.resolveTelemetryGate(true,true).capture,true);
     assert.equal(fs.existsSync(policyFile),false);
@@ -67,18 +67,26 @@ test("an unrelated policy revision does not exclude an authorized interval", t =
   `);
 });
 
-test("CLI reports shared pause and cannot claim enable while it remains OFF", t => {
-  const f=fixture(t); const raw=JSON.stringify(f.policy(false)); fs.writeFileSync(f.policyFile,raw);
-  assert.match(f.cli(['status']).stderr,/shared policy.*paused/i);
-  const enabled=f.cli(['enable','--global']).stderr;
-  assert.match(enabled,/shared policy.*paused/i);
-  assert.doesNotMatch(enabled,/uploads enabled/);
-  assert.equal(fs.readFileSync(f.policyFile,'utf8'),raw);
+// The global pause is Codex's own: it lives in Codex's consent record.
+test("CLI reports the pause and enable --global resumes it for Codex", t => {
+  const f=fixture(t); fs.writeFileSync(f.policyFile,JSON.stringify(f.policy(false)));
+  assert.match(f.cli(['status']).stderr,/globally paused for Codex on this machine/i);
+  assert.match(f.cli(['enable','--global']).stderr,/resumed for Codex on this machine/);
+  const policy=JSON.parse(fs.readFileSync(f.policyFile,'utf8'));
+  assert.equal(policy.global.enabled,true);
+  assert.equal(policy.revision,2);
+  assert.deepEqual([policy.organizations,policy.repositories],[f.policy().organizations,f.policy().repositories]);
 });
 
-test("CLI identifies unreadable or invalid shared policy", t => {
+test("CLI identifies an unreadable or invalid consent record", t => {
   const f=fixture(t); fs.writeFileSync(f.policyFile,'{');
-  assert.match(f.cli(['status']).stderr,/shared policy.*invalid|invalid.*shared policy/i);
+  assert.match(f.cli(['status']).stderr,/consent record invalid/i);
+});
+
+test("a pause at the former shared path does not pause Codex", t => {
+  const f=fixture(t); fs.writeFileSync(f.legacyPolicyFile,JSON.stringify(f.policy(false)));
+  f.run("assert.equal(logger.getTelemetryGloballyDisabled(),false);");
+  assert.doesNotMatch(f.cli(['status']).stderr,/globally paused/);
 });
 
 for (const policyKind of ["paused", "malformed"]) {
@@ -115,21 +123,20 @@ test("policy changes are rechecked between successive queued chunks", t => {
   `);
 });
 
-test("shared policy location follows canonical default, development and explicit state directories", t => {
+test("consent record location follows the default and explicit state directories", t => {
   fixture(t).run(`
+    const record=dir=>{const file=path.join(dir,'clients/codex/telemetry-policy.json');fs.mkdirSync(path.dirname(file),{recursive:true});return file;};
     writePolicy({...policy,global:{enabled:false}});
-    delete process.env.SKILLMETER_STATE_DIR; delete process.env.SKILLMETER_ENV;
+    delete process.env.SKILLMETER_STATE_DIR;
     assert.equal(logger.getTelemetryGloballyDisabled(),true);
-    process.env.SKILLMETER_ENV='dev';
-    // Reusing client data after observing a policy cannot restore first-use
+    const explicit=path.join(process.env.HOME,'explicit');
+    process.env.SKILLMETER_STATE_DIR=explicit;
+    // Reusing client data after observing a record cannot restore first-use
     // permission just by selecting an empty state directory.
     assert.equal(logger.getTelemetryGloballyDisabled(),true);
-    const dev=path.join(process.env.HOME,'.skillbench-dev'); fs.mkdirSync(dev);
-    fs.writeFileSync(path.join(dev,'telemetry-policy.json'),JSON.stringify({...policy,global:{enabled:false}}));
-    assert.equal(logger.getTelemetryGloballyDisabled(),true);
-    const explicit=path.join(process.env.HOME,'explicit'); fs.mkdirSync(explicit);
-    process.env.SKILLMETER_STATE_DIR=explicit;
-    fs.writeFileSync(path.join(explicit,'telemetry-policy.json'),JSON.stringify(policy));
+    fs.writeFileSync(record(explicit),JSON.stringify(policy));
+    assert.equal(logger.getTelemetryGloballyDisabled(),false);
+    fs.writeFileSync(path.join(explicit,'telemetry-policy.json'),JSON.stringify({...policy,global:{enabled:false}}));
     assert.equal(logger.getTelemetryGloballyDisabled(),false);
   `);
 });
@@ -137,7 +144,7 @@ test("shared policy location follows canonical default, development and explicit
 test("a policy path that cannot be read as a file is not treated as absent", t => {
   const f=fixture(t); fs.mkdirSync(f.policyFile);
   f.run("assert.equal(logger.getTelemetryGloballyDisabled(),true);");
-  assert.match(f.cli(['status']).stderr,/shared policy.*invalid/i);
+  assert.match(f.cli(['status']).stderr,/consent record invalid/i);
 });
 
 test("enabled shared policy allows an explicitly enabled native hook path", t => {
@@ -151,7 +158,7 @@ test("a dangling shared policy symlink fails closed without replacing the link",
   const f=fixture(t);
   fs.symlinkSync('missing-policy.json',f.policyFile);
   f.run("assert.equal(logger.getTelemetryGloballyDisabled(),true);");
-  assert.match(f.cli(['status']).stderr,/shared policy.*invalid/i);
+  assert.match(f.cli(['status']).stderr,/consent record invalid/i);
   assert.equal(fs.lstatSync(f.policyFile).isSymbolicLink(),true);
 });
 
@@ -165,7 +172,7 @@ for (const suffix of ['', '/nested/state']) {
   });
 }
 
-test("a valid directory symlink with no policy retains absent-policy compatibility", t => {
+test("a valid directory symlink with no policy is treated as no record", t => {
   fixture(t).run(`
     const dir=path.join(process.env.HOME,'empty-state'); fs.mkdirSync(dir);
     const link=path.join(process.env.HOME,'linked-state'); fs.symlinkSync(dir,link);

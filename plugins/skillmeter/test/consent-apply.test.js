@@ -3,11 +3,11 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
-const { fixture } = require("../../../test-support/shared-policy.cjs");
-const modulePath = path.resolve(__dirname, "../scripts/lib/shared-consent-apply.js");
+const { fixture } = require("../../../test-support/consent-record.cjs");
+const modulePath = path.resolve(__dirname, "../scripts/lib/consent-apply.js");
 const setup = `
   const {applyRepositoryConsent} = require(${JSON.stringify(modulePath)});
-  const store = require(${JSON.stringify(path.resolve(__dirname, "../scripts/lib/shared-policy-store.js"))}).createSharedPolicyStore({file:policyFile,observedFile:path.join(logger.LOG_DIR,'shared-policy-observed')});
+  const store = require(${JSON.stringify(path.resolve(__dirname, "../scripts/lib/consent-store.js"))}).createConsentStore({file:policyFile,observedFile:logger.CONSENT_OBSERVED_FILE});
   const key='github.com/acme/widgets';
   policy.organizations.acme.consent_version=2;
   writePolicy(policy);
@@ -48,7 +48,7 @@ for (const raw of ['{"skillmeter":{"telemetry":false}}', '{']) {
   `));
 }
 
-test("descendant OFF prevents migration from that directory", t => fixture(t).run(setup + `
+test("descendant OFF prevents repository ON from that directory", t => fixture(t).run(setup + `
   const child=path.join(repo,'src');fs.mkdirSync(path.join(child,'.codex'),{recursive:true});
   fs.writeFileSync(path.join(child,'.codex/settings.local.json'),'{"skillmeter":{"telemetry":false}}');
   assert.throws(()=>apply({cwd:child,scope:logger.getRepoScopeDecision(child)}),{code:'LOCAL_CONSENT_CONFLICT'});
@@ -84,14 +84,16 @@ test("CLI shared OFF revokes known payloads while paused without changing creden
     fs.writeFileSync(source,'');logger.observeTranscriptConsent(source,repo);
     fs.appendFileSync(source,line('authorized'));const chunk=stage();assert.ok(chunk);
     logger.setTelemetryGloballyDisabled(true);
+    // The pause is a shared policy write, so the choice names the revision after it.
+    const revision=String(JSON.parse(fs.readFileSync(policyFile,'utf8')).revision);
     const credentials=path.join(${JSON.stringify(f.state)},'credentials.json'),before=fs.readFileSync(credentials);
-    process.argv=['node','telemetry.js','consent-set','off','--repository',key,'--revision','1'];
+    process.argv=['node','telemetry.js','consent-set','off','--repository',key,'--revision',revision];
     require(${JSON.stringify(path.resolve(__dirname, "../scripts/telemetry.js"))});
     assert.equal(fs.existsSync(chunk),false);
     assert.deepEqual(fs.readFileSync(credentials),before);
     assert.equal(fs.existsSync(path.join(path.dirname(path.dirname(chunk)),'consent.json')),true);
   `);
-  assert.match(result.stdout,/Shared repository choice saved: OFF/);
+  assert.match(result.stdout,/\[ REPOSITORY OFF \]/);
   assert.doesNotMatch(result.stdout,/delivered|report generated/i);
 });
 
@@ -103,10 +105,11 @@ test("CLI consent-set --help prints the choice arguments and exits successfully"
     assert.equal(process.exitCode,undefined);
     assert.equal(fs.existsSync(policyFile),false);
   `);
-  assert.match(result.stdout,/^Usage: consent-set <on\|off> --repository/m);
+  assert.match(result.stdout,/^Usage: consent-set <on\|off> \(--organization org \| --repository/m);
 });
 
-for (const args of [[], ['on'], ['on','--repository','github.com/acme/widgets','--revision','1'], ['off','--repository','github.com/acme/widgets','--revision','1','--typo']]) {
+for (const args of [[], ['on'], ['on','--repository','github.com/acme/widgets','--revision','1'], ['off','--repository','github.com/acme/widgets','--revision','1','--typo'],
+  ['off','--organization','acme','--repository','github.com/acme/widgets','--revision','absent'], ['off','--organization','acme']]) {
   test(`CLI rejects incomplete or unknown choice arguments: ${args.join(' ')}`, t => {
     const f=fixture(t);
     f.run(`
@@ -194,10 +197,10 @@ test("busy payload cleanup is reported as deferred after the choice is saved", t
     require(${JSON.stringify(path.resolve(__dirname, "../scripts/telemetry.js"))});
     assert.equal(JSON.parse(fs.readFileSync(policyFile)).repositories[key].enabled,false);
     assert.equal(fs.existsSync(chunk),true);
-    fs.unlinkSync(lock);logger.reconcileSharedRevocations();assert.equal(fs.existsSync(chunk),false);
+    fs.unlinkSync(lock);logger.reconcileConsentRevocations();assert.equal(fs.existsSync(chunk),false);
   `);
-  assert.match(result.stdout,/choice saved: OFF/);
-  assert.match(result.stdout,/cleanup is deferred/);
+  assert.match(result.stdout,/\[ REPOSITORY OFF \]/);
+  assert.match(result.stdout,/cleanup deferred/);
 });
 
 test("post-commit observer failure reports that consent was saved and does not roll it back", t => fixture(t).run(setup + `
@@ -206,3 +209,60 @@ test("post-commit observer failure reports that consent was saved and does not r
   assert.equal(store.readPolicy().revision,2);
   assert.equal(fs.existsSync(policyFile+'.lock'),false);
 `));
+
+const orgSetup = `
+  const {applyOrganizationConsent} = require(${JSON.stringify(modulePath)});
+  const store = require(${JSON.stringify(path.resolve(__dirname, "../scripts/lib/consent-store.js"))}).createConsentStore({file:policyFile,observedFile:logger.CONSENT_OBSERVED_FILE});
+  const applyOrg=opts=>applyOrganizationConsent({store,organization:'acme',allowedOrgs:['acme'],expectedRevision:null,enabled:true,acknowledged:true,...opts});
+`;
+
+for (const [name, change, code] of [
+  ["missing scope acknowledgement", "{acknowledged:false}", "ACKNOWLEDGEMENT_REQUIRED"],
+  ["organization outside the license", "{organization:'other'}", "ORGANIZATION_UNAVAILABLE"],
+  ["organization removed by narrowing", "{allowedOrgs:[]}", "ORGANIZATION_UNAVAILABLE"],
+  ["stale revision", "{expectedRevision:0}", "STALE_POLICY"],
+  ["implicit choice", "{enabled:undefined}", "CHOICE_REQUIRED"],
+]) {
+  test(`${name} cannot apply organization consent`, t => fixture(t).run(orgSetup + `
+    assert.throws(()=>applyOrg(${change}),{code:'${code}'});
+    assert.equal(fs.existsSync(policyFile),false);
+  `));
+}
+
+test("organization ON records the acknowledgement and OFF drops it", t => fixture(t).run(orgSetup + `
+  const on=applyOrg();
+  assert.deepEqual({...on.organizations.acme,decided_at:0},{enabled:true,decided_at:0,source:'user',consent_version:2});
+  assert.deepEqual(on.repositories,{});
+  const off=applyOrg({enabled:false,acknowledged:false,expectedRevision:on.revision});
+  assert.equal(off.organizations.acme.enabled,false);assert.equal(off.organizations.acme.consent_version,undefined);
+`));
+
+test("CLI records organization then repository consent from no record and enables capture", t => {
+  const f=fixture(t);
+  const result=f.run(`
+    const cli=${JSON.stringify(path.resolve(__dirname, "../scripts/telemetry.js"))};
+    const command=args=>{process.argv=['node','telemetry.js',...args];delete require.cache[cli];require(cli);assert.notEqual(process.exitCode,1);};
+    assert.equal(logger.getTelemetryOptIn(repo),null);
+    command(['consent-set','on','--organization','ACME','--revision','absent','--acknowledge-machine-scope']);
+    assert.equal(logger.getTelemetryOptIn(repo),null);
+    command(['consent-set','on','--repository','github.com/acme/widgets','--revision','1','--acknowledge-machine-scope']);
+    assert.equal(logger.getTelemetryOptIn(repo),true);
+    command(['consent-set','off','--organization','acme','--revision','2']);
+    assert.equal(logger.getTelemetryOptIn(repo),false);
+    assert.equal(fs.existsSync(legacyPolicyFile),false);
+  `);
+  assert.match(result.stdout,/\[ ORGANIZATION ON \][\s\S]*Revision +1/);
+  assert.match(result.stdout,/\[ TELEMETRY ON \][\s\S]*Revision +2/);
+  assert.match(result.stdout,/\[ ORGANIZATION OFF \][\s\S]*Revision +3/);
+});
+
+test("CLI rejects an organization the license does not cover", t => {
+  const f=fixture(t);
+  const result=f.run(`
+    process.argv=['node','telemetry.js','consent-set','on','--organization','other','--revision','absent','--acknowledge-machine-scope'];
+    require(${JSON.stringify(path.resolve(__dirname, "../scripts/telemetry.js"))});
+    assert.equal(process.exitCode,1);process.exitCode=0;
+    assert.equal(fs.existsSync(policyFile),false);
+  `);
+  assert.match(result.stderr,/ORGANIZATION_UNAVAILABLE/);
+});

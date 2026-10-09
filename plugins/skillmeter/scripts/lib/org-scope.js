@@ -1,7 +1,6 @@
 /**
- * Resolve organization filters for sign-in and runtime repository checks.
- * Explicit CLI scope controls stored memberships; environment and project filters
- * narrow local evaluation. Filters intersect with memberships and cannot add access.
+ * Resolve the configured organization filter for repository checks. It can only
+ * narrow the organizations the license covers; it never adds access.
  */
 
 const { readSettingsFile, SETTINGS_RELATIVE } = require("./settings");
@@ -45,20 +44,14 @@ function findProjectSettings(startDir) {
 }
 
 /**
- * Resolve the configured org scope (the narrowing allow-list). Precedence:
- *   1. explicit `cliOrgs` (e.g. from `signin --org skillbench-ai`)
- *   2. SKILLMETER_REPO_SCOPE_ORGS env var (comma/space-separated)
- *   3. skillmeter.repoScopeOrgs in <cwd>/.codex/settings.local.json
+ * Resolve the configured org filter. Precedence:
+ *   1. SKILLMETER_REPO_SCOPE_ORGS env var (comma/space-separated)
+ *   2. skillmeter.repoScopeOrgs in <cwd>/.codex/settings.local.json
  *      (array of org names, or a comma-separated string)
- * Returns a normalized array, or null when nothing is configured (= no
- * narrowing, the default "all signed-in orgs" behavior).
+ * Returns a normalized array, or null when nothing is configured (no
+ * narrowing: every organization the license covers).
  */
-function resolveOrgScope({ cwd = process.cwd(), cliOrgs } = {}) {
-  if (Array.isArray(cliOrgs)) {
-    const list = normalizeOrgList(cliOrgs);
-    if (list.length) return list;
-  }
-
+function resolveOrgScope({ cwd = process.cwd() } = {}) {
   const fromEnv = process.env.SKILLMETER_REPO_SCOPE_ORGS;
   if (typeof fromEnv === "string" && fromEnv.trim()) {
     const list = splitOrgString(fromEnv);
@@ -81,25 +74,7 @@ function resolveOrgScope({ cwd = process.cwd(), cliOrgs } = {}) {
   return null;
 }
 
-/**
- * Narrow a fetched org/login list to the configured scope (intersection).
- * Returns { orgs, excluded, applied }:
- *   - orgs: the kept set (unchanged from `fetchedOrgs` when no scope)
- *   - excluded: memberships dropped by the scope
- *   - applied: whether a scope was in effect
- */
-function narrowOrgsToScope(fetchedOrgs, scope) {
-  const fetched = normalizeOrgList(fetchedOrgs);
-  if (!scope || scope.length === 0) {
-    return { orgs: fetched, excluded: [], applied: false };
-  }
-  const kept = fetched.filter((o) => scope.includes(o));
-  const excluded = fetched.filter((o) => !scope.includes(o));
-  return { orgs: kept, excluded, applied: true };
-}
-
 module.exports = {
   normalizeOrgList,
   resolveOrgScope,
-  narrowOrgsToScope,
 };
