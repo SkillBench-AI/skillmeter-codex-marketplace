@@ -130,8 +130,10 @@ test("sign-in prints the organization state line after the welcome banner", t =>
     return JSON.parse(result.stdout.split("\n")[line + 1]);
   };
   assert.deepEqual(state(), { status: "signed_in", globalPaused: false, orgs: [{ org: "acme", consent: null }] });
+  assert.match(run("signin.js", []).stdout, /\[ TELEMETRY SETUP \][\s\S]*\[ REPOSITORY REVIEW \][\s\S]*○ OFF +@acme\/gears/);
   cli(["org", "absent", "acme", "enabled", "--acknowledge-machine-scope"]);
   assert.deepEqual(state().orgs, [{ org: "acme", consent: true }]);
+  assert.match(run("signin.js", []).stdout, /\[ ORGANIZATION ON \][\s\S]*ON for 0 of 2 local repositories/);
 });
 
 test("an ON choice without the Codex acknowledgement still needs a choice", () => {

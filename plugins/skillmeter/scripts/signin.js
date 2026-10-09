@@ -12,7 +12,7 @@ const config = require("./lib/config");
 const licenseActivation = require("./lib/license-activation");
 const { requestDeviceCode, pollDeviceToken } = require("./lib/broker");
 const { exchangeIdToken } = require("./lib/license-exchange");
-const { welcomeBanner } = require("./lib/banner.js");
+const { signinBanner } = require("./lib/banner.js");
 const { startSpinner } = require("./lib/spinner.js");
 const { spawnSync, spawn } = require("child_process");
 const fs = require("fs");
@@ -110,22 +110,26 @@ function spawnBackgroundPoll(deviceId, deviceCode, interval, generation) {
   fs.closeSync(logFd);
 }
 
-// The signin skill reads this line to start telemetry onboarding, as the Claude
-// plugin's sign-in hook does. It carries organizations and their Codex consent
-// only; the skill lists repositories itself right before asking.
-function signinState() {
+// Cards showing each organization's telemetry state and its local
+// repositories, as the Claude plugin shows after sign-in, then the line the
+// signin skill reads to start onboarding. That line carries organizations and
+// their Codex consent only; the skill lists repositories again right before
+// asking.
+function sayWelcome() {
+  let inventory = null, currentKey = null, error = null;
   try {
     const { loadInventory } = require("./lib/repository-inventory");
-    const { inventory } = loadInventory({ discover: false });
-    return { status: "signed_in", globalPaused: inventory.globalPaused, orgs: inventory.orgs };
+    const loaded = loadInventory();
+    inventory = loaded.inventory;
+    currentKey = loaded.logger.getRepoScopeDecision(process.cwd()).repoKey || null;
   } catch (err) {
-    return { status: "signed_in", consentRecordError: err.code || "POLICY_UNAVAILABLE" };
+    error = err.code || "POLICY_UNAVAILABLE";
   }
-}
-
-function sayWelcome() {
-  say(welcomeBanner(credstore.getAllowedGitHubOrgs()));
-  say(`SkillMeter sign-in state JSON:\n${JSON.stringify(signinState())}`);
+  say(signinBanner({ inventory, currentKey, error }));
+  const state = error
+    ? { status: "signed_in", consentRecordError: error }
+    : { status: "signed_in", globalPaused: inventory.globalPaused, orgs: inventory.orgs };
+  say(`SkillMeter sign-in state JSON:\n${JSON.stringify(state)}`);
 }
 
 // A valid license whose session the sign-in service already ended is not a

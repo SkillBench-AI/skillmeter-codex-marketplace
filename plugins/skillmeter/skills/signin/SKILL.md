@@ -26,9 +26,11 @@ prints a new code instead, the approval did not complete; relay that code.
 
 ## Signed in
 
-The script prints a welcome banner and a `SkillMeter sign-in state JSON:` line.
-Reproduce the banner in a fenced code block to preserve alignment, then parse
-the JSON. The session is stored in `~/.skillbench/clients/codex/` and is not
+The script prints status cards and a `SkillMeter sign-in state JSON:` line.
+For each organization, one card shows whether telemetry is on, off, awaiting a
+choice or paused, and a second lists its local repositories as ON or OFF.
+Reproduce every card in one fenced code block to preserve alignment, then
+parse the JSON. Do not restate the cards in prose. The session is stored in `~/.skillbench/clients/codex/` and is not
 shared with other SkillMeter clients. Report results without exposing
 credentials.
 
