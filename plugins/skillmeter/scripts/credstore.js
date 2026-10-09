@@ -128,12 +128,11 @@ const mutateSession = (fn, afterCommit) => mutate(config.sessionFile(), fn, afte
 // daemon outlives sign-ins, renewals and sign-outs in other processes.
 function getLicenseToken() {
   const session = readSession();
-  return session.signed_out === true ? null : session.license_jwt || null;
+  return session.event_cutover !== 1 || session.signed_out === true ? null : session.license_jwt || null;
 }
 
-// Create an empty session the first time this version runs on a machine.
-// Returns true only for that first call: no earlier credentials are carried
-// over (ADR 005), so the caller discards what an earlier version queued.
+// Compatibility helper for callers that only need a session file. Its existence
+// is not evidence of completed cutover; use completeEventCutover for that.
 function ensureSessionFile() {
   if (fs.existsSync(config.sessionFile())) return false;
   return mutateSession(session => {
@@ -141,6 +140,34 @@ function ensureSessionFile() {
     session.created_at = new Date().toISOString();
   }) === true;
 }
+
+// A session file is not proof that the legacy event queue was cleared. The
+// completion record is committed only after every batch is removed, under the
+// same lock as sign-in. A crash or a busy batch leaves it retryable.
+function completeEventCutover(purge, queueEmpty = () => false) {
+  if (isEventCutoverComplete()) return true;
+  return mutateSession(session => {
+    if (session.event_cutover === 1) return false;
+    if (Object.hasOwn(session, "event_cutover")) return false;
+    // Malformed/unreadable state is not evidence of a pre-broker installation.
+    let raw;
+    try { raw = fs.readFileSync(config.sessionFile(), "utf8"); }
+    catch (error) { if (error.code !== "ENOENT") throw error; }
+    if (raw !== undefined) {
+      const value = JSON.parse(raw);
+      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    }
+    // A previous broker version may already have captured new data alongside
+    // skipped legacy batches. Preserve that ambiguous queue for explicit review.
+    if (session.license_jwt || session.refresh_token) {
+      if (queueEmpty() !== true) return false;
+    } else if (purge() !== true) return false;
+    session.event_cutover = 1;
+    session.created_at ||= new Date().toISOString();
+  }) === true || isEventCutoverComplete();
+}
+
+const isEventCutoverComplete = () => readSession().event_cutover === 1;
 
 // Signed in: a license is held and the user has not signed out. Freshness is
 // enforced when data is sent, not here.
@@ -157,12 +184,12 @@ function recoverySnapshot() {
     refreshToken: session.refresh_token || null,
     generation: session.auth_generation || null,
     deviceId: readObject(config.credentialsFile()).device_id || null,
-    signedOut: session.signed_out === true,
+    signedOut: session.event_cutover !== 1 || session.signed_out === true,
   };
 }
 
 function snapshotMatches(session, expected) {
-  return !!expected && !expected.signedOut && session.signed_out !== true &&
+  return session.event_cutover === 1 && !!expected && !expected.signedOut && session.signed_out !== true &&
     (session.license_jwt || null) === expected.token &&
     (session.refresh_token || null) === (expected.refreshToken || null) &&
     (session.auth_generation || null) === expected.generation &&
@@ -185,7 +212,7 @@ function markEngaged() {
 // the lock and must not take it again.
 function commitSignin({ jwt, refreshToken, generation, onCommit }) {
   return mutateSession(session => {
-    if (session.signed_out === true) return false;
+    if (session.event_cutover !== 1 || session.signed_out === true) return false;
     if (generation && session.auth_generation !== generation) return false;
     session.license_jwt = jwt;
     session.refresh_token = refreshToken;
@@ -262,6 +289,8 @@ module.exports = {
   // The upload path's name for the same uncached read.
   getLicenseTokenUncached: getLicenseToken,
   ensureSessionFile,
+  completeEventCutover,
+  isEventCutoverComplete,
   isSignedIn,
   getSignedOut,
   getAuthGeneration,

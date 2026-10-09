@@ -92,6 +92,16 @@ sealed event batches are still removed 30 days after sealing, paused or not.
 
 Upgrading from a version that signed in with GitHub starts signed out: nothing
 is carried over, and event batches recorded under the old sign-in are dropped.
+Cutover completion is recorded only after all legacy event batches are cleared.
+A locked batch keeps capture, delivery and sign-in on hold; close older Codex
+sessions and retry. An existing broker session without a completion record is
+ambiguous when event batches remain: the plugin holds those batches rather than
+deleting potentially new events. An empty event queue can complete cutover
+without discarding data. Preserve a verified backup and resolve its disposition with support
+before resetting state or signing out. This hold is not a recovery workflow and
+does not disable the existing age-based cleanup. Do not run old plugin workers
+alongside the upgrade: they do not honor the new completion gate.
+
 Upgrading from a version that used the machine-wide shared consent record
 starts with no Codex consent: record the organization and repository again.
 Event batches queued under the shared record are held and expire at the
