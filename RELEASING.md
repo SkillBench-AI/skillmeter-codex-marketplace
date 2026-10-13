@@ -50,7 +50,7 @@ publishes automatically; replace its generated title and body with the approved
 notes afterward.
 
 Release notes are public. They say what changed for the user; the PRs hold the
-rest. Use [0.8.0](https://github.com/SkillBench-AI/skillmeter-codex-marketplace/releases/tag/v0.8.0)
+rest. Use [0.12.3](https://github.com/SkillBench-AI/skillmeter-codex-marketplace/releases/tag/v0.12.3)
 as the model for length and tone.
 
 - Title: `SkillMeter X.Y.Z`

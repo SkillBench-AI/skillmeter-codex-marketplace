@@ -22,7 +22,7 @@ async function main() {
   const revoked = refreshToken ? await broker.revoke(refreshToken) : false;
 
   process.stdout.write(hadLicense
-    ? "SkillMeter: signed out. Run the SkillMeter sign-in flow to record again.\n"
+    ? "SkillMeter: signed out. Run $skillmeter:signin to record again.\n"
     : "SkillMeter: already signed out.\n");
   if (refreshToken && !revoked) {
     process.stdout.write("SkillMeter: could not reach the sign-in service to end the session there; it expires on its own.\n");

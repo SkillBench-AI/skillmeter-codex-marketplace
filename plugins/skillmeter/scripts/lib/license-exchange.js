@@ -24,10 +24,8 @@ const getActivateUrl = config.activateUrl;
 /**
  * POST a JSON body with a `Bearer <token>` Authorization header and a timeout.
  *
- * Returns the raw Response; callers own the status-code branching and body
- * parsing because those genuinely differ (some return null + log, others
- * throw, with per-status special cases like 402/410/404). Throws on network
- * error / timeout — callers that need graceful degradation wrap in try/catch.
+ * Returns the raw Response; the caller owns status mapping and body parsing.
+ * Throws on network error or timeout.
  *
  * @param {string} url
  * @param {string} bearer         token for the Authorization header

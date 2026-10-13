@@ -76,7 +76,7 @@ after(() => {
 
 test("transcript drain rechecks disabled A while delivering authorized B", async () => {
   stage("a"); stage("b");
-  control("a", "disable");
+  control("a", "restrict");
   const received = [];
   global.fetch = async (_, options) => { received.push(...decode(options.body)); return { ok: true }; };
   await logger.drainPendingTranscripts(endpoint, 1000);
@@ -88,7 +88,7 @@ test("revocation after a request starts cannot undo it but blocks the next chunk
   const received = [];
   global.fetch = async (_, options) => {
     received.push(...decode(options.body));
-    control("a", "disable");
+    control("a", "restrict");
     return { ok: true };
   };
   await logger.drainPendingTranscripts(endpoint, 1000);
@@ -111,7 +111,7 @@ test("repository disable does not guess ownership or destroy an unattributed leg
   const legacy = path.join(logger.LOG_DIR, `events.jsonl.${Date.now()}`);
   const bytes = '{"hook_event_name":"Stop","data":{"fixture":"unknown-repository"}}\n';
   fs.writeFileSync(legacy, bytes);
-  control("a", "disable");
+  control("a", "restrict");
   assert.equal(fs.readFileSync(legacy, "utf8"), bytes);
 });
 
@@ -120,7 +120,7 @@ test("repository revocation removes A's queued transcript payloads but preserves
   const b = stage("b");
   const cursors = [a, b].map(file => path.join(path.dirname(path.dirname(file)), "cursor.json"));
   const before = [b, ...cursors].map(file => fs.readFileSync(file));
-  control("a", "disable");
+  control("a", "restrict");
   assert.equal(fs.existsSync(a), false, "revoked payload must be removed");
   assert.deepEqual([b, ...cursors].map(file => fs.readFileSync(file)), before, "B and both cursors survive byte for byte");
 });
@@ -129,7 +129,7 @@ test("mixed event batch delivers B without disclosing disabled A",
   async () => {
     event("a"); event("b");
     const sealed = logger.sealEventLog();
-    control("a", "disable");
+    control("a", "restrict");
     const received = [];
     global.fetch = async (_, options) => { received.push(...decode(options.body)); return { ok: true }; };
     await logger.processSealedBatch(sealed, endpoint, 1000);
@@ -143,7 +143,7 @@ test("a failed event delivery rechecks repository consent before retrying",
     let calls = 0;
     global.fetch = async () => { calls++; return { ok: false, status: 503 }; };
     assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "retry");
-    control("a", "disable");
+    control("a", "restrict");
     await logger.processSealedBatch(sealed, endpoint, 1000);
     assert.equal(calls, 1, "a revoked repository cannot be sent again");
   });
@@ -154,8 +154,8 @@ test("private routing stays local and authorized B survives an in-flight A revoc
   let sent;
   global.fetch = async (_, options) => {
     sent = decode(options.body);
-    control("a", "disable");
-    control("a", "enable");
+    control("a", "restrict");
+    control("a", "unrestrict");
     return { ok: false, status: 503 };
   };
   await logger.processSealedBatch(sealed, endpoint, 1000);
@@ -171,7 +171,7 @@ test("disable/re-enable during a transcript request purges remaining revoked pay
   let calls = 0;
   global.fetch = async () => {
     calls++;
-    control("a", "disable"); control("a", "enable");
+    control("a", "restrict"); control("a", "unrestrict");
     return { ok: false, status: 503 };
   };
   await logger.drainPendingTranscripts(endpoint, 1000);
@@ -202,7 +202,7 @@ test("explicit revocation during global pause removes only the selected reposito
   const a = stage("a"), b = stage("b");
   event("a"); event("b"); const sealed = logger.sealEventLog();
   logger.setTelemetryGloballyDisabled(true);
-  control("a", "disable");
+  control("a", "restrict");
   assert.equal(fs.existsSync(a), false);
   assert.ok(fs.existsSync(b));
   assert.deepEqual(fs.readFileSync(sealed, "utf8").trim().split("\n").map(JSON.parse).map(r => r.session_id), ["synthetic-b"]);
@@ -219,7 +219,7 @@ test("a symlink checkout alias shares the revocation boundary", () => {
   }, credentials.device_id);
   const sealed = logger.sealEventLog();
   const chunk = stage("a");
-  control("a", "disable");
+  control("a", "restrict");
   assert.equal(fs.existsSync(sealed), false);
   assert.equal(fs.existsSync(chunk), false);
 });
@@ -270,7 +270,7 @@ test("a hook at the disable settings-write boundary cannot inherit the revoked g
       repo_root: logger.hashHmac(repos.a, credentials.hash_salt),
     }, credentials.device_id, snapshot);
   }
-  control("a", "enable");
+  control("a", "unrestrict");
   const sealed = logger.sealEventLog(), received = [];
   global.fetch = async (_, options) => { received.push(...decode(options.body)); return { ok: true }; };
   if (sealed) await logger.processSealedBatch(sealed, endpoint, 1000);
@@ -307,7 +307,7 @@ test("missing credentials retain queued events without an upload or retry charge
 test("revocation removes A even when B's delivery authorization is temporarily unavailable", () => {
   event("a"); event("b"); const sealed = logger.sealEventLog();
   fs.writeFileSync(path.join(repos.b, logger.SETTINGS_RELATIVE), '{"skillmeter":{"telemetry":"hold"}}');
-  control("a", "disable");
+  control("a", "restrict");
   assert.deepEqual(fs.readFileSync(sealed, "utf8").trim().split("\n").map(JSON.parse).map(r => r.session_id), ["synthetic-b"]);
 });
 
@@ -329,7 +329,7 @@ test("temporary hold of A delivers B once and recovers A separately", async () =
   assert.deepEqual(sessions(sealed), ["synthetic-a"]);
   assert.equal(fs.existsSync(`${sealed}.sent`), false);
   assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "held");
-  control("a", "enable");
+  control("a", "unrestrict");
   assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "sent");
   assert.deepEqual(received.map(r => r.session_id), ["synthetic-b", "synthetic-a"]);
   assert.ok(received.every(r => !r._queue));
@@ -419,7 +419,7 @@ test("retry exhaustion quarantines B while retaining held A", async () => {
   assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "poison");
   assert.deepEqual(sessions(sealed), ["synthetic-a"]);
   assert.deepEqual(sessions(path.join(logger.LOG_DIR, "poison", path.basename(sealed))), ["synthetic-b"]);
-  control("a", "enable");
+  control("a", "unrestrict");
   global.fetch = async () => ({ ok: true });
   assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "sent");
 });
@@ -430,7 +430,7 @@ test("a newly eligible subset does not inherit earlier delivery failures", async
   await logger.processSealedBatch(sealed, endpoint, 1000);
   await logger.processSealedBatch(sealed, endpoint, 1000);
   assert.equal(logger.readBatchMeta(sealed).attempts, 2);
-  control("a", "enable");
+  control("a", "unrestrict");
   assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "retry");
   assert.equal(logger.readBatchMeta(sealed).attempts, 1);
   assert.deepEqual(sessions(sealed), ["synthetic-a", "synthetic-b"]);
@@ -481,7 +481,7 @@ test("later quarantine of a recovered subset preserves the earlier rejected subs
   event("a"); event("b"); const sealed = logger.sealEventLog(); holdA();
   global.fetch = async () => ({ ok: false, status: 400 });
   assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "poison");
-  control("a", "enable");
+  control("a", "unrestrict");
   assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "poison");
   assert.equal(fs.existsSync(sealed), false);
   assert.deepEqual(sessions(path.join(logger.LOG_DIR, "poison", path.basename(sealed))), ["synthetic-b", "synthetic-a"]);
@@ -508,9 +508,9 @@ test("repository disable removes its quarantined rows and preserves other reposi
   global.fetch = async () => ({ ok: false, status: 400 });
   assert.equal(await logger.processSealedBatch(sealed, endpoint, 1000), "poison");
   const poison = path.join(logger.LOG_DIR, "poison", path.basename(sealed));
-  control("a", "disable");
+  control("a", "restrict");
   assert.deepEqual(sessions(poison), ["synthetic-b"]);
-  control("b", "disable");
+  control("b", "restrict");
   assert.equal(fs.existsSync(poison), false);
 });
 
@@ -522,7 +522,7 @@ test("quarantine purge shares the source lock and retries after it is released",
   const bytes = fs.readFileSync(poison);
   const release = queue.acquireLock(`${sealed}.lock`);
   assert.ok(release);
-  try { control("a", "disable"); assert.deepEqual(fs.readFileSync(poison), bytes); }
+  try { control("a", "restrict"); assert.deepEqual(fs.readFileSync(poison), bytes); }
   finally { release(); }
   const { createRepositoryQueue } = require("../../scripts/lib/repository-queue");
   const routing = createRepositoryQueue(logger.LOG_DIR, () => credentials.hash_salt, () => assert.fail("purge must not authorize"));
